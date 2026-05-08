@@ -28,6 +28,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import type { TopBarAgentOption } from "@/lib/scan-report"
 
 interface TopBarProps {
   projectName: string
@@ -38,6 +39,7 @@ interface TopBarProps {
   riskScore: number
   onRunScan: () => void
   onNavigateToBranchCompare: () => void
+  agentOptions?: TopBarAgentOption[]
 }
 
 const branches = [
@@ -48,7 +50,7 @@ const branches = [
   "bugfix/prompt-regression",
 ]
 
-const agents = [
+const defaultAgents: TopBarAgentOption[] = [
   { id: "all", name: "All Agents", framework: null, tools: 0, prompts: 0, risk: 0 },
   { id: "support", name: "SupportAgent", framework: "LangGraph", tools: 8, prompts: 3, risk: 72 },
   { id: "chat", name: "ChatAgent", framework: "LangChain", tools: 5, prompts: 4, risk: 45 },
@@ -80,12 +82,14 @@ export function TopBar({
   riskScore,
   onRunScan,
   onNavigateToBranchCompare,
+  agentOptions = defaultAgents,
 }: TopBarProps) {
+  const agents = agentOptions
   const riskInfo = getRiskLevel(riskScore)
-  const selectedAgentNames = selectedAgents.includes("all") 
-    ? "All Agents" 
-    : selectedAgents.length === 1 
-      ? agents.find(a => a.id === selectedAgents[0])?.name || "Select Agents"
+  const selectedAgentNames = selectedAgents.includes("all")
+    ? "All Agents"
+    : selectedAgents.length === 1
+      ? agents.find((a) => a.id === selectedAgents[0])?.name || "Select Agents"
       : `${selectedAgents.length} Agents`
 
   const toggleAgent = (agentId: string) => {

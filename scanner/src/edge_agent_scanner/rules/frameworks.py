@@ -27,7 +27,8 @@ _IMPORT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\blangchain\b", re.I), "LangChain"),
     (re.compile(r"\bllama_index\b|\bllama-index\b", re.I), "LlamaIndex"),
     (re.compile(r"\bpydantic_ai\b|\bpydantic-ai\b", re.I), "Pydantic AI"),
-    (re.compile(r"\bagno\b", re.I), "Agno"),
+    # Require import syntax so UI strings like "Agno" in mock data are not counted as the Agno framework
+    (re.compile(r"^\s*(from|import)\s+agno\b", re.I), "Agno"),
     (re.compile(r"\bmcp\b|modelcontextprotocol|ModelContextProtocol", re.I), "MCP"),
     (re.compile(r"openapi|swagger", re.I), "OpenAPI"),
 ]

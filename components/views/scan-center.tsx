@@ -6,16 +6,16 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { 
-  Play, 
-  Square, 
-  Sparkles, 
+import {
+  Play,
+  Square,
+  Sparkles,
   Upload,
   Clock,
   CheckCircle2,
   Loader2,
   FileText,
-  TestTube
+  TestTube,
 } from "lucide-react"
 
 const securityChecks = [
@@ -24,11 +24,11 @@ const securityChecks = [
   { id: "prompt-injection", label: "Prompt injection", description: "Detect injection vulnerabilities" },
   { id: "vague-prompts", label: "Vague prompts", description: "Find prompts that lack specificity" },
   { id: "mcp-security", label: "MCP security", description: "Audit Model Context Protocol security" },
-  { id: "openapi-quality", label: "OpenAPI/schema quality", description: "Validate API schemas and specs" },
+  { id: "openapi-schema", label: "OpenAPI/schema quality", description: "Validate API schemas and specs" },
   { id: "auth-checks", label: "Auth checks", description: "Verify authentication is properly enforced" },
   { id: "secrets", label: "Hardcoded secrets", description: "Find exposed credentials and keys" },
-  { id: "dependencies", label: "Dependency risks", description: "Check for vulnerable dependencies" },
-  { id: "user-input", label: "User input to dangerous code", description: "Trace unsafe data flows" },
+  { id: "dependency-risks", label: "Dependency risks", description: "Check for vulnerable dependencies" },
+  { id: "user-input-dangerous-code", label: "User input to dangerous code", description: "Trace unsafe data flows" },
   { id: "accuracy", label: "Accuracy regression", description: "Detect changes that may affect output quality" },
   { id: "performance", label: "Performance/runtime", description: "Monitor latency and resource usage" },
   { id: "tool-selection", label: "Tool selection correctness", description: "Verify correct tool routing" },
@@ -43,18 +43,29 @@ const recentScans = [
 
 interface ScanCenterProps {
   selectedAgents?: string[]
+  onRunScan: (selectedCheckIds: string[]) => Promise<void>
+  isScanning?: boolean
+  scanError?: string | null
+  lastIssueCount?: number | null
+  lastScanTime?: string | null
 }
 
-export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
-  const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map(c => c.id))
+export function ScanCenter({
+  selectedAgents = ["all"],
+  onRunScan,
+  isScanning = false,
+  scanError = null,
+  lastIssueCount = null,
+  lastScanTime = null,
+}: ScanCenterProps) {
+  const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
-  const [isScanning, setIsScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState(0)
 
   const handleAllChange = (checked: boolean) => {
     setAllSelected(checked)
     if (checked) {
-      setSelectedChecks(securityChecks.map(c => c.id))
+      setSelectedChecks(securityChecks.map((c) => c.id))
     } else {
       setSelectedChecks([])
     }
@@ -64,46 +75,37 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
     if (checked) {
       setSelectedChecks([...selectedChecks, id])
     } else {
-      setSelectedChecks(selectedChecks.filter(c => c !== id))
+      setSelectedChecks(selectedChecks.filter((c) => c !== id))
       setAllSelected(false)
     }
   }
 
-  const startScan = () => {
-    setIsScanning(true)
-    setScanProgress(0)
-    const interval = setInterval(() => {
-      setScanProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval)
-          setIsScanning(false)
-          return 100
-        }
-        return prev + 10
-      })
-    }, 500)
+  const startScan = async () => {
+    setScanProgress(10)
+    try {
+      await onRunScan(selectedChecks)
+      setScanProgress(100)
+    } finally {
+      setTimeout(() => setScanProgress(0), 400)
+    }
   }
 
   const stopScan = () => {
-    setIsScanning(false)
     setScanProgress(0)
   }
 
-  const agentLabel = selectedAgents.includes("all") 
-    ? "All Agents" 
-    : selectedAgents.length === 1 
-      ? selectedAgents[0] 
+  const agentLabel = selectedAgents.includes("all")
+    ? "All Agents"
+    : selectedAgents.length === 1
+      ? selectedAgents[0]
       : `${selectedAgents.length} agents`
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Scan Center</h1>
-          <p className="text-muted-foreground">
-            Configure and run security scans on {agentLabel}
-          </p>
+          <p className="text-muted-foreground">Configure and run security scans on {agentLabel}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline">
@@ -117,8 +119,13 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
         </div>
       </div>
 
+      {scanError ? (
+        <p className="text-sm text-destructive border border-destructive/30 rounded-md p-3 bg-destructive/10">
+          {scanError}
+        </p>
+      ) : null}
+
       <div className="grid grid-cols-3 gap-6">
-        {/* Scan Configuration */}
         <div className="col-span-2 space-y-4">
           <Card className="bg-card border-border">
             <CardHeader>
@@ -126,15 +133,12 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
               <CardDescription>Select which checks to include in the scan</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* All checks toggle */}
               <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/30 border border-border">
-                <Checkbox 
-                  id="all" 
-                  checked={allSelected}
-                  onCheckedChange={handleAllChange}
-                />
+                <Checkbox id="all" checked={allSelected} onCheckedChange={(v) => handleAllChange(!!v)} />
                 <div className="flex-1">
-                  <label htmlFor="all" className="text-sm font-medium cursor-pointer">All checks</label>
+                  <label htmlFor="all" className="text-sm font-medium cursor-pointer">
+                    All checks
+                  </label>
                   <p className="text-xs text-muted-foreground">Run all available security and quality checks</p>
                 </div>
                 <Badge variant="outline" className="text-xs">
@@ -142,18 +146,22 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
                 </Badge>
               </div>
 
-              {/* Individual checks */}
               <div className="grid grid-cols-2 gap-2">
                 {securityChecks.map((check) => (
-                  <div key={check.id} className="flex items-start gap-3 p-3 rounded-lg hover:bg-secondary/30 transition-colors">
-                    <Checkbox 
-                      id={check.id} 
+                  <div
+                    key={check.id}
+                    className="flex items-start gap-3 p-3 rounded-lg hover:bg-secondary/30 transition-colors"
+                  >
+                    <Checkbox
+                      id={check.id}
                       checked={selectedChecks.includes(check.id)}
                       onCheckedChange={(checked) => handleCheckChange(check.id, checked as boolean)}
                       className="mt-0.5"
                     />
                     <div className="flex-1 min-w-0">
-                      <label htmlFor={check.id} className="text-sm font-medium cursor-pointer">{check.label}</label>
+                      <label htmlFor={check.id} className="text-sm font-medium cursor-pointer">
+                        {check.label}
+                      </label>
                       <p className="text-xs text-muted-foreground truncate">{check.description}</p>
                     </div>
                   </div>
@@ -162,47 +170,40 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
             </CardContent>
           </Card>
 
-          {/* Scan Progress */}
           {isScanning && (
             <Card className="bg-card border-border border-accent/50">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                    Scanning...
+                    Scanning repository…
                   </CardTitle>
-                  <span className="text-sm text-muted-foreground">{scanProgress}%</span>
+                  <span className="text-sm text-muted-foreground">{scanProgress > 0 ? scanProgress : "…"}%</span>
                 </div>
               </CardHeader>
               <CardContent>
-                <Progress value={scanProgress} className="h-2" />
+                <Progress value={scanProgress || 66} className="h-2 animate-pulse" />
                 <p className="text-sm text-muted-foreground mt-2">
-                  Running {selectedChecks.length} checks on {agentLabel}...
+                  Running Python scanner on the project root ({selectedChecks.length} UI checks selected).
                 </p>
               </CardContent>
             </Card>
           )}
         </div>
 
-        {/* Sidebar */}
         <div className="space-y-4">
-          {/* Action Buttons */}
           <Card className="bg-card border-border">
             <CardContent className="pt-6 space-y-3">
               {!isScanning ? (
                 <>
-                  <Button 
-                    className="w-full" 
-                    onClick={startScan}
-                    disabled={selectedChecks.length === 0}
-                  >
+                  <Button className="w-full" onClick={() => void startScan()} disabled={selectedChecks.length === 0}>
                     <Play className="h-4 w-4 mr-2" />
                     Run Full Scan
                   </Button>
-                  <Button 
+                  <Button
                     variant="outline"
-                    className="w-full" 
-                    onClick={startScan}
+                    className="w-full"
+                    onClick={() => void startScan()}
                     disabled={selectedChecks.length === 0}
                   >
                     <TestTube className="h-4 w-4 mr-2" />
@@ -210,11 +211,7 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
                   </Button>
                 </>
               ) : (
-                <Button 
-                  className="w-full" 
-                  variant="destructive"
-                  onClick={stopScan}
-                >
+                <Button className="w-full" variant="destructive" onClick={stopScan}>
                   <Square className="h-4 w-4 mr-2" />
                   Stop
                 </Button>
@@ -223,19 +220,36 @@ export function ScanCenter({ selectedAgents = ["all"] }: ScanCenterProps) {
                 <FileText className="h-4 w-4 mr-2" />
                 Export Report
               </Button>
-              <p className="text-xs text-muted-foreground text-center">
-                {selectedChecks.length} checks selected
-              </p>
+              <p className="text-xs text-muted-foreground text-center">{selectedChecks.length} checks selected</p>
             </CardContent>
           </Card>
 
-          {/* Recent Scans */}
           <Card className="bg-card border-border">
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Recent Scans</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
+                {lastIssueCount != null && lastScanTime ? (
+                  <div className="p-3 rounded-lg bg-secondary/30 space-y-2 border border-accent/20">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-green-400" />
+                        <span className="text-sm font-medium">Latest (Python)</span>
+                      </div>
+                      {lastIssueCount > 0 ? (
+                        <Badge variant="outline" className="text-xs border-orange-500/50 text-orange-400">
+                          {lastIssueCount} issues
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs border-green-500/50 text-green-400">
+                          Clean
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground">{lastScanTime}</div>
+                  </div>
+                ) : null}
                 {recentScans.map((scan) => (
                   <div key={scan.id} className="p-3 rounded-lg bg-secondary/30 space-y-2">
                     <div className="flex items-center justify-between">

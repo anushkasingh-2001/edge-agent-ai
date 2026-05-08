@@ -1,3 +1,13 @@
+Metadata-Version: 2.4
+Name: edge-agent-scanner
+Version: 0.1.0
+Summary: Static security scanner for AI agent codebases (Edge Agent AI)
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+
 # Edge Agent Scanner
 
 Static analysis CLI for local agent repositories. Emits a versioned `report.json` for later integration with the Edge Agent AI UI.
@@ -27,13 +37,6 @@ python -m edge_agent_scanner.cli scan /path/to/repo --out report.json
 ```
 
 `--out` defaults to `./report.json` if omitted.
-
-Limit to specific `rule_id` values (repeat `--check`):
-
-```bash
-python -m edge_agent_scanner.cli scan /path/to/repo --out report.json \
-  --check secrets --check dangerous-tools
-```
 
 Scanned text extensions include `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.yaml`, `.yml`, `.md`, `.txt`, and `.toml` (for `pyproject.toml` / manifest parsing).
 

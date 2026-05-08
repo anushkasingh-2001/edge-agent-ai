@@ -3,55 +3,72 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Bot, Eye, AlertTriangle, CheckCircle2, Wrench, FileCode } from "lucide-react"
+import { Bot, Eye, AlertTriangle, Wrench, FileCode } from "lucide-react"
+import type { OverviewAgentCard } from "@/lib/scan-report"
 
-const agents = [
+const defaultAgents: OverviewAgentCard[] = [
   {
     name: "SupportAgent",
     framework: "LangChain",
     tools: 8,
     prompts: 3,
-    riskScore: 72,
+    risk: 72,
     status: "warning",
-    description: "Handles customer support inquiries and ticket creation",
   },
   {
     name: "ChatAgent",
     framework: "LangGraph",
     tools: 5,
     prompts: 2,
-    riskScore: 45,
+    risk: 45,
     status: "ok",
-    description: "General purpose chat assistant for user queries",
   },
   {
     name: "DataAgent",
     framework: "LlamaIndex",
     tools: 12,
     prompts: 4,
-    riskScore: 88,
+    risk: 88,
     status: "critical",
-    description: "Processes and analyzes data from various sources",
   },
   {
     name: "APIAgent",
     framework: "CrewAI",
     tools: 6,
     prompts: 2,
-    riskScore: 55,
+    risk: 55,
     status: "warning",
-    description: "Handles external API integrations and data fetching",
   },
   {
     name: "AdminAgent",
     framework: "AutoGen",
     tools: 10,
     prompts: 5,
-    riskScore: 95,
+    risk: 95,
     status: "critical",
-    description: "Administrative tasks and system configuration",
   },
 ]
+
+function riskToStatus(risk: number): string {
+  if (risk >= 86) return "critical"
+  if (risk >= 61) return "warning"
+  return "ok"
+}
+
+function toDisplayAgents(cards: OverviewAgentCard[]) {
+  return cards.map((a) => ({
+    name: a.name,
+    framework: a.framework,
+    tools: a.tools,
+    prompts: a.prompts,
+    riskScore: a.risk,
+    status: a.status === "scanned" ? riskToStatus(a.risk) : a.status,
+    description:
+      a.status === "scanned"
+        ? `Detected framework surface with evidence across ${a.tools} path(s).`
+        : "Agent module",
+  }))
+}
 
 function getRiskColor(score: number) {
   if (score >= 86) return "text-red-500"
@@ -65,7 +82,9 @@ function getStatusBadge(status: string) {
     case "critical":
       return <Badge variant="destructive">Critical Risk</Badge>
     case "warning":
-      return <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">Medium Risk</Badge>
+      return (
+        <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">Medium Risk</Badge>
+      )
     case "ok":
       return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Low Risk</Badge>
     default:
@@ -73,16 +92,21 @@ function getStatusBadge(status: string) {
   }
 }
 
-export function DetectedAgents() {
+interface DetectedAgentsProps {
+  agents?: OverviewAgentCard[]
+}
+
+export function DetectedAgents({ agents: agentsProp }: DetectedAgentsProps) {
+  const source = agentsProp && agentsProp.length > 0 ? agentsProp : defaultAgents
+  const agents = toDisplayAgents(source)
+
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-semibold">Detected Agents</h1>
         <p className="text-muted-foreground">AI agents discovered in your project</p>
       </div>
 
-      {/* Summary */}
       <div className="grid grid-cols-4 gap-4">
         <Card className="bg-card border-border">
           <CardContent className="pt-4">
@@ -100,7 +124,7 @@ export function DetectedAgents() {
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-red-500" />
               <div>
-                <div className="text-2xl font-bold">{agents.filter(a => a.status === "critical").length}</div>
+                <div className="text-2xl font-bold">{agents.filter((a) => a.status === "critical").length}</div>
                 <div className="text-sm text-muted-foreground">Critical Risk</div>
               </div>
             </div>
@@ -130,7 +154,6 @@ export function DetectedAgents() {
         </Card>
       </div>
 
-      {/* Agent Cards */}
       <div className="grid gap-4">
         {agents.map((agent) => (
           <Card key={agent.name} className="bg-card border-border">

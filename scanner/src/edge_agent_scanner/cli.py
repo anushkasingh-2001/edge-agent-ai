@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from edge_agent_scanner.report import ALL_RULE_IDS
 from edge_agent_scanner.engine import run_scan
 
 
@@ -21,6 +22,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("report.json"),
         help="Output JSON path (default: ./report.json)",
     )
+    scan_p.add_argument(
+        "--check",
+        action="append",
+        dest="checks",
+        metavar="RULE_ID",
+        help="Limit report to these rule_id values (repeatable). Default: all rules.",
+    )
 
     args = parser.parse_args(argv)
     if args.command != "scan":
@@ -31,7 +39,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: not a directory: {repo}", file=sys.stderr)
         return 2
 
-    report = run_scan(repo)
+    enabled: frozenset[str] | None = None
+    if args.checks:
+        unknown = [c for c in args.checks if c not in ALL_RULE_IDS]
+        if unknown:
+            print(f"Warning: unknown rule id(s) ignored: {unknown}", file=sys.stderr)
+        enabled = frozenset(c for c in args.checks if c in ALL_RULE_IDS)
+        if not enabled:
+            print("Error: no valid --check values", file=sys.stderr)
+            return 3
+
+    report = run_scan(repo, enabled_rule_ids=enabled)
     out_path: Path = args.out
     out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(f"Wrote {out_path.resolve()} ({report.summary.total} findings, risk_score={report.risk_score})")

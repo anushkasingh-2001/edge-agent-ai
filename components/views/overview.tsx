@@ -4,42 +4,27 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { 
-  AlertTriangle, 
-  Shield, 
-  Clock, 
-  CheckCircle2, 
-  XCircle, 
+import type { OverviewAgentCard } from "@/lib/scan-report"
+import {
+  AlertTriangle,
+  Shield,
+  Clock,
+  CheckCircle2,
+  XCircle,
   Play,
   TrendingUp,
-  TrendingDown,
   GitBranch,
   FileCode,
   Bot,
   Download,
   Upload,
-  ArrowUpFromLine
+  ArrowUpFromLine,
 } from "lucide-react"
 
 const recentScans = [
   { id: 1, branch: "main", status: "completed", issues: 12, time: "2 hours ago" },
   { id: 2, branch: "feature/auth-update", status: "completed", issues: 3, time: "Yesterday" },
   { id: 3, branch: "fix/prompt-injection", status: "completed", issues: 0, time: "3 days ago" },
-]
-
-const topFindings = [
-  { title: "Prompt injection vulnerability in chat handler", severity: "critical", file: "agents/chat.py", line: 142 },
-  { title: "Missing human approval for tool call", severity: "high", file: "tools/refund.py", line: 89 },
-  { title: "Hardcoded API key detected", severity: "high", file: "config/settings.py", line: 23 },
-  { title: "Vague system prompt detected", severity: "medium", file: "prompts/system.txt", line: 1 },
-]
-
-const detectedAgents = [
-  { name: "SupportAgent", framework: "LangGraph", tools: 8, prompts: 3, risk: 72, status: "scanned" },
-  { name: "ChatAgent", framework: "LangChain", tools: 5, prompts: 4, risk: 45, status: "scanned" },
-  { name: "DataAgent", framework: "LlamaIndex", tools: 12, prompts: 2, risk: 38, status: "scanned" },
-  { name: "APIAgent", framework: "AutoGen", tools: 6, prompts: 2, risk: 56, status: "scanned" },
-  { name: "AdminAgent", framework: "LangGraph", tools: 15, prompts: 5, risk: 89, status: "scanned" },
 ]
 
 function getRiskLevel(score: number): { label: string; color: string; badgeColor: string } {
@@ -53,10 +38,26 @@ interface OverviewProps {
   onNavigate: (view: string) => void
   riskScore: number
   currentBranch: string
+  projectLabel?: string
+  scanSummary: { critical: number; high: number; medium: number; low: number; total: number } | null
+  topFindings: { title: string; severity: string; file: string; line: number }[]
+  detectedAgents: OverviewAgentCard[]
+  lastScanLabel: string
 }
 
-export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps) {
+export function Overview({
+  onNavigate,
+  riskScore,
+  currentBranch,
+  projectLabel = "customer-service-agent",
+  scanSummary,
+  topFindings,
+  detectedAgents,
+  lastScanLabel,
+}: OverviewProps) {
   const riskInfo = getRiskLevel(riskScore)
+  const criticalIssues = scanSummary?.critical ?? 0
+  const sev = scanSummary ?? { critical: 0, high: 0, medium: 0, low: 0, total: 0 }
 
   return (
     <div className="p-6 space-y-6">
@@ -64,7 +65,7 @@ export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Overview</h1>
-          <p className="text-muted-foreground">Security status for customer-service-agent</p>
+          <p className="text-muted-foreground">Security status for {projectLabel}</p>
         </div>
         <Button onClick={() => onNavigate("scan-center")}>
           <Play className="h-4 w-4 mr-2" />
@@ -87,10 +88,12 @@ export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps
               <span className="text-muted-foreground">/100</span>
               <span className={`text-sm ${riskInfo.color}`}>{riskInfo.label}</span>
             </div>
-            <div className="flex items-center gap-1 mt-1 text-sm text-orange-400">
-              <TrendingUp className="h-3 w-3" />
-              <span>+5 from last scan</span>
-            </div>
+            {scanSummary && scanSummary.total > 0 ? (
+              <div className="flex items-center gap-1 mt-1 text-sm text-muted-foreground">
+                <TrendingUp className="h-3 w-3" />
+                <span>{scanSummary.total} open findings</span>
+              </div>
+            ) : null}
             <p className="text-xs text-muted-foreground mt-2">
               0-30 Low | 31-60 Medium | 61-85 High | 86-100 Critical
             </p>
@@ -106,11 +109,7 @@ export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps
           </CardHeader>
           <CardContent>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-red-400">3</span>
-            </div>
-            <div className="flex items-center gap-1 mt-1 text-sm text-green-400">
-              <TrendingDown className="h-3 w-3" />
-              <span>-2 from last scan</span>
+              <span className="text-3xl font-bold text-red-400">{criticalIssues}</span>
             </div>
           </CardContent>
         </Card>
@@ -140,7 +139,7 @@ export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps
           </CardHeader>
           <CardContent>
             <div className="flex items-baseline gap-2">
-              <span className="text-xl font-semibold">2 hours ago</span>
+              <span className="text-xl font-semibold">{lastScanLabel}</span>
             </div>
             <div className="text-sm text-muted-foreground mt-1">Branch: {currentBranch}</div>
           </CardContent>
@@ -197,28 +196,28 @@ export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps
             <div className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full bg-red-500" />
               <div>
-                <div className="text-2xl font-bold">3</div>
+                <div className="text-2xl font-bold">{sev.critical}</div>
                 <div className="text-sm text-muted-foreground">Critical</div>
               </div>
             </div>
             <div className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full bg-orange-500" />
               <div>
-                <div className="text-2xl font-bold">5</div>
+                <div className="text-2xl font-bold">{sev.high}</div>
                 <div className="text-sm text-muted-foreground">High</div>
               </div>
             </div>
             <div className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full bg-yellow-500" />
               <div>
-                <div className="text-2xl font-bold">3</div>
+                <div className="text-2xl font-bold">{sev.medium}</div>
                 <div className="text-sm text-muted-foreground">Medium</div>
               </div>
             </div>
             <div className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full bg-blue-500" />
               <div>
-                <div className="text-2xl font-bold">1</div>
+                <div className="text-2xl font-bold">{sev.low}</div>
                 <div className="text-sm text-muted-foreground">Low</div>
               </div>
             </div>
@@ -284,7 +283,10 @@ export function Overview({ onNavigate, riskScore, currentBranch }: OverviewProps
           <CardContent>
             <div className="space-y-3">
               {topFindings.map((finding, i) => (
-                <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer">
+                <div
+                  key={`${finding.file}:${finding.line}:${i}`}
+                  className="flex items-start gap-3 p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer"
+                >
                   <div className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
                     finding.severity === "critical" ? "bg-red-500" :
                     finding.severity === "high" ? "bg-orange-500" :

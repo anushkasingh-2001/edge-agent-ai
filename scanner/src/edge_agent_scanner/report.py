@@ -23,6 +23,20 @@ RuleId = Literal[
     "user-input-dangerous-code",
 ]
 
+ALL_RULE_IDS: frozenset[str] = frozenset(
+    [
+        "dangerous-tools",
+        "human-approval",
+        "prompt-injection",
+        "vague-prompts",
+        "secrets",
+        "mcp-security",
+        "openapi-schema",
+        "dependency-risks",
+        "user-input-dangerous-code",
+    ]
+)
+
 
 class FrameworkHit(BaseModel):
     name: str
@@ -39,7 +53,7 @@ class Summary(BaseModel):
 
 class Finding(BaseModel):
     id: str
-    rule_id: str
+    rule_id: RuleId
     severity: Severity
     category: str
     title: str

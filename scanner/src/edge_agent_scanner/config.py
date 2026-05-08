@@ -28,11 +28,15 @@ TEXT_EXTENSIONS: frozenset[str] = frozenset(
         ".yml",
         ".md",
         ".txt",
+        ".toml",  # pyproject.toml / tool configs for framework detection
     }
 )
 
 # Default max file size for text scan (bytes)
 MAX_FILE_BYTES: int = 512 * 1024
+
+# Max findings retained per rule_id (after dedupe) to keep reports bounded
+MAX_FINDINGS_PER_RULE: int = 150
 
 # Lines before/after a hit for approval-gate context
 APPROVAL_CONTEXT_LINES: int = 15

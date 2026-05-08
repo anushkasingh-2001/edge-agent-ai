@@ -6,7 +6,16 @@ import re
 import uuid
 from pathlib import Path
 
-from edge_agent_scanner.report import Finding, FrameworkHit, ScanReport, Summary, SCHEMA_VERSION, utc_now_iso
+from edge_agent_scanner import config as scanner_config
+from edge_agent_scanner.report import (
+    ALL_RULE_IDS,
+    Finding,
+    FrameworkHit,
+    ScanReport,
+    Summary,
+    SCHEMA_VERSION,
+    utc_now_iso,
+)
 from edge_agent_scanner.rules import (
     detect_frameworks,
     run_approval_gate_rule,
@@ -17,6 +26,26 @@ from edge_agent_scanner.rules import (
     run_vague_prompts_rule,
 )
 from edge_agent_scanner.walker import iter_scanned_files
+
+
+def _cap_findings_per_rule(findings: list[Finding], max_per_rule: int | None = None) -> list[Finding]:
+    limit = max_per_rule if max_per_rule is not None else scanner_config.MAX_FINDINGS_PER_RULE
+    counts: dict[str, int] = {}
+    out: list[Finding] = []
+    for f in findings:
+        rid = f.rule_id
+        n = counts.get(rid, 0)
+        if n >= limit:
+            continue
+        counts[rid] = n + 1
+        out.append(f)
+    return out
+
+
+def _filter_by_rules(findings: list[Finding], enabled: frozenset[str] | None) -> list[Finding]:
+    if enabled is None:
+        return findings
+    return [f for f in findings if f.rule_id in enabled]
 
 
 def _dedupe_findings(findings: list[Finding]) -> list[Finding]:
@@ -121,14 +150,17 @@ def _run_user_input_dangerous(files: list) -> list[Finding]:
     return findings
 
 
-def run_scan(repo_path: Path) -> ScanReport:
+def run_scan(
+    repo_path: Path,
+    enabled_rule_ids: frozenset[str] | None = None,
+) -> ScanReport:
     root = repo_path.resolve()
     files = iter_scanned_files(root)
 
     frameworks: list[FrameworkHit] = detect_frameworks(files)
 
     findings: list[Finding] = []
-    # Deterministic order
+    # Deterministic order — always run all rules; filter by enabled_rule_ids after
     findings.extend(run_dangerous_tools_rule(files))
     findings.extend(run_approval_gate_rule(files))
     findings.extend(run_secrets_rule(files))
@@ -139,6 +171,8 @@ def run_scan(repo_path: Path) -> ScanReport:
     findings.extend(_run_user_input_dangerous(files))
 
     findings = _dedupe_findings(findings)
+    findings = _filter_by_rules(findings, enabled_rule_ids)
+    findings = _cap_findings_per_rule(findings)
     summary = _compute_summary(findings)
     risk = _compute_risk_score(findings)
 
