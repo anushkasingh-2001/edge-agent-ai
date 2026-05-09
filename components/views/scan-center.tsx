@@ -36,28 +36,27 @@ import {
   formatScanTime,
   type ScanHistoryItem,
 } from "@/lib/scan-history"
-import { deriveRulesFromSuite, type TestSuite } from "@/lib/test-cases"
+import {
+  deriveRulesFromSuite,
+  extractRelatedFindingIdsFromSuite,
+  extractTargetFilesFromSuite,
+  type TestSuite,
+} from "@/lib/test-cases"
+import { SECURITY_CHECKS } from "@/lib/security-checks"
 
-const securityChecks = [
-  { id: "dangerous-tools", label: "Dangerous tools", description: "Identify risky tool invocations" },
-  { id: "human-approval", label: "Missing human approval", description: "Flag actions requiring human review" },
-  { id: "prompt-injection", label: "Prompt injection", description: "Detect injection vulnerabilities" },
-  { id: "vague-prompts", label: "Vague prompts", description: "Find prompts that lack specificity" },
-  { id: "mcp-security", label: "MCP security", description: "Audit Model Context Protocol security" },
-  { id: "openapi-schema", label: "OpenAPI/schema quality", description: "Validate API schemas and specs" },
-  { id: "auth-checks", label: "Auth checks", description: "Verify authentication is properly enforced" },
-  { id: "secrets", label: "Hardcoded secrets", description: "Find exposed credentials and keys" },
-  { id: "dependency-risks", label: "Dependency risks", description: "Check for vulnerable dependencies" },
-  { id: "user-input-dangerous-code", label: "User input to dangerous code", description: "Trace unsafe data flows" },
-  { id: "accuracy", label: "Accuracy regression", description: "Detect changes that may affect output quality" },
-  { id: "performance", label: "Performance/runtime", description: "Monitor latency and resource usage" },
-  { id: "tool-selection", label: "Tool selection correctness", description: "Verify correct tool routing" },
-  { id: "smoke-tests", label: "Live smoke tests", description: "Run live validation tests" },
-]
+const securityChecks = SECURITY_CHECKS
 
 interface ScanCenterProps {
   selectedAgents?: string[]
-  onRunScan: (selectedCheckIds: string[]) => Promise<void>
+  /** Triggers a scan. `narrow` lets the parent post-filter the resulting
+   * report so the UI only shows findings the active user-defined suite was
+   * generated from. Prefer `findingIds` when available (most precise — one
+   * test ⇒ one finding); fall back to `files` for older suites that don't
+   * carry finding ids. Without this the suite was decorative. */
+  onRunScan: (
+    selectedCheckIds: string[],
+    narrow?: { findingIds?: string[]; files?: string[] }
+  ) => Promise<{ beforeCount: number; afterCount: number; narrowed: boolean }>
   isScanning?: boolean
   scanError?: string | null
   lastIssueCount?: number | null
@@ -74,6 +73,11 @@ interface ScanCenterProps {
   scanHistory?: ScanHistoryItem[]
   /** Load a historical scan back into the current UI state. */
   onLoadScan?: (item: ScanHistoryItem) => void
+  /** Lifted state: the user-defined suite that's queued for the next scan.
+   * Lives in the parent so other views (Overview) can read it and stay in
+   * sync. */
+  activeSuite?: TestSuite | null
+  onActiveSuiteChange?: (suite: TestSuite | null) => void
 }
 
 export function ScanCenter({
@@ -90,6 +94,8 @@ export function ScanCenter({
   branch = null,
   scanHistory = [],
   onLoadScan,
+  activeSuite: activeSuiteProp,
+  onActiveSuiteChange,
 }: ScanCenterProps) {
   const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
@@ -103,10 +109,17 @@ export function ScanCenter({
   >("saved")
   const [generateOpen, setGenerateOpen] = useState(false)
   const [lastSuiteToast, setLastSuiteToast] = useState<string | null>(null)
-  // The user-defined suite chosen for the next scan. Lights up the green
-  // confirmation pill in the "All checks" row so it's obvious that picking a
-  // suite from the dropdown actually had an effect.
-  const [activeSuite, setActiveSuite] = useState<TestSuite | null>(null)
+  // The user-defined suite chosen for the next scan. Lifted to the parent
+  // so the Overview "User-Defined Tests" tile shows whatever is currently
+  // queued instead of summing across every saved suite. Internal local
+  // fallback exists so this component is still usable without the props.
+  const [activeSuiteLocal, setActiveSuiteLocal] = useState<TestSuite | null>(null)
+  const activeSuite =
+    activeSuiteProp !== undefined ? activeSuiteProp : activeSuiteLocal
+  const setActiveSuite = (s: TestSuite | null) => {
+    if (onActiveSuiteChange) onActiveSuiteChange(s)
+    else setActiveSuiteLocal(s)
+  }
 
   const openImport = (tab: "saved" | "file" | "paste") => {
     setImportDefaultTab(tab)
@@ -147,6 +160,24 @@ export function ScanCenter({
     () => deriveRulesFromSuite(activeSuite),
     [activeSuite]
   )
+  // What the suite actually narrows to. Prefer the suite-level `scope`
+  // captured at generation time (works for blank suites + agent suites
+  // where individual tests don't carry locators); fall back to extracting
+  // from each test's locator/notes for older suites that pre-date scope.
+  const { suiteFiles, suiteFindingIds } = useMemo(() => {
+    if (!activeSuite) return { suiteFiles: [], suiteFindingIds: [] }
+    const scope = activeSuite.scope
+    if (scope && (scope.files?.length || scope.findingIds?.length)) {
+      return {
+        suiteFiles: scope.files ?? [],
+        suiteFindingIds: scope.findingIds ?? [],
+      }
+    }
+    return {
+      suiteFiles: extractTargetFilesFromSuite(activeSuite),
+      suiteFindingIds: extractRelatedFindingIdsFromSuite(activeSuite),
+    }
+  }, [activeSuite])
 
   /**
    * Three scan flavors. Which one runs depends on whether a user-defined
@@ -183,15 +214,34 @@ export function ScanCenter({
     } else {
       ids = mode === "full" ? [] : selectedChecks
     }
+    // Pass both narrowing dimensions up to the parent. The parent prefers
+    // findingIds (precise per-finding match) and falls back to files when
+    // findingIds don't match anything in the new scan.
+    const narrow =
+      activeSuite &&
+      (suiteFindingIds.length > 0 || suiteFiles.length > 0)
+        ? { findingIds: suiteFindingIds, files: suiteFiles }
+        : undefined
     setScanProgress(10)
     try {
-      await onRunScan(ids)
+      const result = await onRunScan(ids, narrow)
       setScanProgress(100)
       if (activeSuite) {
-        setLastSuiteToast(
-          `Scoped scan to ${ids.length} rule${ids.length === 1 ? "" : "s"} implied by suite "${activeSuite.name}" (${activeSuite.tests.length} test${activeSuite.tests.length === 1 ? "" : "s"}). Runtime execution of the suite's user-defined tests is not wired yet — the suite is recorded with this run.`
-        )
-        setTimeout(() => setLastSuiteToast(null), 8000)
+        const { beforeCount, afterCount, narrowed } = result
+        if (!narrowed) {
+          setLastSuiteToast(
+            `Scan completed (${afterCount} findings). Suite "${activeSuite.name}" has no narrowable scope — regenerate via Define checks → AI from a finding/agent to enable narrowing.`
+          )
+        } else if (beforeCount === afterCount) {
+          setLastSuiteToast(
+            `Scan completed but suite narrowing did not reduce the count (${afterCount} findings). Either every finding lives in the suite's ${suiteFiles.length} target file${suiteFiles.length === 1 ? "" : "s"}, or finding ids changed since the suite was generated. Try Define checks → AI from a single finding for a tighter scope.`
+          )
+        } else {
+          setLastSuiteToast(
+            `Suite narrowing: ${beforeCount} → ${afterCount} findings (-${beforeCount - afterCount}). Scan ran ${ids.length === 0 ? "all backend rules" : `${ids.length} rule${ids.length === 1 ? "" : "s"}`}, then ${suiteFindingIds.length > 0 ? `kept findings matching ${suiteFindingIds.length} ids the suite covers` : `kept findings in ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"} the suite targets`}.`
+          )
+        }
+        setTimeout(() => setLastSuiteToast(null), 12000)
       }
     } finally {
       setTimeout(() => setScanProgress(0), 400)
@@ -414,15 +464,17 @@ export function ScanCenter({
                     className="w-full"
                     onClick={() => void startScan("full")}
                     title={
-                      activeSuite && suiteRules.length > 0
-                        ? `Run only the ${suiteRules.length} rule${suiteRules.length === 1 ? "" : "s"} implied by "${activeSuite.name}": ${suiteRules.join(", ")}`
+                      activeSuite
+                        ? suiteFindingIds.length > 0
+                          ? `Run a scan and narrow to the ${suiteFindingIds.length} finding${suiteFindingIds.length === 1 ? "" : "s"} this suite was generated from`
+                          : suiteFiles.length > 0
+                            ? `Run a scan and narrow to the ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"} this suite targets`
+                            : `Run a scan; suite has no narrowable targets — regenerate via Define checks → AI`
                         : "Run every available scanner rule"
                     }
                   >
                     <Play className="h-4 w-4 mr-2" />
-                    {activeSuite && suiteRules.length > 0
-                      ? "Run Suite Scan"
-                      : "Run Full Scan"}
+                    {activeSuite ? "Run Suite Scan" : "Run Full Scan"}
                   </Button>
                   <Button
                     variant="outline"
@@ -454,8 +506,12 @@ export function ScanCenter({
                 fullWidth
               />
               <p className="text-xs text-muted-foreground text-center">
-                {activeSuite && suiteRules.length > 0
-                  ? `Suite "${activeSuite.name}" narrows the scan to ${suiteRules.length} rule${suiteRules.length === 1 ? "" : "s"}`
+                {activeSuite
+                  ? suiteFindingIds.length > 0
+                    ? `Suite "${activeSuite.name}" narrows to ${suiteFindingIds.length} finding${suiteFindingIds.length === 1 ? "" : "s"}`
+                    : suiteFiles.length > 0
+                      ? `Suite "${activeSuite.name}" narrows to ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"}`
+                      : `Suite "${activeSuite.name}" attached — no narrowable targets`
                   : `${selectedChecks.length} check${selectedChecks.length === 1 ? "" : "s"} selected`}
               </p>
             </CardContent>

@@ -37,6 +37,7 @@ import {
   scanItemFromReport,
   type ScanHistoryItem,
 } from "@/lib/scan-history"
+import type { TestSuite } from "@/lib/test-cases"
 
 type GitBranchesResponse = {
   isRepo: boolean
@@ -44,6 +45,65 @@ type GitBranchesResponse = {
   remoteOnly: string[]
   currentBranch: string | null
   expanded: boolean
+}
+
+/**
+ * Post-filter a fresh scan report so the UI only sees the findings the
+ * active user-defined suite was generated from. Two narrowing dimensions:
+ *
+ *  - `findingIds` (preferred) — exact match on `f.id`. One test ⇒ one
+ *    finding, so a 12-test suite collapses to ~12 findings.
+ *  - `files` (fallback) — match on `f.file`. Used when the suite was
+ *    generated before we started stamping `related_finding`.
+ *
+ * If both are empty the report passes through unchanged. We also recompute
+ * `summary` and `risk_score` so badges/donut/history reflect the narrowed
+ * set instead of showing 100/100 next to a handful of findings.
+ */
+function narrowReport(
+  report: ScanReport,
+  narrow: { findingIds?: string[]; files?: string[] }
+): ScanReport {
+  const findingIds = narrow.findingIds ?? []
+  const files = narrow.files ?? []
+  if (findingIds.length === 0 && files.length === 0) return report
+
+  let filtered = report.findings
+  if (findingIds.length > 0) {
+    const allow = new Set(findingIds)
+    const byId = report.findings.filter((f) => allow.has(f.id))
+    // If any IDs matched, prefer the precise filter; otherwise the suite's
+    // IDs likely came from a *previous* scan whose finding IDs no longer
+    // exist in this run, and we fall back to file-level narrowing.
+    if (byId.length > 0) {
+      filtered = byId
+    } else if (files.length > 0) {
+      const allowFiles = new Set(files)
+      filtered = report.findings.filter((f) => allowFiles.has(f.file))
+    } else {
+      filtered = []
+    }
+  } else if (files.length > 0) {
+    const allowFiles = new Set(files)
+    filtered = report.findings.filter((f) => allowFiles.has(f.file))
+  }
+
+  const summary = {
+    critical: filtered.filter((f) => f.severity === "critical").length,
+    high: filtered.filter((f) => f.severity === "high").length,
+    medium: filtered.filter((f) => f.severity === "medium").length,
+    low: filtered.filter((f) => f.severity === "low").length,
+    total: filtered.length,
+  }
+  // Same weighting the Python scanner uses (critical 25 / high 12 /
+  // medium 6 / low 2, capped at 100).
+  const raw =
+    summary.critical * 25 +
+    summary.high * 12 +
+    summary.medium * 6 +
+    summary.low * 2
+  const risk_score = Math.min(100, raw)
+  return { ...report, findings: filtered, summary, risk_score }
 }
 
 export default function Home() {
@@ -60,6 +120,10 @@ export default function Home() {
   const [gitInfo, setGitInfo] = useState<GitBranchesResponse | null>(null)
   const [gitLoading, setGitLoading] = useState(false)
   const [scanHistory, setScanHistory] = useState<ScanHistoryItem[]>([])
+  // The user-defined suite that's queued for the next scan. Lifted up here
+  // so views beyond Scan Center (Overview) can show the *currently active*
+  // user-defined tests instead of summing across every saved suite.
+  const [activeSuite, setActiveSuite] = useState<TestSuite | null>(null)
 
   useEffect(() => {
     setRecentProjects(loadRecentProjects())
@@ -154,6 +218,16 @@ export default function Home() {
   )
   const topFindings = useMemo(() => topFindingsFromReport(scanReport), [scanReport])
   const scanSummary = scanReport?.summary ?? null
+  // Distinct scanner rule_ids that produced at least one finding in the
+  // latest scan. The Overview "Tests" tile uses this to compute how many
+  // built-in checks "passed" (no findings) vs "failed" each scan, so the
+  // tile updates with every run instead of staying static.
+  const failedRuleIds = useMemo<string[]>(() => {
+    if (!scanReport) return []
+    const ids = new Set<string>()
+    for (const f of scanReport.findings) ids.add(f.rule_id)
+    return Array.from(ids)
+  }, [scanReport])
   const lastScanLabel = scanReport
     ? new Date(scanReport.generated_at).toLocaleString()
     : "No scan yet"
@@ -171,13 +245,22 @@ export default function Home() {
   }, [])
 
   const executeScan = useCallback(
-    async (selectedCheckIds: string[], projectOverride?: Project) => {
+    async (
+      selectedCheckIds: string[],
+      projectOverride?: Project,
+      /** When set, post-filter the scan report so the UI only sees findings
+       * the active user-defined suite was generated from. Two dimensions:
+       *  - `findingIds` (preferred): exact-match on the finding `id`.
+       *  - `files` (fallback): match on `file` for older suites that
+       *    don't carry finding ids. */
+      narrow?: { findingIds?: string[]; files?: string[] }
+    ): Promise<{ beforeCount: number; afterCount: number; narrowed: boolean }> => {
       const target = projectOverride ?? selectedProject
       if (!target) {
         setScanError(
           "Open a local project or clone from GitHub before running a scan."
         )
-        return
+        return { beforeCount: 0, afterCount: 0, narrowed: false }
       }
       setScanning(true)
       setScanError(null)
@@ -196,7 +279,24 @@ export default function Home() {
           const msg = typeof raw.error === "string" ? raw.error : "Scan failed"
           throw new Error(msg)
         }
-        const report = parseScanReport(raw)
+        let report = parseScanReport(raw)
+        const beforeCount = report.findings.length
+        if (narrow) {
+          report = narrowReport(report, narrow)
+        }
+        const afterCount = report.findings.length
+        // Console breadcrumb so the dev can confirm narrowing actually ran
+        // without sprinkling logs in normal scan flow.
+        if (narrow) {
+          console.info(
+            `[edge-agent-ai] Suite narrowing: ${beforeCount} → ${afterCount} findings`,
+            {
+              findingIds: narrow.findingIds?.length ?? 0,
+              files: narrow.files?.length ?? 0,
+              fileSample: narrow.files?.slice(0, 5),
+            }
+          )
+        }
         setScanReport(report)
         setSelectedAgents(["all"])
         // Persist to history so the Scan Center "Recent Scans" list grows
@@ -206,8 +306,14 @@ export default function Home() {
         const item = scanItemFromReport(report, target, branchAtScan)
         const next = appendScanToHistory(item)
         setScanHistory(next)
+        return {
+          beforeCount,
+          afterCount,
+          narrowed: Boolean(narrow),
+        }
       } catch (e) {
         setScanError(e instanceof Error ? e.message : "Scan failed")
+        return { beforeCount: 0, afterCount: 0, narrowed: false }
       } finally {
         setScanning(false)
       }
@@ -243,6 +349,9 @@ export default function Home() {
       setScanReport(null)
       setScanError(null)
       setCurrentView("overview")
+      // A suite picked for project A should not stay active when the user
+      // jumps to project B — its file/finding targets won't make sense.
+      setActiveSuite(null)
       if (persisted.branch && persisted.branch.trim()) {
         setCurrentBranch(persisted.branch.trim())
       }
@@ -257,6 +366,7 @@ export default function Home() {
       setScanReport(null)
       setScanError(null)
       setCurrentView("overview")
+      setActiveSuite(null)
       if (persisted.branch && persisted.branch.trim()) {
         setCurrentBranch(persisted.branch.trim())
       }
@@ -297,19 +407,24 @@ export default function Home() {
             riskScore={riskScore}
             currentBranch={currentBranch}
             projectLabel={projectLabel}
+            projectId={selectedProject?.id}
             scanSummary={scanSummary}
             topFindings={topFindings}
             detectedAgents={overviewAgents}
             lastScanLabel={lastScanLabel}
             hasProject={hasProject}
             hasScan={hasScan}
+            activeSuite={activeSuite}
+            failedRuleIds={failedRuleIds}
           />
         )
       case "scan-center":
         return (
           <ScanCenter
             selectedAgents={selectedAgents}
-            onRunScan={(ids) => executeScan(ids)}
+            onRunScan={async (ids, narrow) =>
+              executeScan(ids, undefined, narrow)
+            }
             isScanning={scanning}
             scanError={scanError}
             lastIssueCount={scanReport?.summary.total ?? null}
@@ -323,6 +438,8 @@ export default function Home() {
             branch={currentBranch}
             scanHistory={scanHistoryForProject(scanHistory, selectedProject?.id)}
             onLoadScan={handleLoadScan}
+            activeSuite={activeSuite}
+            onActiveSuiteChange={setActiveSuite}
           />
         )
       case "detected-agents":

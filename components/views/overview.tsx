@@ -1,10 +1,13 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
 import type { OverviewAgentCard } from "@/lib/scan-report"
+import { loadSavedSuites, type TestSuite } from "@/lib/test-cases"
+import { SECURITY_CHECKS } from "@/lib/security-checks"
+import { SCANNER_RULE_IDS } from "@/lib/scan-report"
 import {
   AlertTriangle,
   Shield,
@@ -19,6 +22,7 @@ import {
   Download,
   Upload,
   ArrowUpFromLine,
+  TestTube,
 } from "lucide-react"
 
 const recentScans: { id: number; branch: string; status: string; issues: number; time: string }[] = []
@@ -35,12 +39,22 @@ interface OverviewProps {
   riskScore: number
   currentBranch: string
   projectLabel?: string
+  /** Used to scope user-defined test suites to the active project. */
+  projectId?: string
   scanSummary: { critical: number; high: number; medium: number; low: number; total: number } | null
   topFindings: { title: string; severity: string; file: string; line: number }[]
   detectedAgents: OverviewAgentCard[]
   lastScanLabel: string
   hasProject?: boolean
   hasScan?: boolean
+  /** The user-defined suite queued for the next scan (lifted from Scan
+   * Center). Drives the "User-Defined Tests" tile so it reflects what's
+   * actually active rather than summing every saved suite. */
+  activeSuite?: TestSuite | null
+  /** Distinct scanner rule_ids that produced at least one finding in the
+   * latest scan. Used to compute "X / Y tests passed" in the Tests tile so
+   * the count refreshes with every scan. */
+  failedRuleIds?: string[]
 }
 
 export function Overview({
@@ -48,16 +62,50 @@ export function Overview({
   riskScore,
   currentBranch,
   projectLabel = "No project opened",
+  projectId,
   scanSummary,
   topFindings,
   detectedAgents,
   lastScanLabel,
   hasProject = false,
   hasScan = false,
+  activeSuite = null,
+  failedRuleIds = [],
 }: OverviewProps) {
   const riskInfo = getRiskLevel(riskScore)
   const criticalIssues = scanSummary?.critical ?? 0
   const sev = scanSummary ?? { critical: 0, high: 0, medium: 0, low: 0, total: 0 }
+
+  // Pull user-defined suites from localStorage for the active project. We
+  // re-read on every mount + when the project changes so navigating into
+  // Overview after defining/saving a suite reflects the latest count.
+  // Replaces the previous hard-coded "42/48 Tests Passing" card — there's
+  // no test runner wired yet, so faking a pass rate misled users.
+  const [userSuites, setUserSuites] = useState<TestSuite[]>([])
+  useEffect(() => {
+    const all = loadSavedSuites()
+    setUserSuites(
+      projectId ? all.filter((s) => !s.projectId || s.projectId === projectId) : all
+    )
+    // activeSuite changing usually means the user just saved/picked a new
+    // suite — re-read so the count stays in sync.
+  }, [projectId, hasScan, activeSuite])
+  const userTestCount = userSuites.reduce((sum, s) => sum + s.tests.length, 0)
+
+  // Each built-in security check that has scanner backing is a "test that
+  // ran" in the latest scan. SCANNER_RULE_IDS lists the ones the Python
+  // engine actually executes today — the remaining UI checks are stubs and
+  // shouldn't be counted in pass/fail until they're wired up. User-defined
+  // tests don't have a runner yet either, so they're excluded from
+  // pass/fail and surfaced separately in the subtitle.
+  const ranTestCount = SCANNER_RULE_IDS.length
+  const failedSet = new Set(failedRuleIds)
+  const failedRanCount = SCANNER_RULE_IDS.reduce(
+    (n, id) => n + (failedSet.has(id) ? 1 : 0),
+    0
+  )
+  const passedRanCount = ranTestCount - failedRanCount
+  const stubbedCheckCount = SECURITY_CHECKS.length - SCANNER_RULE_IDS.length
 
   if (!hasProject) {
     return (
@@ -163,16 +211,39 @@ export function Overview({
         <Card className="bg-card border-border">
           <CardHeader className="pb-2">
             <CardDescription className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4" />
-              Tests Passing
+              <TestTube className="h-4 w-4" />
+              Tests
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {/* "X / Y" reads as "X passed out of Y that ran in this scan".
+             * Refreshes every scan because failedRuleIds is derived from
+             * the latest scanReport. We deliberately don't lump in
+             * stubbed checks or user-defined tests — those didn't run, so
+             * counting them as "passed" would be a lie. They're called out
+             * in the subtitle instead. */}
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-green-400">42</span>
-              <span className="text-muted-foreground">/48</span>
+              <span
+                className={`text-3xl font-bold ${
+                  failedRanCount === 0 ? "text-green-400" : "text-orange-400"
+                }`}
+              >
+                {passedRanCount}
+              </span>
+              <span className="text-muted-foreground">/ {ranTestCount}</span>
+              <span className="text-sm text-muted-foreground">passed</span>
             </div>
-            <Progress value={87.5} className="mt-2 h-1" />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {failedRanCount > 0
+                ? `${failedRanCount} failing · `
+                : ""}
+              {stubbedCheckCount > 0
+                ? `${stubbedCheckCount} stubbed`
+                : "all wired"}
+              {userTestCount > 0
+                ? ` · ${userTestCount} user-defined (no runner)`
+                : ""}
+            </p>
           </CardContent>
         </Card>
 

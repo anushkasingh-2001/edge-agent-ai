@@ -48,6 +48,7 @@ import {
   newSuiteId,
   saveSuite,
   type GeneratorSource,
+  type SuiteScope,
   type TestCase,
   type TestSuite,
   TEST_TYPES,
@@ -98,6 +99,10 @@ export function GenerateTestsDialog({
 
   // Output state -------------------------------------------------------
   const [generated, setGenerated] = useState<TestCase[]>([])
+  // Scope captured from the generator at generation time. Persisted with
+  // the saved suite so narrowing works even when individual tests don't
+  // carry locators (blank suite, agent smoke tests, etc.).
+  const [generatedScope, setGeneratedScope] = useState<SuiteScope | null>(null)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
@@ -108,6 +113,7 @@ export function GenerateTestsDialog({
     setStatusMsg(null)
     setErrorMsg(null)
     setGenerated([])
+    setGeneratedScope(null)
     setSuiteName("")
     setPrompt("")
     if (preselectedFinding) {
@@ -174,19 +180,20 @@ export function GenerateTestsDialog({
       setErrorMsg("Pick a source for generation.")
       return
     }
-    const tests = generateRuleBasedTests({
+    const result = generateRuleBasedTests({
       source,
       scanReport,
       prompt,
       maxTests: 12,
     })
-    if (tests.length === 0) {
+    if (result.tests.length === 0) {
       setErrorMsg(
         "No tests produced for this source. Try a different source or write a custom prompt."
       )
       return
     }
-    setGenerated(tests)
+    setGenerated(result.tests)
+    setGeneratedScope(result.scope)
     if (!suiteName.trim()) {
       setSuiteName(defaultSuiteName(source, scanReport))
     }
@@ -216,6 +223,9 @@ export function GenerateTestsDialog({
       updatedAt: now,
       source: "rule_generated",
       projectId,
+      // Persist the generation scope so "Run Suite Scan" can narrow the
+      // next scan even when individual tests don't carry locators.
+      scope: generatedScope ?? undefined,
       tests: generated,
     }
     saveSuite(suite)
