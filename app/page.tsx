@@ -448,6 +448,11 @@ export default function Home() {
             agents={overviewAgents}
             hasProject={hasProject}
             hasScan={hasScan}
+            scanReport={scanReport}
+            onOpenInFindings={(agentName) => {
+              setSelectedAgents([agentName])
+              setCurrentView("findings")
+            }}
           />
         )
       case "findings":

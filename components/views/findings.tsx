@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import {
@@ -22,7 +21,6 @@ import {
 } from "@/components/ui/table"
 import {
   Search,
-  Download,
   Shield,
   ChevronRight,
 } from "lucide-react"
@@ -30,6 +28,33 @@ import { FindingDrawer } from "@/components/finding-drawer"
 import type { UiFinding } from "@/lib/scan-report"
 
 export type Finding = UiFinding
+
+/**
+ * Normalize raw scanner categories to short, user-facing labels for the
+ * Findings filter + table.
+ *
+ * The Python rules emit a few wordy or near-duplicate strings — e.g.
+ * "Dangerous tool / side effect" reads like a doc string, and
+ * "MCP configuration" + "OpenAPI" are essentially one bucket. Collapsing
+ * them here keeps the filter dropdown short and matches the labels used in
+ * Scan Center so the same vocabulary appears everywhere.
+ *
+ * Anything not in the map falls through to the original string so a new
+ * scanner category never disappears from the UI silently.
+ */
+const CATEGORY_LABEL: Record<string, string> = {
+  "Dangerous tool / side effect": "Dangerous tools",
+  "Missing approval gate": "Missing approval",
+  "Weak prompt": "Weak prompts",
+  "Hardcoded secret": "Secrets",
+  "MCP configuration": "MCP / OpenAPI",
+  OpenAPI: "MCP / OpenAPI",
+  "Data flow": "Unsafe data flow",
+}
+
+function displayCategory(raw: string): string {
+  return CATEGORY_LABEL[raw] ?? raw
+}
 
 interface FindingsProps {
   findings: Finding[]
@@ -50,14 +75,20 @@ export function Findings({
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
 
-  const categories = [...new Set(findings.map((f) => f.category))]
+  // Dropdown is keyed off the *normalized* labels so duplicates collapse
+  // (e.g. "MCP configuration" + "OpenAPI" → one "MCP / OpenAPI" entry) and
+  // the order is stable as you scan more / fewer files.
+  const categories = [
+    ...new Set(findings.map((f) => displayCategory(f.category))),
+  ].sort((a, b) => a.localeCompare(b))
 
   const filteredFindings = findings.filter((f) => {
     const matchesSearch =
       f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       f.file.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesSeverity = severityFilter === "all" || f.severity === severityFilter
-    const matchesCategory = categoryFilter === "all" || f.category === categoryFilter
+    const matchesCategory =
+      categoryFilter === "all" || displayCategory(f.category) === categoryFilter
     return matchesSearch && matchesSeverity && matchesCategory
   })
 
@@ -111,15 +142,9 @@ export function Findings({
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Findings</h1>
-          <p className="text-muted-foreground">Security issues detected in your AI agents</p>
-        </div>
-        <Button variant="outline">
-          <Download className="h-4 w-4 mr-2" />
-          Export Report
-        </Button>
+      <div>
+        <h1 className="text-2xl font-semibold">Findings</h1>
+        <p className="text-muted-foreground">Security issues detected in your AI agents</p>
       </div>
 
       <div className="grid grid-cols-5 gap-4">
@@ -251,7 +276,7 @@ export function Findings({
                     {finding.severity}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-muted-foreground">{finding.category}</TableCell>
+                <TableCell className="text-muted-foreground">{displayCategory(finding.category)}</TableCell>
                 <TableCell className="font-medium">{finding.title}</TableCell>
                 <TableCell className="font-mono text-sm text-muted-foreground">{finding.file}</TableCell>
                 <TableCell className="font-mono text-sm text-muted-foreground">{finding.line}</TableCell>
