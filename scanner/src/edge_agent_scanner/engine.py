@@ -8,16 +8,21 @@ from pathlib import Path
 
 from edge_agent_scanner import config as scanner_config
 from edge_agent_scanner.report import (
+    AgentHit,
     ALL_RULE_IDS,
     Finding,
     FrameworkHit,
     ScanReport,
     Summary,
     SCHEMA_VERSION,
+    ToolHit,
     utc_now_iso,
 )
 from edge_agent_scanner.rules import (
+    attribute_tools_to_agents,
+    detect_agents,
     detect_frameworks,
+    detect_tools,
     run_approval_gate_rule,
     run_dangerous_tools_rule,
     run_mcp_openapi_rules,
@@ -158,6 +163,11 @@ def run_scan(
     files = iter_scanned_files(root)
 
     frameworks: list[FrameworkHit] = detect_frameworks(files)
+    agents: list[AgentHit] = detect_agents(files)
+    tools: list[ToolHit] = detect_tools(files)
+    # Pin tools to their owning agent (single-agent: all unattributed go to
+    # it; multi-agent: directory-proximity match).
+    attribute_tools_to_agents(tools, agents)
 
     findings: list[Finding] = []
     # Deterministic order — always run all rules; filter by enabled_rule_ids after
@@ -181,6 +191,8 @@ def run_scan(
         scan_root=str(root),
         generated_at=utc_now_iso(),
         frameworks_detected=frameworks,
+        agents_detected=agents,
+        tools_detected=tools,
         summary=summary,
         risk_score=risk,
         findings=findings,

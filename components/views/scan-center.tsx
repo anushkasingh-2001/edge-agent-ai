@@ -14,9 +14,15 @@ import {
   Clock,
   CheckCircle2,
   Loader2,
-  FileText,
   TestTube,
 } from "lucide-react"
+import { ExportReportButton } from "@/components/export-report-button"
+import type { ScanReport } from "@/lib/scan-report"
+import type { Project } from "@/lib/projects"
+import {
+  formatScanTime,
+  type ScanHistoryItem,
+} from "@/lib/scan-history"
 
 const securityChecks = [
   { id: "dangerous-tools", label: "Dangerous tools", description: "Identify risky tool invocations" },
@@ -44,6 +50,16 @@ interface ScanCenterProps {
   lastScanTime?: string | null
   hasProject?: boolean
   projectLabel?: string
+  /** Latest scan report — drives the Export Report button. */
+  scanReport?: ScanReport | null
+  /** Selected project — used in the export filename / markdown header. */
+  project?: Project | null
+  /** Selected branch — included in the markdown header. */
+  branch?: string | null
+  /** Scoped to the selected project, newest-first. */
+  scanHistory?: ScanHistoryItem[]
+  /** Load a historical scan back into the current UI state. */
+  onLoadScan?: (item: ScanHistoryItem) => void
 }
 
 export function ScanCenter({
@@ -55,6 +71,11 @@ export function ScanCenter({
   lastScanTime = null,
   hasProject = false,
   projectLabel,
+  scanReport = null,
+  project = null,
+  branch = null,
+  scanHistory = [],
+  onLoadScan,
 }: ScanCenterProps) {
   const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
@@ -233,45 +254,89 @@ export function ScanCenter({
                   Stop
                 </Button>
               )}
-              <Button variant="outline" className="w-full">
-                <FileText className="h-4 w-4 mr-2" />
-                Export Report
-              </Button>
+              <ExportReportButton
+                report={scanReport}
+                project={project}
+                branch={branch}
+                fullWidth
+              />
               <p className="text-xs text-muted-foreground text-center">{selectedChecks.length} checks selected</p>
             </CardContent>
           </Card>
 
           <Card className="bg-card border-border">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Recent Scans</CardTitle>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Recent Scans</span>
+                {scanHistory.length > 0 && (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {scanHistory.length} stored
+                  </span>
+                )}
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {lastIssueCount != null && lastScanTime ? (
-                  <div className="p-3 rounded-lg bg-secondary/30 space-y-2 border border-accent/20">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-4 w-4 text-green-400" />
-                        <span className="text-sm font-medium">Latest scan</span>
-                      </div>
-                      {lastIssueCount > 0 ? (
-                        <Badge variant="outline" className="text-xs border-orange-500/50 text-orange-400">
-                          {lastIssueCount} issues
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-xs border-green-500/50 text-green-400">
-                          Clean
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Clock className="h-3 w-3" />
-                      <span>{lastScanTime}</span>
-                    </div>
-                  </div>
-                ) : (
+                {scanHistory.length === 0 ? (
                   <p className="text-xs text-muted-foreground py-2 text-center">
                     No scans yet for this project.
+                  </p>
+                ) : (
+                  // Show the 5 most recent for this project. The full history
+                  // (capped at 20 by lib/scan-history) is still accessible by
+                  // re-opening the project.
+                  scanHistory.slice(0, 5).map((scan, idx) => (
+                    <button
+                      key={scan.id}
+                      type="button"
+                      onClick={() => onLoadScan?.(scan)}
+                      disabled={!onLoadScan}
+                      className="w-full text-left p-3 rounded-lg bg-secondary/30 space-y-2 border border-accent/20 hover:bg-secondary/50 hover:border-accent/40 transition-colors disabled:cursor-default disabled:hover:bg-secondary/30 disabled:hover:border-accent/20"
+                      title={
+                        onLoadScan
+                          ? "Load this scan into the current view"
+                          : undefined
+                      }
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
+                          <span className="text-sm font-medium truncate">
+                            {idx === 0 ? "Latest scan" : `Scan ${scanHistory.length - idx}`}
+                          </span>
+                        </div>
+                        {scan.findingCount > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="text-xs border-orange-500/50 text-orange-400 shrink-0"
+                          >
+                            {scan.findingCount} issues
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="text-xs border-green-500/50 text-green-400 shrink-0"
+                          >
+                            Clean
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3 shrink-0" />
+                        <span className="truncate">
+                          {formatScanTime(scan.timestamp)}
+                          {scan.branch ? ` · ${scan.branch}` : ""}
+                          {` · risk ${scan.riskScore}/100`}
+                        </span>
+                      </div>
+                    </button>
+                  ))
+                )}
+                {scanHistory.length > 5 && (
+                  <p className="text-[11px] text-muted-foreground text-center pt-1">
+                    Showing 5 of {scanHistory.length} stored scans for this
+                    project (older scans are kept until you reach the 20-scan
+                    cap).
                   </p>
                 )}
               </div>

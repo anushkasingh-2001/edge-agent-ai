@@ -30,6 +30,13 @@ import {
   saveRecentProject,
   type Project,
 } from "@/lib/projects"
+import {
+  appendScanToHistory,
+  loadScanHistory,
+  scanHistoryForProject,
+  scanItemFromReport,
+  type ScanHistoryItem,
+} from "@/lib/scan-history"
 
 type GitBranchesResponse = {
   isRepo: boolean
@@ -52,9 +59,11 @@ export default function Home() {
   const [openCloneDialog, setOpenCloneDialog] = useState(false)
   const [gitInfo, setGitInfo] = useState<GitBranchesResponse | null>(null)
   const [gitLoading, setGitLoading] = useState(false)
+  const [scanHistory, setScanHistory] = useState<ScanHistoryItem[]>([])
 
   useEffect(() => {
     setRecentProjects(loadRecentProjects())
+    setScanHistory(loadScanHistory())
   }, [])
 
   /**
@@ -190,14 +199,42 @@ export default function Home() {
         const report = parseScanReport(raw)
         setScanReport(report)
         setSelectedAgents(["all"])
+        // Persist to history so the Scan Center "Recent Scans" list grows
+        // beyond a single "Latest scan" entry.
+        const branchAtScan =
+          target.branch?.trim() || currentBranch || "main"
+        const item = scanItemFromReport(report, target, branchAtScan)
+        const next = appendScanToHistory(item)
+        setScanHistory(next)
       } catch (e) {
         setScanError(e instanceof Error ? e.message : "Scan failed")
       } finally {
         setScanning(false)
       }
     },
-    [selectedProject]
+    [selectedProject, currentBranch]
   )
+
+  /** Load a historical scan back into the current view. If the scan belongs
+   * to a different project than the currently-selected one, switch to that
+   * project too so the rest of the UI lines up. */
+  const handleLoadScan = useCallback((item: ScanHistoryItem) => {
+    const projectFromItem: Project = {
+      id: item.projectId,
+      name: item.projectName,
+      path: item.projectPath,
+      source: "local",
+      branch: item.branch,
+      lastOpenedAt: new Date().toISOString(),
+    }
+    setSelectedProject(projectFromItem)
+    setScanReport(item.report)
+    setScanError(null)
+    if (item.branch && item.branch.trim()) {
+      setCurrentBranch(item.branch.trim())
+    }
+    setSelectedAgents(["all"])
+  }, [])
 
   const handleOpenProject = useCallback(
     (project: Project) => {
@@ -281,6 +318,11 @@ export default function Home() {
             }
             hasProject={hasProject}
             projectLabel={projectLabel}
+            scanReport={scanReport}
+            project={selectedProject}
+            branch={currentBranch}
+            scanHistory={scanHistoryForProject(scanHistory, selectedProject?.id)}
+            onLoadScan={handleLoadScan}
           />
         )
       case "detected-agents":
@@ -336,6 +378,8 @@ export default function Home() {
         gitCurrentBranch={gitInfo?.currentBranch ?? null}
         isGitRepo={gitInfo?.isRepo ?? false}
         gitLoading={gitLoading}
+        scanReport={scanReport}
+        project={selectedProject}
       />
       <div className="flex flex-1 overflow-hidden">
         <AppSidebar

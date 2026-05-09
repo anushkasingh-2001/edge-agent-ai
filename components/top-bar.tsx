@@ -32,7 +32,6 @@ import {
   Upload,
   ArrowUpFromLine,
   Play,
-  FileText,
   Bot,
   Check,
   Wrench,
@@ -43,11 +42,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { ExportReportButton } from "@/components/export-report-button"
 import {
   ALL_AGENTS_OPTION,
   type TopBarAgentOption,
   type AgentToolGroup,
+  type ScanReport,
 } from "@/lib/scan-report"
+import type { Project } from "@/lib/projects"
 
 interface TopBarProps {
   projectName: string
@@ -82,6 +84,10 @@ interface TopBarProps {
   isGitRepo?: boolean
   /** Branches are being fetched from /api/git/branches. */
   gitLoading?: boolean
+  /** Latest scan report — drives the Export Report button. */
+  scanReport?: ScanReport | null
+  /** Selected project — used in the export filename / markdown header. */
+  project?: Project | null
 }
 
 const defaultAgents: TopBarAgentOption[] = [ALL_AGENTS_OPTION]
@@ -110,20 +116,32 @@ export function TopBar({
   onRunScan,
   onNavigateToBranchCompare,
   agentOptions = defaultAgents,
+  toolsInventory = [],
+  totalToolCount = 0,
+  hasScan = false,
   hasProject = false,
   branches = [],
   remoteOnlyBranches = [],
   gitCurrentBranch = null,
   isGitRepo = false,
   gitLoading = false,
+  scanReport = null,
+  project = null,
 }: TopBarProps) {
   const agents = agentOptions
   const riskInfo = getRiskLevel(riskScore)
   const [branchPickerOpen, setBranchPickerOpen] = useState(false)
+  const [toolsPickerOpen, setToolsPickerOpen] = useState(false)
   const remoteOnlySet = useMemo(
     () => new Set(remoteOnlyBranches),
     [remoteOnlyBranches]
   )
+  const toolsButtonLabel = !hasProject
+    ? "Tools"
+    : !hasScan
+      ? "Tools"
+      : `Tools (${totalToolCount})`
+  const toolsTriggerDisabled = !hasProject || !hasScan
   const selectedAgentNames = selectedAgents.includes("all")
     ? "All Agents"
     : selectedAgents.length === 1
@@ -317,6 +335,93 @@ export function TopBar({
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* Tools Inventory — total tool count across the project, with a
+            per-agent (framework) breakdown of the file paths that count as
+            tools. Searchable so big inventories like MCP (272) stay usable. */}
+        <Popover open={toolsPickerOpen} onOpenChange={setToolsPickerOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 bg-secondary/50"
+              disabled={toolsTriggerDisabled}
+              title={
+                !hasProject
+                  ? "Open a project first"
+                  : !hasScan
+                    ? "Run a scan to populate tools"
+                    : `${totalToolCount} tools detected`
+              }
+            >
+              <Wrench className="h-4 w-4" />
+              <span className="max-w-[120px] truncate">{toolsButtonLabel}</span>
+              <ChevronDown className="h-3 w-3" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-96 p-0">
+            {!hasProject ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                Open a project to see detected tools.
+              </div>
+            ) : !hasScan ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                Run a scan to populate the tools inventory.
+              </div>
+            ) : toolsInventory.length === 0 ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                No tools detected in this project.
+              </div>
+            ) : (
+              <Command>
+                <CommandInput
+                  placeholder={`Search ${totalToolCount} tool${totalToolCount === 1 ? "" : "s"}...`}
+                />
+                <CommandList className="max-h-[360px]">
+                  <CommandEmpty>No matching tool.</CommandEmpty>
+                  {toolsInventory.map((group) => (
+                    <CommandGroup
+                      key={group.agent}
+                      heading={`${group.agent} (${group.tools.length})`}
+                    >
+                      {group.tools.map((tool) => (
+                        <CommandItem
+                          key={`${group.agent}::${tool.file}:${tool.line}:${tool.name}`}
+                          // Search across name + path + agent + kind so a user
+                          // can type any of them. cmdk lowercases the value.
+                          value={`${group.agent} ${tool.name} ${tool.file} ${tool.kind}`}
+                          onSelect={() => {
+                            void navigator.clipboard?.writeText(
+                              `${tool.file}:${tool.line}`
+                            )
+                          }}
+                          className="gap-2 items-start py-2"
+                          title={`${tool.name}\n${tool.file}:${tool.line}\n(click to copy file:line)`}
+                        >
+                          <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground mt-0.5" />
+                          <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                            <span className="text-sm font-medium truncate">
+                              {tool.name}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground font-mono truncate">
+                              {tool.file}:{tool.line}
+                            </span>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-1 py-0 border-muted-foreground/30 text-muted-foreground shrink-0"
+                          >
+                            {tool.kind}
+                          </Badge>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  ))}
+                </CommandList>
+              </Command>
+            )}
+          </PopoverContent>
+        </Popover>
+
         {/* Risk Score */}
         <Badge variant="outline" className={`${getRiskBadgeColor(riskScore)} font-medium`}>
           {riskScore}/100 {riskInfo.label} Risk
@@ -371,11 +476,13 @@ export function TopBar({
             </TooltipContent>
           </Tooltip>
 
-          {/* Export Report */}
-          <Button variant="outline" size="sm" className="gap-2">
-            <FileText className="h-4 w-4" />
-            Export Report
-          </Button>
+          {/* Export Report — dropdown for JSON / Markdown, disabled with
+              tooltip when no scan has been loaded yet. */}
+          <ExportReportButton
+            report={scanReport}
+            project={project}
+            branch={currentBranch}
+          />
         </div>
       </TooltipProvider>
     </div>
