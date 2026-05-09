@@ -21,11 +21,7 @@ import {
   ArrowUpFromLine,
 } from "lucide-react"
 
-const recentScans = [
-  { id: 1, branch: "main", status: "completed", issues: 12, time: "2 hours ago" },
-  { id: 2, branch: "feature/auth-update", status: "completed", issues: 3, time: "Yesterday" },
-  { id: 3, branch: "fix/prompt-injection", status: "completed", issues: 0, time: "3 days ago" },
-]
+const recentScans: { id: number; branch: string; status: string; issues: number; time: string }[] = []
 
 function getRiskLevel(score: number): { label: string; color: string; badgeColor: string } {
   if (score >= 86) return { label: "Critical", color: "text-red-400", badgeColor: "border-red-500/50 text-red-400 bg-red-500/10" }
@@ -43,21 +39,71 @@ interface OverviewProps {
   topFindings: { title: string; severity: string; file: string; line: number }[]
   detectedAgents: OverviewAgentCard[]
   lastScanLabel: string
+  hasProject?: boolean
+  hasScan?: boolean
 }
 
 export function Overview({
   onNavigate,
   riskScore,
   currentBranch,
-  projectLabel = "customer-service-agent",
+  projectLabel = "No project opened",
   scanSummary,
   topFindings,
   detectedAgents,
   lastScanLabel,
+  hasProject = false,
+  hasScan = false,
 }: OverviewProps) {
   const riskInfo = getRiskLevel(riskScore)
   const criticalIssues = scanSummary?.critical ?? 0
   const sev = scanSummary ?? { critical: 0, high: 0, medium: 0, low: 0, total: 0 }
+
+  if (!hasProject) {
+    return (
+      <div className="p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">Overview</h1>
+            <p className="text-muted-foreground">Security status</p>
+          </div>
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-base font-medium">No project opened</p>
+            <p className="text-sm text-muted-foreground">
+              Open a local repo or clone from GitHub to start scanning.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (!hasScan) {
+    return (
+      <div className="p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">Overview</h1>
+            <p className="text-muted-foreground">Security status for {projectLabel}</p>
+          </div>
+          <Button onClick={() => onNavigate("scan-center")}>
+            <Play className="h-4 w-4 mr-2" />
+            Run Scan
+          </Button>
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-base font-medium">No scan results yet</p>
+            <p className="text-sm text-muted-foreground">
+              Run a scan from the Scan Center to populate findings, risk score, and detected agents.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -282,6 +328,9 @@ export function Overview({
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
+              {topFindings.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">No findings in the latest scan.</p>
+              ) : null}
               {topFindings.map((finding, i) => (
                 <div
                   key={`${finding.file}:${finding.line}:${i}`}
@@ -322,6 +371,11 @@ export function Overview({
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
+              {recentScans.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">
+                  Latest scan shown above. Run more scans to build history.
+                </p>
+              ) : null}
               {recentScans.map((scan) => (
                 <div key={scan.id} className="flex items-center justify-between p-3 rounded-lg bg-secondary/30">
                   <div className="flex items-center gap-3">

@@ -118,28 +118,21 @@ export type TopBarAgentOption = {
   risk: number
 }
 
-const FALLBACK_AGENTS: TopBarAgentOption[] = [
-  { id: "support", name: "SupportAgent", framework: "LangGraph", tools: 8, prompts: 3, risk: 72 },
-  { id: "chat", name: "ChatAgent", framework: "LangChain", tools: 5, prompts: 4, risk: 45 },
-  { id: "data", name: "DataAgent", framework: "LlamaIndex", tools: 12, prompts: 2, risk: 38 },
-  { id: "api", name: "APIAgent", framework: "AutoGen", tools: 6, prompts: 2, risk: 56 },
-  { id: "admin", name: "AdminAgent", framework: "LangGraph", tools: 15, prompts: 5, risk: 89 },
-]
+export const ALL_AGENTS_OPTION: TopBarAgentOption = {
+  id: "all",
+  name: "All Agents",
+  framework: null,
+  tools: 0,
+  prompts: 0,
+  risk: 0,
+}
 
 export function buildTopBarAgentsFromReport(
   report: ScanReport | null,
   riskScore: number
 ): TopBarAgentOption[] {
-  const all: TopBarAgentOption = {
-    id: "all",
-    name: "All Agents",
-    framework: null,
-    tools: 0,
-    prompts: 0,
-    risk: 0,
-  }
   if (!report?.frameworks_detected.length) {
-    return [all, ...FALLBACK_AGENTS]
+    return [ALL_AGENTS_OPTION]
   }
   const fromFw = report.frameworks_detected.map((f, i) => ({
     id: `fw-${i}-${f.name.replace(/\s+/g, "-").toLowerCase()}`,
@@ -149,7 +142,7 @@ export function buildTopBarAgentsFromReport(
     prompts: 0,
     risk: Math.min(100, Math.max(0, riskScore + i * 3)),
   }))
-  return [all, ...fromFw]
+  return [ALL_AGENTS_OPTION, ...fromFw]
 }
 
 export type OverviewAgentCard = {
@@ -161,18 +154,10 @@ export type OverviewAgentCard = {
   status: string
 }
 
-const DEFAULT_TOP_FINDINGS: { title: string; severity: "critical" | "high" | "medium" | "low"; file: string; line: number }[] =
-  [
-    { title: "Prompt injection vulnerability in chat handler", severity: "critical", file: "agents/chat.py", line: 142 },
-    { title: "Missing human approval for tool call", severity: "high", file: "tools/refund.py", line: 89 },
-    { title: "Hardcoded API key detected", severity: "high", file: "config/settings.py", line: 23 },
-    { title: "Vague system prompt detected", severity: "medium", file: "prompts/system.txt", line: 1 },
-  ]
-
 export function topFindingsFromReport(
   report: ScanReport | null
 ): { title: string; severity: "critical" | "high" | "medium" | "low"; file: string; line: number }[] {
-  if (!report?.findings.length) return DEFAULT_TOP_FINDINGS
+  if (!report?.findings.length) return []
   const w: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
   return [...report.findings]
     .sort((a, b) => w[a.severity] - w[b.severity] || a.title.localeCompare(b.title))
@@ -189,15 +174,7 @@ export function buildOverviewAgentsFromReport(
   report: ScanReport | null,
   riskScore: number
 ): OverviewAgentCard[] {
-  if (!report?.frameworks_detected.length) {
-    return [
-      { name: "SupportAgent", framework: "LangGraph", tools: 8, prompts: 3, risk: 72, status: "scanned" },
-      { name: "ChatAgent", framework: "LangChain", tools: 5, prompts: 4, risk: 45, status: "scanned" },
-      { name: "DataAgent", framework: "LlamaIndex", tools: 12, prompts: 2, risk: 38, status: "scanned" },
-      { name: "APIAgent", framework: "AutoGen", tools: 6, prompts: 2, risk: 56, status: "scanned" },
-      { name: "AdminAgent", framework: "LangGraph", tools: 15, prompts: 5, risk: 89, status: "scanned" },
-    ]
-  }
+  if (!report?.frameworks_detected.length) return []
   return report.frameworks_detected.map((f, i) => ({
     name: f.name,
     framework: f.name,

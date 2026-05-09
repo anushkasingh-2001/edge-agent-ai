@@ -28,7 +28,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import type { TopBarAgentOption } from "@/lib/scan-report"
+import { ALL_AGENTS_OPTION, type TopBarAgentOption } from "@/lib/scan-report"
 
 interface TopBarProps {
   projectName: string
@@ -50,14 +50,7 @@ const branches = [
   "bugfix/prompt-regression",
 ]
 
-const defaultAgents: TopBarAgentOption[] = [
-  { id: "all", name: "All Agents", framework: null, tools: 0, prompts: 0, risk: 0 },
-  { id: "support", name: "SupportAgent", framework: "LangGraph", tools: 8, prompts: 3, risk: 72 },
-  { id: "chat", name: "ChatAgent", framework: "LangChain", tools: 5, prompts: 4, risk: 45 },
-  { id: "data", name: "DataAgent", framework: "LlamaIndex", tools: 12, prompts: 2, risk: 38 },
-  { id: "api", name: "APIAgent", framework: "AutoGen", tools: 6, prompts: 2, risk: 56 },
-  { id: "admin", name: "AdminAgent", framework: "LangGraph", tools: 15, prompts: 5, risk: 89 },
-]
+const defaultAgents: TopBarAgentOption[] = [ALL_AGENTS_OPTION]
 
 function getRiskLevel(score: number): { label: string; color: string } {
   if (score >= 86) return { label: "Critical", color: "text-red-400" }

@@ -3,43 +3,56 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { NextResponse } from "next/server"
-
-function isPathInside(child: string, parent: string): boolean {
-  const rel = path.relative(parent, child)
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
-}
+import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
 
 export async function POST(request: Request) {
-  let body: { scanRoot?: string; checks?: string[] } = {}
+  let body: { projectPath?: string; checks?: string[] } = {}
   try {
     body = await request.json()
   } catch {
     body = {}
   }
 
-  const repoRoot = process.cwd()
-  const allowRoot = process.env.EDGE_AGENT_SCAN_ALLOWLIST
-    ? path.resolve(process.env.EDGE_AGENT_SCAN_ALLOWLIST)
-    : repoRoot
+  if (!body.projectPath || typeof body.projectPath !== "string" || !body.projectPath.trim()) {
+    return NextResponse.json(
+      {
+        error:
+          "projectPath is required. Open a local project or clone from GitHub before scanning.",
+      },
+      { status: 400 }
+    )
+  }
 
-  const requested = body.scanRoot ? path.resolve(body.scanRoot) : repoRoot
+  const repoRoot = process.cwd()
+  const allowRoot = getScanAllowRoot()
+  const requested = path.resolve(body.projectPath.trim())
+
   if (!isPathInside(requested, allowRoot)) {
     return NextResponse.json(
-      { error: "scanRoot is outside the allowed directory" },
+      { error: "projectPath is outside the allowed directory" },
       { status: 403 }
     )
   }
 
   if (!fs.existsSync(requested) || !fs.statSync(requested).isDirectory()) {
-    return NextResponse.json({ error: "scanRoot is not a directory" }, { status: 400 })
+    return NextResponse.json(
+      { error: "projectPath is not a directory" },
+      { status: 400 }
+    )
   }
 
   const scannerDir = path.join(repoRoot, "scanner")
   if (!fs.existsSync(scannerDir)) {
-    return NextResponse.json({ error: "scanner package not found under project root" }, { status: 500 })
+    return NextResponse.json(
+      { error: "scanner package not found under project root" },
+      { status: 500 }
+    )
   }
 
-  const tmpFile = path.join(os.tmpdir(), `edge-scan-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+  const tmpFile = path.join(
+    os.tmpdir(),
+    `edge-scan-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+  )
   const python = process.env.EDGE_AGENT_PYTHON || "python3"
   const args = ["-m", "edge_agent_scanner.cli", "scan", requested, "--out", tmpFile]
 

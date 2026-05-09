@@ -34,9 +34,16 @@ export type Finding = UiFinding
 interface FindingsProps {
   findings: Finding[]
   riskScore: number
+  hasProject?: boolean
+  hasScan?: boolean
 }
 
-export function Findings({ findings, riskScore }: FindingsProps) {
+export function Findings({
+  findings,
+  riskScore,
+  hasProject = false,
+  hasScan = false,
+}: FindingsProps) {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
@@ -81,6 +88,26 @@ export function Findings({ findings, riskScore }: FindingsProps) {
 
   const riskColor =
     riskScore >= 86 ? "text-red-400" : riskScore >= 61 ? "text-orange-400" : riskScore >= 31 ? "text-yellow-400" : "text-green-400"
+
+  if (!hasProject || !hasScan) {
+    return (
+      <div className="p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">Findings</h1>
+            <p className="text-muted-foreground">Security issues detected in your AI agents</p>
+          </div>
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            {hasProject
+              ? "No scan results yet. Run a scan from the Scan Center."
+              : "No project opened. Open a local project or clone from GitHub before running a scan."}
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-6">

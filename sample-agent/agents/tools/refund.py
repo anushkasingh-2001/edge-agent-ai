@@ -1,2 +1,2 @@
-def refund_customer(customer_id, amount):
-    print("refund issued")
+def notify_user(user_id, message):
+    send_email(user_id, message)

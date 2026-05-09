@@ -35,12 +35,6 @@ const securityChecks = [
   { id: "smoke-tests", label: "Live smoke tests", description: "Run live validation tests" },
 ]
 
-const recentScans = [
-  { id: 1, status: "completed", checks: 14, issues: 12, duration: "2m 34s", time: "2 hours ago" },
-  { id: 2, status: "completed", checks: 14, issues: 3, duration: "2m 12s", time: "Yesterday" },
-  { id: 3, status: "completed", checks: 8, issues: 0, duration: "1m 45s", time: "3 days ago" },
-]
-
 interface ScanCenterProps {
   selectedAgents?: string[]
   onRunScan: (selectedCheckIds: string[]) => Promise<void>
@@ -48,6 +42,8 @@ interface ScanCenterProps {
   scanError?: string | null
   lastIssueCount?: number | null
   lastScanTime?: string | null
+  hasProject?: boolean
+  projectLabel?: string
 }
 
 export function ScanCenter({
@@ -57,6 +53,8 @@ export function ScanCenter({
   scanError = null,
   lastIssueCount = null,
   lastScanTime = null,
+  hasProject = false,
+  projectLabel,
 }: ScanCenterProps) {
   const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
@@ -100,12 +98,31 @@ export function ScanCenter({
       ? selectedAgents[0]
       : `${selectedAgents.length} agents`
 
+  if (!hasProject) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Scan Center</h1>
+          <p className="text-muted-foreground">Choose a project first.</p>
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            Open a local project or clone from GitHub before running a scan.
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Scan Center</h1>
-          <p className="text-muted-foreground">Configure and run security scans on {agentLabel}</p>
+          <p className="text-muted-foreground">
+            Configure and run security scans on {agentLabel}
+            {projectLabel ? ` (${projectLabel})` : ""}
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline">
@@ -235,7 +252,7 @@ export function ScanCenter({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <CheckCircle2 className="h-4 w-4 text-green-400" />
-                        <span className="text-sm font-medium">Latest (Python)</span>
+                        <span className="text-sm font-medium">Latest scan</span>
                       </div>
                       {lastIssueCount > 0 ? (
                         <Badge variant="outline" className="text-xs border-orange-500/50 text-orange-400">
@@ -247,35 +264,16 @@ export function ScanCenter({
                         </Badge>
                       )}
                     </div>
-                    <div className="text-xs text-muted-foreground">{lastScanTime}</div>
-                  </div>
-                ) : null}
-                {recentScans.map((scan) => (
-                  <div key={scan.id} className="p-3 rounded-lg bg-secondary/30 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-4 w-4 text-green-400" />
-                        <span className="text-sm font-medium">{scan.checks} checks</span>
-                      </div>
-                      {scan.issues > 0 ? (
-                        <Badge variant="outline" className="text-xs border-orange-500/50 text-orange-400">
-                          {scan.issues} issues
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-xs border-green-500/50 text-green-400">
-                          Clean
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        {scan.duration}
-                      </span>
-                      <span>{scan.time}</span>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Clock className="h-3 w-3" />
+                      <span>{lastScanTime}</span>
                     </div>
                   </div>
-                ))}
+                ) : (
+                  <p className="text-xs text-muted-foreground py-2 text-center">
+                    No scans yet for this project.
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>

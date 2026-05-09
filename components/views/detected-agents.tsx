@@ -6,49 +6,6 @@ import { Button } from "@/components/ui/button"
 import { Bot, Eye, AlertTriangle, Wrench, FileCode } from "lucide-react"
 import type { OverviewAgentCard } from "@/lib/scan-report"
 
-const defaultAgents: OverviewAgentCard[] = [
-  {
-    name: "SupportAgent",
-    framework: "LangChain",
-    tools: 8,
-    prompts: 3,
-    risk: 72,
-    status: "warning",
-  },
-  {
-    name: "ChatAgent",
-    framework: "LangGraph",
-    tools: 5,
-    prompts: 2,
-    risk: 45,
-    status: "ok",
-  },
-  {
-    name: "DataAgent",
-    framework: "LlamaIndex",
-    tools: 12,
-    prompts: 4,
-    risk: 88,
-    status: "critical",
-  },
-  {
-    name: "APIAgent",
-    framework: "CrewAI",
-    tools: 6,
-    prompts: 2,
-    risk: 55,
-    status: "warning",
-  },
-  {
-    name: "AdminAgent",
-    framework: "AutoGen",
-    tools: 10,
-    prompts: 5,
-    risk: 95,
-    status: "critical",
-  },
-]
-
 function riskToStatus(risk: number): string {
   if (risk >= 86) return "critical"
   if (risk >= 61) return "warning"
@@ -94,11 +51,51 @@ function getStatusBadge(status: string) {
 
 interface DetectedAgentsProps {
   agents?: OverviewAgentCard[]
+  hasProject?: boolean
+  hasScan?: boolean
 }
 
-export function DetectedAgents({ agents: agentsProp }: DetectedAgentsProps) {
-  const source = agentsProp && agentsProp.length > 0 ? agentsProp : defaultAgents
+export function DetectedAgents({
+  agents: agentsProp,
+  hasProject = false,
+  hasScan = false,
+}: DetectedAgentsProps) {
+  const source = agentsProp ?? []
   const agents = toDisplayAgents(source)
+
+  if (!hasProject) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Detected Agents</h1>
+          <p className="text-muted-foreground">AI agents discovered in your project</p>
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            Open a local project or clone from GitHub before running a scan.
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (!hasScan || agents.length === 0) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Detected Agents</h1>
+          <p className="text-muted-foreground">AI agents discovered in your project</p>
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            {hasScan
+              ? "No agent frameworks detected in the latest scan."
+              : "No scan results yet. Run a scan to detect agents."}
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-6">

@@ -12,6 +12,8 @@ import {
   Settings,
   ChevronDown,
   FolderOpen,
+  Github,
+  FolderPlus,
 } from "lucide-react"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
@@ -20,26 +22,33 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
+import type { Project } from "@/lib/projects"
 
-export type ViewType = 
-  | "overview" 
-  | "scan-center" 
+export type ViewType =
+  | "overview"
+  | "scan-center"
   | "detected-agents"
-  | "findings" 
+  | "findings"
   | "run-traces"
-  | "branch-compare" 
-  | "prompt-playground" 
-  | "chat-assistant" 
+  | "branch-compare"
+  | "prompt-playground"
+  | "chat-assistant"
   | "settings"
 
 interface AppSidebarProps {
   currentView: ViewType
   onViewChange: (view: ViewType) => void
-  onChangeProject: () => void
   findingsCount?: number
+  selectedProject: Project | null
+  recentProjects: Project[]
+  onSwitchProject: (project: Project) => void
+  onOpenLocalProject: () => void
+  onCloneFromGithub: () => void
 }
 
 const mainNavItems = [
@@ -57,14 +66,27 @@ const bottomNavItems = [
   { id: "settings" as ViewType, label: "Settings", icon: Settings },
 ]
 
-export function AppSidebar({ currentView, onViewChange, onChangeProject, findingsCount = 12 }: AppSidebarProps) {
+export function AppSidebar({
+  currentView,
+  onViewChange,
+  findingsCount = 0,
+  selectedProject,
+  recentProjects,
+  onSwitchProject,
+  onOpenLocalProject,
+  onCloneFromGithub,
+}: AppSidebarProps) {
+  const triggerLabel = selectedProject?.name ?? "No project opened"
+  const others = recentProjects
+    .filter((p) => p.path !== selectedProject?.path)
+    .slice(0, 8)
+
   return (
     <div className="w-60 h-full bg-sidebar border-r border-sidebar-border flex flex-col">
-      {/* Header */}
       <div className="p-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2 mb-1">
-          <Image 
-            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/edge_agent_ai-2ZiMAJND6E8xlZHoIAaqyh3xFOwQv9.png" 
+          <Image
+            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/edge_agent_ai-2ZiMAJND6E8xlZHoIAaqyh3xFOwQv9.png"
             alt="Edge Agent AI"
             width={28}
             height={28}
@@ -73,30 +95,74 @@ export function AppSidebar({ currentView, onViewChange, onChangeProject, finding
           <span className="font-semibold text-sm">Edge Agent AI</span>
         </div>
         <p className="text-xs text-muted-foreground mb-3">Local Agent Safety Lab</p>
-        
-        {/* Project Selector */}
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" className="w-full justify-between bg-sidebar-accent border-sidebar-border h-9 text-sm">
+            <Button
+              variant="outline"
+              className="w-full justify-between bg-sidebar-accent border-sidebar-border h-9 text-sm"
+            >
               <div className="flex items-center gap-2 truncate">
                 <FolderOpen className="h-4 w-4 text-muted-foreground shrink-0" />
-                <span className="truncate">customer-service-agent</span>
+                <span className="truncate">{triggerLabel}</span>
               </div>
               <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuItem>customer-service-agent</DropdownMenuItem>
-            <DropdownMenuItem>code-review-bot</DropdownMenuItem>
-            <DropdownMenuItem>data-analyst-agent</DropdownMenuItem>
-            <DropdownMenuItem onClick={onChangeProject}>
-              <span className="text-accent">Open another project...</span>
+          <DropdownMenuContent
+            align="start"
+            className="w-64 max-h-[min(24rem,70vh)] overflow-y-auto"
+          >
+            {selectedProject ? (
+              <p
+                className="px-2 py-1.5 text-xs text-muted-foreground font-mono truncate"
+                title={selectedProject.path}
+              >
+                {selectedProject.path}
+              </p>
+            ) : (
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                No project opened
+              </p>
+            )}
+            <DropdownMenuSeparator />
+
+            {others.length > 0 ? (
+              <>
+                <DropdownMenuLabel className="text-xs text-muted-foreground">
+                  Recent projects
+                </DropdownMenuLabel>
+                {others.map((p) => (
+                  <DropdownMenuItem
+                    key={p.id}
+                    onClick={() => onSwitchProject(p)}
+                    className="flex-col items-start gap-0.5"
+                  >
+                    <span className="truncate w-full">{p.name}</span>
+                    <span
+                      className="text-[10px] text-muted-foreground font-mono truncate w-full"
+                      title={p.path}
+                    >
+                      {p.path}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
+
+            <DropdownMenuItem onClick={onOpenLocalProject}>
+              <FolderPlus className="h-4 w-4 mr-2 text-accent" />
+              <span className="text-accent">Open Local Project...</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onCloneFromGithub}>
+              <Github className="h-4 w-4 mr-2 text-accent" />
+              <span className="text-accent">Clone from GitHub...</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
 
-      {/* Main Navigation */}
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
         {mainNavItems.map((item) => (
           <button
@@ -122,7 +188,6 @@ export function AppSidebar({ currentView, onViewChange, onChangeProject, finding
         ))}
       </nav>
 
-      {/* Bottom Navigation */}
       <div className="p-3 border-t border-sidebar-border">
         {bottomNavItems.map((item) => (
           <button
