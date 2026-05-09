@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -10,19 +10,33 @@ import {
   Play,
   Square,
   Sparkles,
-  Upload,
   Clock,
   CheckCircle2,
   Loader2,
   TestTube,
+  ChevronDown,
+  FileCode,
+  FolderOpen,
+  X,
 } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { ExportReportButton } from "@/components/export-report-button"
+import { ImportTestsDialog } from "@/components/test-cases/import-tests-dialog"
+import { GenerateTestsDialog } from "@/components/test-cases/generate-tests-dialog"
 import type { ScanReport } from "@/lib/scan-report"
 import type { Project } from "@/lib/projects"
 import {
   formatScanTime,
   type ScanHistoryItem,
 } from "@/lib/scan-history"
+import { deriveRulesFromSuite, type TestSuite } from "@/lib/test-cases"
 
 const securityChecks = [
   { id: "dangerous-tools", label: "Dangerous tools", description: "Identify risky tool invocations" },
@@ -80,6 +94,33 @@ export function ScanCenter({
   const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
   const [scanProgress, setScanProgress] = useState(0)
+  const [importOpen, setImportOpen] = useState(false)
+  // Controls which tab the Import dialog opens on. The "User-defined checks"
+  // menu has two entry points into the same dialog: "Use saved checks" lands
+  // on the Saved tab; "Define checks (script format)" lands on the Paste tab.
+  const [importDefaultTab, setImportDefaultTab] = useState<
+    "saved" | "file" | "paste"
+  >("saved")
+  const [generateOpen, setGenerateOpen] = useState(false)
+  const [lastSuiteToast, setLastSuiteToast] = useState<string | null>(null)
+  // The user-defined suite chosen for the next scan. Lights up the green
+  // confirmation pill in the "All checks" row so it's obvious that picking a
+  // suite from the dropdown actually had an effect.
+  const [activeSuite, setActiveSuite] = useState<TestSuite | null>(null)
+
+  const openImport = (tab: "saved" | "file" | "paste") => {
+    setImportDefaultTab(tab)
+    setImportOpen(true)
+  }
+
+  const handleSuiteReady = (suite: TestSuite) => {
+    setActiveSuite(suite)
+    setLastSuiteToast(
+      `"${suite.name}" is now the active user-defined check suite (${suite.tests.length} test${suite.tests.length === 1 ? "" : "s"}). They are stored locally — execution remains opt-in via Run Selected Checks.`
+    )
+    // Auto-clear so the toast doesn't linger forever.
+    setTimeout(() => setLastSuiteToast(null), 6000)
+  }
 
   const handleAllChange = (checked: boolean) => {
     setAllSelected(checked)
@@ -99,11 +140,59 @@ export function ScanCenter({
     }
   }
 
-  const startScan = async () => {
+  // Rules implied by the active suite — drives both the button label and the
+  // actual filter we send to the scanner. Memoized so we don't recompute it
+  // on every render of the row.
+  const suiteRules = useMemo(
+    () => deriveRulesFromSuite(activeSuite),
+    [activeSuite]
+  )
+
+  /**
+   * Three scan flavors. Which one runs depends on whether a user-defined
+   * suite is active:
+   *
+   *  - No suite + "full":      send `[]` → scanner runs every rule.
+   *  - No suite + "selected":  send the ticked rule IDs.
+   *  - Suite active + "full":  send the rule IDs implied by the suite, so
+   *                            the report is narrowed to what the suite
+   *                            actually tests for. (This was the user's
+   *                            complaint — picking a suite then clicking
+   *                            "Run Full Scan" used to still produce 65
+   *                            unrelated findings.)
+   *  - Suite active + "selected":  intersection of ticked rules and suite
+   *                                rules. Lets users tighten further.
+   */
+  const startScan = async (mode: "full" | "selected") => {
+    let ids: string[]
+    if (activeSuite && suiteRules.length > 0) {
+      if (mode === "selected" && selectedChecks.length > 0) {
+        ids = suiteRules.filter((r) => selectedChecks.includes(r))
+        if (ids.length === 0) {
+          // No overlap → nothing to run. Bail with a clear message instead
+          // of silently turning into a full scan.
+          setLastSuiteToast(
+            `None of the ticked checks are covered by suite "${activeSuite.name}". Tick a relevant rule (e.g. ${suiteRules.slice(0, 2).join(", ")}) or run Full Scan.`
+          )
+          setTimeout(() => setLastSuiteToast(null), 6000)
+          return
+        }
+      } else {
+        ids = suiteRules
+      }
+    } else {
+      ids = mode === "full" ? [] : selectedChecks
+    }
     setScanProgress(10)
     try {
-      await onRunScan(selectedChecks)
+      await onRunScan(ids)
       setScanProgress(100)
+      if (activeSuite) {
+        setLastSuiteToast(
+          `Scoped scan to ${ids.length} rule${ids.length === 1 ? "" : "s"} implied by suite "${activeSuite.name}" (${activeSuite.tests.length} test${activeSuite.tests.length === 1 ? "" : "s"}). Runtime execution of the suite's user-defined tests is not wired yet — the suite is recorded with this run.`
+        )
+        setTimeout(() => setLastSuiteToast(null), 8000)
+      }
     } finally {
       setTimeout(() => setScanProgress(0), 400)
     }
@@ -145,17 +234,13 @@ export function ScanCenter({
             {projectLabel ? ` (${projectLabel})` : ""}
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline">
-            <Upload className="h-4 w-4 mr-2" />
-            Import user tests
-          </Button>
-          <Button variant="outline">
-            <Sparkles className="h-4 w-4 mr-2" />
-            Generate Tests
-          </Button>
-        </div>
       </div>
+
+      {lastSuiteToast && (
+        <p className="text-xs text-emerald-500 border border-emerald-500/30 rounded-md p-2 bg-emerald-500/5">
+          {lastSuiteToast}
+        </p>
+      )}
 
       {scanError ? (
         <p className="text-sm text-destructive border border-destructive/30 rounded-md p-3 bg-destructive/10">
@@ -182,6 +267,94 @@ export function ScanCenter({
                 <Badge variant="outline" className="text-xs">
                   {selectedChecks.length}/{securityChecks.length}
                 </Badge>
+                {activeSuite && (
+                  <span
+                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 text-xs px-2 py-1 max-w-[260px]"
+                    title={`Active user-defined suite: ${activeSuite.name} (${activeSuite.tests.length} test${activeSuite.tests.length === 1 ? "" : "s"})`}
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{activeSuite.name}</span>
+                    <span className="text-emerald-500/70 shrink-0">
+                      · {activeSuite.tests.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveSuite(null)}
+                      className="ml-0.5 text-emerald-500/70 hover:text-emerald-300 shrink-0"
+                      title="Clear selected user-defined checks"
+                      aria-label="Clear selected user-defined checks"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                )}
+                {/* User-defined checks live next to the built-in checks so the
+                 * "I want to add my own" workflow is co-located with the
+                 * "select built-in scanner rules" workflow. The three options
+                 * cover: re-using something I already saved, generating new
+                 * checks from the latest scan, and authoring checks by hand
+                 * via our open script format. */}
+                {/* Three explicit ways to bring user-defined checks into the
+                 * scan: write them by hand (no AI), have us draft them from
+                 * the latest scan (AI-assisted), or re-use something we
+                 * already saved. */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="gap-1">
+                      <TestTube className="h-3.5 w-3.5" />
+                      User-defined checks
+                      <ChevronDown className="h-3 w-3" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-64">
+                    <DropdownMenuLabel className="text-xs">
+                      User-defined checks
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => openImport("paste")}
+                      className="gap-2"
+                    >
+                      <FileCode className="h-4 w-4" />
+                      <div className="flex flex-col">
+                        <span>Define checks (no AI)</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          Author or paste a structured suite — no tokens spent
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => setGenerateOpen(true)}
+                      disabled={!scanReport}
+                      className="gap-2"
+                      title={
+                        scanReport
+                          ? "AI-assisted draft of checks from the latest scan"
+                          : "Run a scan first — needs real findings/agents"
+                      }
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      <div className="flex flex-col">
+                        <span>Define checks (AI)</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          AI-assisted draft from the latest scan
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => openImport("saved")}
+                      className="gap-2"
+                    >
+                      <FolderOpen className="h-4 w-4" />
+                      <div className="flex flex-col">
+                        <span>Use saved checks</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          Pick from your last saved checks
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -234,15 +407,35 @@ export function ScanCenter({
             <CardContent className="pt-6 space-y-3">
               {!isScanning ? (
                 <>
-                  <Button className="w-full" onClick={() => void startScan()} disabled={selectedChecks.length === 0}>
+                  {/* When a suite is active the primary button narrows to
+                   * the rules the suite covers, so the label switches to
+                   * "Run Suite Scan" to set the right expectation. */}
+                  <Button
+                    className="w-full"
+                    onClick={() => void startScan("full")}
+                    title={
+                      activeSuite && suiteRules.length > 0
+                        ? `Run only the ${suiteRules.length} rule${suiteRules.length === 1 ? "" : "s"} implied by "${activeSuite.name}": ${suiteRules.join(", ")}`
+                        : "Run every available scanner rule"
+                    }
+                  >
                     <Play className="h-4 w-4 mr-2" />
-                    Run Full Scan
+                    {activeSuite && suiteRules.length > 0
+                      ? "Run Suite Scan"
+                      : "Run Full Scan"}
                   </Button>
                   <Button
                     variant="outline"
                     className="w-full"
-                    onClick={() => void startScan()}
+                    onClick={() => void startScan("selected")}
                     disabled={selectedChecks.length === 0}
+                    title={
+                      selectedChecks.length === 0
+                        ? "Tick at least one check above to run a filtered scan"
+                        : activeSuite && suiteRules.length > 0
+                          ? `Run the intersection of ticked checks and suite rules`
+                          : `Run ${selectedChecks.length} selected check${selectedChecks.length === 1 ? "" : "s"}`
+                    }
                   >
                     <TestTube className="h-4 w-4 mr-2" />
                     Run Selected Checks
@@ -260,7 +453,11 @@ export function ScanCenter({
                 branch={branch}
                 fullWidth
               />
-              <p className="text-xs text-muted-foreground text-center">{selectedChecks.length} checks selected</p>
+              <p className="text-xs text-muted-foreground text-center">
+                {activeSuite && suiteRules.length > 0
+                  ? `Suite "${activeSuite.name}" narrows the scan to ${suiteRules.length} rule${suiteRules.length === 1 ? "" : "s"}`
+                  : `${selectedChecks.length} check${selectedChecks.length === 1 ? "" : "s"} selected`}
+              </p>
             </CardContent>
           </Card>
 
@@ -344,6 +541,21 @@ export function ScanCenter({
           </Card>
         </div>
       </div>
+
+      <ImportTestsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        projectId={project?.id}
+        defaultTab={importDefaultTab}
+        onSuiteReady={handleSuiteReady}
+      />
+      <GenerateTestsDialog
+        open={generateOpen}
+        onOpenChange={setGenerateOpen}
+        scanReport={scanReport}
+        projectId={project?.id}
+        onSuiteReady={handleSuiteReady}
+      />
     </div>
   )
 }
