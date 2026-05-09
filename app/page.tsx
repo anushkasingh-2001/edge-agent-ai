@@ -20,6 +20,8 @@ import {
   resolveChecksForApi,
   buildTopBarAgentsFromReport,
   buildOverviewAgentsFromReport,
+  buildToolsInventoryFromReport,
+  totalToolCountFromReport,
   topFindingsFromReport,
   type ScanReport,
 } from "@/lib/scan-report"
@@ -28,6 +30,14 @@ import {
   saveRecentProject,
   type Project,
 } from "@/lib/projects"
+
+type GitBranchesResponse = {
+  isRepo: boolean
+  branches: string[]
+  remoteOnly: string[]
+  currentBranch: string | null
+  expanded: boolean
+}
 
 export default function Home() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
@@ -40,10 +50,77 @@ export default function Home() {
   const [scanError, setScanError] = useState<string | null>(null)
   const [openLocalDialog, setOpenLocalDialog] = useState(false)
   const [openCloneDialog, setOpenCloneDialog] = useState(false)
+  const [gitInfo, setGitInfo] = useState<GitBranchesResponse | null>(null)
+  const [gitLoading, setGitLoading] = useState(false)
 
   useEffect(() => {
     setRecentProjects(loadRecentProjects())
   }, [])
+
+  /**
+   * Whenever the user opens / switches a project, refresh the real branch
+   * list from disk via /api/git/branches. The endpoint returns isRepo:false
+   * gracefully for non-Git folders, so we don't need to special-case errors.
+   * If the project carries an explicit `branch` (set by the GitHub clone
+   * flow), keep it; otherwise align `currentBranch` with the repo's HEAD.
+   */
+  useEffect(() => {
+    if (!selectedProject) {
+      setGitInfo(null)
+      setGitLoading(false)
+      return
+    }
+    const ac = new AbortController()
+    setGitLoading(true)
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/git/branches?projectPath=${encodeURIComponent(selectedProject.path)}`,
+          { signal: ac.signal }
+        )
+        const data = (await res.json()) as Partial<GitBranchesResponse> & {
+          error?: string
+        }
+        if (ac.signal.aborted) return
+        if (!res.ok || !data || typeof data.isRepo !== "boolean") {
+          setGitInfo({
+            isRepo: false,
+            branches: [],
+            remoteOnly: [],
+            currentBranch: null,
+            expanded: false,
+          })
+          return
+        }
+        const info: GitBranchesResponse = {
+          isRepo: data.isRepo,
+          branches: Array.isArray(data.branches) ? data.branches : [],
+          remoteOnly: Array.isArray(data.remoteOnly) ? data.remoteOnly : [],
+          currentBranch: data.currentBranch ?? null,
+          expanded: Boolean(data.expanded),
+        }
+        setGitInfo(info)
+        // If the user hasn't been steered to a specific branch by the project
+        // record itself, follow whatever the repo says is checked out.
+        if (info.currentBranch && (!selectedProject.branch || selectedProject.branch.trim() === "")) {
+          setCurrentBranch(info.currentBranch)
+        }
+      } catch {
+        if (!ac.signal.aborted) {
+          setGitInfo({
+            isRepo: false,
+            branches: [],
+            remoteOnly: [],
+            currentBranch: null,
+            expanded: false,
+          })
+        }
+      } finally {
+        if (!ac.signal.aborted) setGitLoading(false)
+      }
+    })()
+    return () => ac.abort()
+  }, [selectedProject])
 
   const riskScore = scanReport?.risk_score ?? 0
   const uiFindings = useMemo(
@@ -57,6 +134,14 @@ export default function Home() {
   const overviewAgents = useMemo(
     () => buildOverviewAgentsFromReport(scanReport, riskScore),
     [scanReport, riskScore]
+  )
+  const toolsInventory = useMemo(
+    () => buildToolsInventoryFromReport(scanReport),
+    [scanReport]
+  )
+  const totalToolCount = useMemo(
+    () => totalToolCountFromReport(scanReport),
+    [scanReport]
   )
   const topFindings = useMemo(() => topFindingsFromReport(scanReport), [scanReport])
   const scanSummary = scanReport?.summary ?? null
@@ -242,6 +327,15 @@ export default function Home() {
         onRunScan={handleRunScan}
         onNavigateToBranchCompare={() => setCurrentView("branch-compare")}
         agentOptions={topBarAgents}
+        toolsInventory={toolsInventory}
+        totalToolCount={totalToolCount}
+        hasScan={hasScan}
+        hasProject={hasProject}
+        branches={gitInfo?.branches ?? []}
+        remoteOnlyBranches={gitInfo?.remoteOnly ?? []}
+        gitCurrentBranch={gitInfo?.currentBranch ?? null}
+        isGitRepo={gitInfo?.isRepo ?? false}
+        gitLoading={gitLoading}
       />
       <div className="flex flex-1 overflow-hidden">
         <AppSidebar

@@ -184,7 +184,14 @@ export async function POST(request: Request) {
   // Case 2: target taken by something else → pick a fresh suffixed name.
   const targetDir = nextAvailableTarget(parentResolved, baseName)
 
-  const args = ["clone", "--depth", "1"]
+  // `--depth 1` keeps the clone fast, but on its own it implies
+  // `--single-branch`, which means only the requested branch ends up under
+  // refs/remotes/origin/*. The branch picker would then look broken on big
+  // repos like openclaw (1500+ branches → only `main` listed).
+  // `--no-single-branch` overrides that: we still fetch only the latest commit
+  // of each branch, but we get a remote-tracking ref for every branch so the
+  // UI can list them.
+  const args = ["clone", "--depth", "1", "--no-single-branch"]
   if (branch) {
     args.push("--branch", branch)
   }

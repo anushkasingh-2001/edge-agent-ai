@@ -184,3 +184,35 @@ export function buildOverviewAgentsFromReport(
     status: "scanned",
   }))
 }
+
+/**
+ * Per-agent tool inventory used by the top-bar Tools picker. Today the
+ * scanner reports tools as `frameworks_detected[].evidence` paths, so the
+ * "agent" axis is really the framework name and each tool is a file path
+ * where the framework was detected. We surface that as-is so the UI can list
+ * them grouped without needing a separate scanner pass.
+ */
+export type AgentToolGroup = {
+  agent: string
+  paths: string[]
+}
+
+export function buildToolsInventoryFromReport(
+  report: ScanReport | null
+): AgentToolGroup[] {
+  if (!report?.frameworks_detected.length) return []
+  return report.frameworks_detected
+    .map((f) => ({
+      agent: f.name,
+      paths: [...f.evidence],
+    }))
+    .filter((g) => g.paths.length > 0)
+}
+
+export function totalToolCountFromReport(report: ScanReport | null): number {
+  if (!report?.frameworks_detected.length) return 0
+  return report.frameworks_detected.reduce(
+    (acc, f) => acc + f.evidence.length,
+    0
+  )
+}

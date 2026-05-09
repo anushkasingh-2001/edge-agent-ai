@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -11,6 +12,19 @@ import {
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu"
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
   ChevronDown,
   GitBranch,
   GitCompare,
@@ -21,6 +35,7 @@ import {
   FileText,
   Bot,
   Check,
+  Wrench,
 } from "lucide-react"
 import {
   Tooltip,
@@ -28,7 +43,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { ALL_AGENTS_OPTION, type TopBarAgentOption } from "@/lib/scan-report"
+import {
+  ALL_AGENTS_OPTION,
+  type TopBarAgentOption,
+  type AgentToolGroup,
+} from "@/lib/scan-report"
 
 interface TopBarProps {
   projectName: string
@@ -40,15 +59,30 @@ interface TopBarProps {
   onRunScan: () => void
   onNavigateToBranchCompare: () => void
   agentOptions?: TopBarAgentOption[]
+  /** Per-agent tool inventory shown in the Tools picker next to All Agents.
+   * Empty when no scan has been run. */
+  toolsInventory?: AgentToolGroup[]
+  /** Total tool count across all agents (sum of `toolsInventory[].paths`). */
+  totalToolCount?: number
+  /** Whether a real scan report is loaded (drives Tools button enabled state). */
+  hasScan?: boolean
+  /** Whether a project is currently opened. Drives whether the branch
+   * dropdown is interactable. */
+  hasProject?: boolean
+  /** Combined branch list (local + remote-tracking, deduped server-side).
+   * Empty when the folder isn't a Git repo or no project is opened. */
+  branches?: string[]
+  /** Subset of `branches` that exist only as remote-tracking refs (not yet
+   * checked out locally). Used to render a small "remote" badge. */
+  remoteOnlyBranches?: string[]
+  /** The repo's actual checked-out branch, if known. Marked with a HEAD badge
+   * so users can tell which one Git considers current. */
+  gitCurrentBranch?: string | null
+  /** Whether the opened folder is a Git repository. */
+  isGitRepo?: boolean
+  /** Branches are being fetched from /api/git/branches. */
+  gitLoading?: boolean
 }
-
-const branches = [
-  "main",
-  "develop",
-  "feature/refund-agent",
-  "feature/mcp-tools",
-  "bugfix/prompt-regression",
-]
 
 const defaultAgents: TopBarAgentOption[] = [ALL_AGENTS_OPTION]
 
@@ -76,14 +110,37 @@ export function TopBar({
   onRunScan,
   onNavigateToBranchCompare,
   agentOptions = defaultAgents,
+  hasProject = false,
+  branches = [],
+  remoteOnlyBranches = [],
+  gitCurrentBranch = null,
+  isGitRepo = false,
+  gitLoading = false,
 }: TopBarProps) {
   const agents = agentOptions
   const riskInfo = getRiskLevel(riskScore)
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false)
+  const remoteOnlySet = useMemo(
+    () => new Set(remoteOnlyBranches),
+    [remoteOnlyBranches]
+  )
   const selectedAgentNames = selectedAgents.includes("all")
     ? "All Agents"
     : selectedAgents.length === 1
       ? agents.find((a) => a.id === selectedAgents[0])?.name || "Select Agents"
       : `${selectedAgents.length} Agents`
+
+  // Decide what the branch button shows. With no project, fall back to a
+  // disabled placeholder so we don't pretend a branch is checked out.
+  const branchButtonLabel = !hasProject
+    ? "No project"
+    : gitLoading
+      ? "Loading branches..."
+      : !isGitRepo
+        ? "Not a Git repo"
+        : currentBranch || gitCurrentBranch || "(no branch)"
+  const branchTriggerDisabled = !hasProject || gitLoading
+  const hasRealBranches = isGitRepo && branches.length > 0
 
   const toggleAgent = (agentId: string) => {
     if (agentId === "all") {
@@ -108,38 +165,106 @@ export function TopBar({
 
         <div className="h-6 w-px bg-border" />
 
-        {/* Branch Selector */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-2 bg-secondary/50">
+        {/* Branch Selector — Popover + Command (cmdk) so we can search across
+            hundreds/thousands of branches like the GitHub picker does. */}
+        <Popover open={branchPickerOpen} onOpenChange={setBranchPickerOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 bg-secondary/50"
+              disabled={branchTriggerDisabled}
+            >
               <GitBranch className="h-4 w-4" />
-              <span className="max-w-[120px] truncate">{currentBranch}</span>
+              <span className="max-w-[160px] truncate">{branchButtonLabel}</span>
               <ChevronDown className="h-3 w-3" />
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuLabel className="text-xs text-muted-foreground">
-              Run scans on the selected local branch.
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {branches.map((branch) => (
-              <DropdownMenuItem
-                key={branch}
-                onClick={() => onBranchChange(branch)}
-                className="gap-2"
-              >
-                <GitBranch className="h-4 w-4" />
-                <span className="flex-1">{branch}</span>
-                {branch === currentBranch && <Check className="h-4 w-4 text-accent" />}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onNavigateToBranchCompare} className="gap-2">
-              <GitCompare className="h-4 w-4" />
-              <span>Compare Branches</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-80 p-0">
+            {!hasProject ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                Open a project to see branches.
+              </div>
+            ) : gitLoading ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                Loading branches...
+              </div>
+            ) : !isGitRepo ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                This folder is not a Git repository.
+              </div>
+            ) : branches.length === 0 ? (
+              <div className="p-3 text-xs text-muted-foreground">
+                No branches found.
+              </div>
+            ) : (
+              <Command>
+                <CommandInput
+                  placeholder={`Search ${branches.length} branch${branches.length === 1 ? "" : "es"}...`}
+                />
+                <CommandList className="max-h-[320px]">
+                  <CommandEmpty>No matching branch.</CommandEmpty>
+                  <CommandGroup heading="Branches">
+                    {branches.map((branch) => {
+                      const isHead = branch === gitCurrentBranch
+                      const isSelected = branch === currentBranch
+                      const isRemoteOnly = remoteOnlySet.has(branch)
+                      return (
+                        <CommandItem
+                          key={branch}
+                          // cmdk lowercases the value passed to onSelect, so
+                          // close over `branch` instead of relying on the arg.
+                          value={branch}
+                          onSelect={() => {
+                            onBranchChange(branch)
+                            setBranchPickerOpen(false)
+                          }}
+                          className="gap-2"
+                        >
+                          <GitBranch className="h-4 w-4 shrink-0" />
+                          <span className="flex-1 truncate">{branch}</span>
+                          {isRemoteOnly && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0 border-muted-foreground/40 text-muted-foreground"
+                            >
+                              remote
+                            </Badge>
+                          )}
+                          {isHead && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0 border-accent/40 text-accent"
+                            >
+                              HEAD
+                            </Badge>
+                          )}
+                          {isSelected && (
+                            <Check className="h-4 w-4 text-accent" />
+                          )}
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                  <CommandGroup>
+                    <CommandItem
+                      value="__compare_branches__"
+                      onSelect={() => {
+                        setBranchPickerOpen(false)
+                        onNavigateToBranchCompare()
+                      }}
+                      disabled={!hasRealBranches}
+                      className="gap-2"
+                    >
+                      <GitCompare className="h-4 w-4" />
+                      <span>Compare Branches</span>
+                    </CommandItem>
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            )}
+          </PopoverContent>
+        </Popover>
 
         {/* Agent Selector */}
         <DropdownMenu>
