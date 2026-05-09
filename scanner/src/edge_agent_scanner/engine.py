@@ -34,10 +34,31 @@ from edge_agent_scanner.walker import iter_scanned_files
 
 
 def _cap_findings_per_rule(findings: list[Finding], max_per_rule: int | None = None) -> list[Finding]:
+    """
+    Keep at most `max_per_rule` findings per rule_id. The selection has to
+    be **deterministic and content-stable** — otherwise a tree change in
+    one branch reshuffles the cap survivors and the branch-compare endpoint
+    sees identical findings as "fixed in base / introduced in target",
+    producing fake churn (the "150 → 150 with 147 fixed · 147 introduced"
+    artefact). Sort by (severity rank, file, line, title) before capping so
+    the kept set is purely a function of the report's content, not walk
+    order.
+    """
     limit = max_per_rule if max_per_rule is not None else scanner_config.MAX_FINDINGS_PER_RULE
+    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    ordered = sorted(
+        findings,
+        key=lambda f: (
+            f.rule_id,
+            severity_rank.get(f.severity, 9),
+            f.file,
+            f.line,
+            f.title,
+        ),
+    )
     counts: dict[str, int] = {}
     out: list[Finding] = []
-    for f in findings:
+    for f in ordered:
         rid = f.rule_id
         n = counts.get(rid, 0)
         if n >= limit:

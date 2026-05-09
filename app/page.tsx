@@ -131,30 +131,30 @@ export default function Home() {
   }, [])
 
   /**
-   * Whenever the user opens / switches a project, refresh the real branch
-   * list from disk via /api/git/branches. The endpoint returns isRepo:false
-   * gracefully for non-Git folders, so we don't need to special-case errors.
-   * If the project carries an explicit `branch` (set by the GitHub clone
-   * flow), keep it; otherwise align `currentBranch` with the repo's HEAD.
+   * Reusable branch refresher. Pulled out so Branch Compare can re-run it
+   * (with `expand=true`) when the user clicks "Refresh branches" on a
+   * shallow / single-branch clone where only `main` showed up initially.
+   *
+   * `expand` adds the `?expand=1` query that the API uses to widen the
+   * remote refspec and re-fetch — cheap when a repo already has every
+   * branch, helpful when it doesn't.
    */
-  useEffect(() => {
-    if (!selectedProject) {
-      setGitInfo(null)
-      setGitLoading(false)
-      return
-    }
-    const ac = new AbortController()
-    setGitLoading(true)
-    void (async () => {
+  const refreshBranches = useCallback(
+    async (project: Project | null, opts?: { expand?: boolean }) => {
+      if (!project) {
+        setGitInfo(null)
+        setGitLoading(false)
+        return
+      }
+      setGitLoading(true)
       try {
-        const res = await fetch(
-          `/api/git/branches?projectPath=${encodeURIComponent(selectedProject.path)}`,
-          { signal: ac.signal }
-        )
+        const url = `/api/git/branches?projectPath=${encodeURIComponent(
+          project.path
+        )}${opts?.expand ? "&expand=1" : ""}`
+        const res = await fetch(url)
         const data = (await res.json()) as Partial<GitBranchesResponse> & {
           error?: string
         }
-        if (ac.signal.aborted) return
         if (!res.ok || !data || typeof data.isRepo !== "boolean") {
           setGitInfo({
             isRepo: false,
@@ -173,27 +173,37 @@ export default function Home() {
           expanded: Boolean(data.expanded),
         }
         setGitInfo(info)
-        // If the user hasn't been steered to a specific branch by the project
-        // record itself, follow whatever the repo says is checked out.
-        if (info.currentBranch && (!selectedProject.branch || selectedProject.branch.trim() === "")) {
+        if (
+          info.currentBranch &&
+          (!project.branch || project.branch.trim() === "")
+        ) {
           setCurrentBranch(info.currentBranch)
         }
       } catch {
-        if (!ac.signal.aborted) {
-          setGitInfo({
-            isRepo: false,
-            branches: [],
-            remoteOnly: [],
-            currentBranch: null,
-            expanded: false,
-          })
-        }
+        setGitInfo({
+          isRepo: false,
+          branches: [],
+          remoteOnly: [],
+          currentBranch: null,
+          expanded: false,
+        })
       } finally {
-        if (!ac.signal.aborted) setGitLoading(false)
+        setGitLoading(false)
       }
-    })()
-    return () => ac.abort()
-  }, [selectedProject])
+    },
+    []
+  )
+
+  /**
+   * Whenever the user opens / switches a project, refresh the real branch
+   * list from disk. The endpoint returns isRepo:false gracefully for
+   * non-Git folders, so we don't need to special-case errors. If the
+   * project carries an explicit `branch` (set by the GitHub clone flow),
+   * keep it; otherwise align `currentBranch` with the repo's HEAD.
+   */
+  useEffect(() => {
+    void refreshBranches(selectedProject)
+  }, [selectedProject, refreshBranches])
 
   const riskScore = scanReport?.risk_score ?? 0
   const uiFindings = useMemo(
@@ -465,11 +475,33 @@ export default function Home() {
           />
         )
       case "run-traces":
-        return <RunTraces />
+        return (
+          <RunTraces
+            scanHistory={scanHistoryForProject(scanHistory, selectedProject?.id)}
+            hasProject={hasProject}
+            selectedAgents={selectedAgents}
+          />
+        )
       case "branch-compare":
-        return <BranchCompare currentBranch={currentBranch} />
+        return (
+          <BranchCompare
+            currentBranch={currentBranch}
+            branches={gitInfo?.branches ?? []}
+            remoteOnlyBranches={gitInfo?.remoteOnly ?? []}
+            projectPath={selectedProject?.path}
+            isGitRepo={gitInfo?.isRepo ?? false}
+            onRefreshBranches={(opts) =>
+              refreshBranches(selectedProject, opts)
+            }
+          />
+        )
       case "prompt-playground":
-        return <PromptPlayground />
+        return (
+          <PromptPlayground
+            scanReport={scanReport}
+            projectId={selectedProject?.id ?? null}
+          />
+        )
       case "chat-assistant":
         return <ChatAssistant currentBranch={currentBranch} />
       case "settings":
