@@ -38,6 +38,13 @@ python -m edge_agent_scanner.cli scan /path/to/repo --out report.json
 
 `--out` defaults to `./report.json` if omitted.
 
+Limit to specific `rule_id` values (repeat `--check`):
+
+```bash
+python -m edge_agent_scanner.cli scan /path/to/repo --out report.json \
+  --check secrets --check dangerous-tools
+```
+
 Scanned text extensions include `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.yaml`, `.yml`, `.md`, `.txt`, and `.toml` (for `pyproject.toml` / manifest parsing).
 
 ## Report schema

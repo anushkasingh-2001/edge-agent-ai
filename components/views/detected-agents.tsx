@@ -228,8 +228,13 @@ export function DetectedAgents({
       </div>
 
       <div className="grid gap-4">
-        {agents.map((agent) => (
-          <Card key={agent.name} className="bg-card border-border">
+        {agents.map((agent, i) => (
+          // Index is suffixed to the React key as a defensive measure:
+          // we already dedupe by name in `buildOverviewAgentsFromReport`,
+          // but if a future code path bypasses that helper and feeds in
+          // collisions, the UI should keep working instead of warning
+          // and silently dropping cards.
+          <Card key={`${agent.name}-${i}`} className="bg-card border-border">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">

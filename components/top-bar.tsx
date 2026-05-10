@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -50,6 +50,12 @@ import {
   type ScanReport,
 } from "@/lib/scan-report"
 import type { Project } from "@/lib/projects"
+import { fetchGitStatus, type GitStatusResponse } from "@/lib/git-client"
+import {
+  CommitDialog,
+  PullConfirmDialog,
+  PushConfirmDialog,
+} from "@/components/git-ops-dialogs"
 
 interface TopBarProps {
   projectName: string
@@ -88,6 +94,12 @@ interface TopBarProps {
   scanReport?: ScanReport | null
   /** Selected project — used in the export filename / markdown header. */
   project?: Project | null
+  /**
+   * Called after a successful Pull / Commit / Push so the parent can
+   * re-fetch the branch list and update headline state. Optional —
+   * top-bar will still refresh its own local git status either way.
+   */
+  onGitOpComplete?: () => void
 }
 
 const defaultAgents: TopBarAgentOption[] = [ALL_AGENTS_OPTION]
@@ -127,11 +139,42 @@ export function TopBar({
   gitLoading = false,
   scanReport = null,
   project = null,
+  onGitOpComplete,
 }: TopBarProps) {
   const agents = agentOptions
   const riskInfo = getRiskLevel(riskScore)
   const [branchPickerOpen, setBranchPickerOpen] = useState(false)
   const [toolsPickerOpen, setToolsPickerOpen] = useState(false)
+  const [pullOpen, setPullOpen] = useState(false)
+  const [commitOpen, setCommitOpen] = useState(false)
+  const [pushOpen, setPushOpen] = useState(false)
+  const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null)
+
+  // Fetch a lightweight git status snapshot so the dialogs can show
+  // working-tree state and the pull button can pre-warn on uncommitted
+  // changes without opening the modal first. Re-runs whenever the
+  // project, branch, or repo-state inputs change.
+  const refreshLocalGitStatus = useCallback(async () => {
+    if (!project?.path || !isGitRepo) {
+      setGitStatus(null)
+      return
+    }
+    try {
+      const s = await fetchGitStatus(project.path)
+      setGitStatus(s)
+    } catch {
+      setGitStatus(null)
+    }
+  }, [project?.path, isGitRepo])
+
+  useEffect(() => {
+    void refreshLocalGitStatus()
+  }, [refreshLocalGitStatus, currentBranch])
+
+  const handleAfterGitOp = useCallback(() => {
+    void refreshLocalGitStatus()
+    onGitOpComplete?.()
+  }, [refreshLocalGitStatus, onGitOpComplete])
   const remoteOnlySet = useMemo(
     () => new Set(remoteOnlyBranches),
     [remoteOnlyBranches]
@@ -437,44 +480,99 @@ export function TopBar({
             Run Scan
           </Button>
 
-          {/* Pull */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <Download className="h-4 w-4" />
-                Pull
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Pull latest changes from the selected branch</p>
-            </TooltipContent>
-          </Tooltip>
+          {/* Pull / Commit / Push.
+           *
+           * All three are disabled until we have a project that is actually
+           * a git repo and a branch to operate on. The actual API calls
+           * happen inside the dialogs so we don't fire destructive verbs
+           * without a confirmation step. */}
+          {(() => {
+            const gitDisabled =
+              !hasProject || !isGitRepo || !currentBranch || !project?.path
+            const dirty = gitStatus?.workingTreeStatus === "uncommitted"
+            return (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      disabled={gitDisabled}
+                      onClick={() => setPullOpen(true)}
+                    >
+                      <Download className="h-4 w-4" />
+                      Pull
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {gitDisabled
+                        ? "Open a Git repo to enable pull"
+                        : dirty
+                          ? "Working tree has uncommitted changes — commit/stash first"
+                          : `Pull latest changes for '${currentBranch}'`}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
 
-          {/* Commit */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <Upload className="h-4 w-4" />
-                Commit
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Commit local changes after scan review</p>
-            </TooltipContent>
-          </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      disabled={gitDisabled}
+                      onClick={() => setCommitOpen(true)}
+                    >
+                      <Upload className="h-4 w-4" />
+                      Commit
+                      {dirty && (
+                        <span
+                          className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-yellow-400"
+                          title="Working tree has uncommitted changes"
+                        />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {gitDisabled
+                        ? "Open a Git repo to enable commit"
+                        : dirty
+                          ? "Commit local changes (uncommitted edits detected)"
+                          : "Commit local changes (working tree currently clean)"}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
 
-          {/* Push */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <ArrowUpFromLine className="h-4 w-4" />
-                Push
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Push selected branch to GitHub</p>
-            </TooltipContent>
-          </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      disabled={gitDisabled}
+                      onClick={() => setPushOpen(true)}
+                    >
+                      <ArrowUpFromLine className="h-4 w-4" />
+                      Push
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {gitDisabled
+                        ? "Open a Git repo to enable push"
+                        : `Push '${currentBranch}' to origin`}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </>
+            )
+          })()}
 
           {/* Export Report — dropdown for JSON / Markdown, disabled with
               tooltip when no scan has been loaded yet. */}
@@ -485,6 +583,37 @@ export function TopBar({
           />
         </div>
       </TooltipProvider>
+
+      {project?.path && isGitRepo && currentBranch && (
+        <>
+          <PullConfirmDialog
+            open={pullOpen}
+            onOpenChange={setPullOpen}
+            projectPath={project.path}
+            branch={currentBranch}
+            workingTreeStatus={gitStatus?.workingTreeStatus ?? null}
+            headBranch={gitCurrentBranch}
+            onComplete={handleAfterGitOp}
+          />
+          <CommitDialog
+            open={commitOpen}
+            onOpenChange={setCommitOpen}
+            projectPath={project.path}
+            branch={currentBranch}
+            workingTreeStatus={gitStatus?.workingTreeStatus ?? null}
+            onComplete={handleAfterGitOp}
+          />
+          <PushConfirmDialog
+            open={pushOpen}
+            onOpenChange={setPushOpen}
+            projectPath={project.path}
+            branch={currentBranch}
+            headBranch={gitCurrentBranch}
+            remote={gitStatus?.remote ?? null}
+            onComplete={handleAfterGitOp}
+          />
+        </>
+      )}
     </div>
   )
 }

@@ -151,13 +151,25 @@ export function AppSidebar({
               </>
             ) : null}
 
-            <DropdownMenuItem onClick={onOpenLocalProject}>
+            {/* Action rows. The icon keeps the accent color as a visual
+             *  cue; the label uses the default foreground so it stays
+             *  readable both idle and on hover. The previous "text-accent
+             *  span" caused the label to render accent-on-accent (i.e.
+             *  invisible) once the dropdown item's focus background
+             *  kicked in — which is what the user reported. */}
+            <DropdownMenuItem
+              onClick={onOpenLocalProject}
+              className="font-medium"
+            >
               <FolderPlus className="h-4 w-4 mr-2 text-accent" />
-              <span className="text-accent">Open Local Project...</span>
+              <span>Open Local Project…</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onCloneFromGithub}>
+            <DropdownMenuItem
+              onClick={onCloneFromGithub}
+              className="font-medium"
+            >
               <Github className="h-4 w-4 mr-2 text-accent" />
-              <span className="text-accent">Clone from GitHub...</span>
+              <span>Clone from GitHub…</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

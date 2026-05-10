@@ -211,12 +211,37 @@ export function buildOverviewAgentsFromReport(
   riskScore: number
 ): OverviewAgentCard[] {
   if (!report?.agents_detected?.length) return []
+
+  // Dedupe by name. The scanner can emit the same logical agent more
+  // than once when, for example, a `build_agent()` factory and a class
+  // of the same name both appear in the source — they're two AgentHits
+  // with identical `name` but different file:line coordinates. We
+  // collapse those into one card per unique name, prefer the entry
+  // with a known framework (more useful to the user), and keep the
+  // first source location seen so View Details still has somewhere to
+  // point at. Without this dedupe the React `key={agent.name}` in
+  // DetectedAgents collides and React warns about duplicate keys.
+  const seenIndex = new Map<string, number>()
+  const unique: typeof report.agents_detected = []
+  for (const a of report.agents_detected) {
+    const idx = seenIndex.get(a.name)
+    if (idx === undefined) {
+      seenIndex.set(a.name, unique.length)
+      unique.push(a)
+      continue
+    }
+    const existing = unique[idx]
+    if (!existing.framework && a.framework) {
+      unique[idx] = { ...existing, framework: a.framework }
+    }
+  }
+
   const toolsByAgent = new Map<string, number>()
   for (const t of report.tools_detected ?? []) {
     if (!t.agent) continue
     toolsByAgent.set(t.agent, (toolsByAgent.get(t.agent) ?? 0) + 1)
   }
-  return report.agents_detected.map((a, i) => ({
+  return unique.map((a, i) => ({
     name: a.name,
     framework: a.framework ?? "",
     tools: toolsByAgent.get(a.name) ?? 0,

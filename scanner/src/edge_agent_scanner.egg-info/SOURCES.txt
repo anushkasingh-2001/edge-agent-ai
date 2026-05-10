@@ -12,6 +12,7 @@ src/edge_agent_scanner.egg-info/dependency_links.txt
 src/edge_agent_scanner.egg-info/requires.txt
 src/edge_agent_scanner.egg-info/top_level.txt
 src/edge_agent_scanner/rules/__init__.py
+src/edge_agent_scanner/rules/agents_inventory.py
 src/edge_agent_scanner/rules/approval_gates.py
 src/edge_agent_scanner/rules/base.py
 src/edge_agent_scanner/rules/dangerous_tools.py
@@ -19,6 +20,7 @@ src/edge_agent_scanner/rules/frameworks.py
 src/edge_agent_scanner/rules/mcp_openapi.py
 src/edge_agent_scanner/rules/prompt_injection.py
 src/edge_agent_scanner/rules/secrets.py
+src/edge_agent_scanner/rules/tools_inventory.py
 src/edge_agent_scanner/rules/vague_prompts.py
 tests/test_dangerous_tools.py
 tests/test_engine_cap.py

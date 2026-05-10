@@ -58,6 +58,10 @@ interface ScanCenterProps {
     narrow?: { findingIds?: string[]; files?: string[] }
   ) => Promise<{ beforeCount: number; afterCount: number; narrowed: boolean }>
   isScanning?: boolean
+  /** Cancels the in-flight scan request via an AbortController owned
+   * by the parent. The Scan Center can't abort fetches it didn't
+   * issue, so the parent exposes this. No-op when nothing is running. */
+  onStopScan?: () => void
   scanError?: string | null
   lastIssueCount?: number | null
   lastScanTime?: string | null
@@ -84,6 +88,7 @@ export function ScanCenter({
   selectedAgents = ["all"],
   onRunScan,
   isScanning = false,
+  onStopScan,
   scanError = null,
   lastIssueCount = null,
   lastScanTime = null,
@@ -249,6 +254,13 @@ export function ScanCenter({
   }
 
   const stopScan = () => {
+    // Tell the parent to abort the in-flight request. The parent will
+    // flip `isScanning` back to false on the AbortError, which causes
+    // this card to swap the Stop button back for "Run Selected" /
+    // "Run Full Scan". We also reset the local progress meter so the
+    // user gets immediate visual feedback without waiting for the
+    // round-trip.
+    onStopScan?.()
     setScanProgress(0)
   }
 

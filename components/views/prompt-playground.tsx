@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Card,
   CardContent,
@@ -429,8 +429,15 @@ export function PromptPlayground({
     )
   }
 
+  // Tracks which case id was just added so we can scroll it into
+  // view. Without this, "Add Case" silently appends below the fold and
+  // looks broken to the user.
+  const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
+
   function addCase() {
-    setCases((cs) => [...cs, emptyCase()])
+    const next = emptyCase()
+    setCases((cs) => [...cs, next])
+    setPendingScrollId(next.id)
   }
 
   function updateCase(id: string, patch: Partial<TestCase>) {
@@ -533,22 +540,28 @@ export function PromptPlayground({
 
   async function runAll() {
     if (running) return
-    if (cases.length === 0) return
+    // Only run cases that actually have an input. An empty case with
+    // an `expected tool` set still doesn't tell us anything useful and
+    // would otherwise cost a real model call. We DON'T early-return
+    // on "all empty" because the disabled-state guard already covers
+    // that path — but if the user gets here somehow, we no-op cleanly.
+    const runnable = cases.filter((c) => c.input.trim().length > 0)
+    if (runnable.length === 0) return
     setRunning(true)
     const cfgA = getSlotConfig(modelASlot, providers)
     const cfgB = getSlotConfig(modelBSlot, providers)
 
-    // Mark each case as loading first so the UI flips immediately,
-    // then fan out per-case with both models in parallel.
+    // Mark each runnable case as loading first so the UI flips
+    // immediately, then fan out per-case with both models in parallel.
     setRuns(() => {
       const next: Record<string, CaseRun> = {}
-      for (const c of cases) next[c.id] = { caseId: c.id, loading: true }
+      for (const c of runnable) next[c.id] = { caseId: c.id, loading: true }
       return next
     })
 
     // Per-case in parallel; cases run sequentially to avoid hammering
     // both providers with N×2 concurrent requests for a long suite.
-    for (const c of cases) {
+    for (const c of runnable) {
       const tools = toolsApiFor(c)
       const [a, b] = await Promise.all([
         runCaseAgainst(cfgA, c, tools, modelAOverride),
@@ -686,8 +699,19 @@ export function PromptPlayground({
   const noProvider = !primary
   const cfgA = getSlotConfig(modelASlot, providers)
   const cfgB = getSlotConfig(modelBSlot, providers)
-  const canRun =
-    !running && !noProvider && cases.some((c) => c.input.trim().length > 0)
+  // We only block Run All when (a) something is already in flight or
+  // (b) no provider is configured at all. Empty inputs used to also
+  // disable it, but that produced a "silently dead" button — instead
+  // we now surface an explicit, in-page reason just above the controls
+  // and let the user keep clicking. Per-case run buttons still respect
+  // the "needs input" rule because skipping there is unambiguous.
+  const hasAnyInput = cases.some((c) => c.input.trim().length > 0)
+  const canRun = !running && !noProvider && hasAnyInput
+  const runBlockedReason = !primary
+    ? "Add a provider in Settings → LLM Providers to run."
+    : !hasAnyInput
+    ? "Type at least one user input in a test case to enable Run All."
+    : null
 
   /* ---------------------------------------------------------------------- */
   /* Render                                                                 */
@@ -695,34 +719,56 @@ export function PromptPlayground({
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold">Prompt Playground</h1>
-          <p className="text-muted-foreground">
-            Compare two models on the same prompt, tools, and test cases —
-            assert which tool each picks per case.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={openSaveDialog}>
-            <Save className="h-4 w-4 mr-2" />
-            Save Session
-          </Button>
-          <Button onClick={runAll} disabled={!canRun} title={runDisabledTitle(noProvider, running, cases)}>
-            {running ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Running…
-              </>
-            ) : (
-              <>
-                <Play className="h-4 w-4 mr-2" />
-                Run All
-              </>
-            )}
-          </Button>
+      {/* Sticky page header — keeps Save Session / Run All reachable
+       *  no matter how far the user scrolls into the test-case list.
+       *  This was the #1 cause of "Run All doesn't work" reports: the
+       *  button was just off-screen below the fold once the user was
+       *  typing inputs. Sticky makes it follow them down. */}
+      <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-border/40">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h1 className="text-2xl font-semibold">Prompt Playground</h1>
+            <p className="text-muted-foreground text-sm">
+              Compare two models on the same prompt, tools, and test cases —
+              assert which tool each picks per case.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={openSaveDialog}>
+              <Save className="h-4 w-4 mr-2" />
+              Save Session
+            </Button>
+            <Button
+              type="button"
+              onClick={runAll}
+              disabled={!canRun}
+              title={runDisabledTitle(noProvider, running, cases)}
+            >
+              {running ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Running…
+                </>
+              ) : (
+                <>
+                  <Play className="h-4 w-4 mr-2" />
+                  Run All
+                </>
+              )}
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/* Why is Run All disabled? Surface the reason instead of relying
+       *  on a hover tooltip — a disabled-but-no-feedback button is the
+       *  #1 cause of "the button doesn't work" reports here. */}
+      {runBlockedReason && !running && (
+        <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-300">
+          <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div className="flex-1">{runBlockedReason}</div>
+        </div>
+      )}
 
       {noProvider && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-300">
@@ -786,8 +832,18 @@ export function PromptPlayground({
           <Card className="bg-card border-border">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base">Test Cases</CardTitle>
-                <Button variant="outline" size="sm" onClick={addCase}>
+                <CardTitle className="text-base">
+                  Test Cases
+                  <span className="ml-2 text-xs text-muted-foreground font-normal">
+                    ({cases.length})
+                  </span>
+                </CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addCase}
+                >
                   <Plus className="h-4 w-4 mr-2" />
                   Add Case
                 </Button>
@@ -812,6 +868,8 @@ export function PromptPlayground({
                   onRunOne={() => runOne(c)}
                   onSetOverride={(o) => setCaseToolOverride(c.id, o)}
                   canRun={!running && !noProvider}
+                  shouldScrollIntoView={pendingScrollId === c.id}
+                  onDidScroll={() => setPendingScrollId(null)}
                 />
               ))}
               {cases.length === 0 && (
@@ -819,6 +877,40 @@ export function PromptPlayground({
                   No cases yet — click <span className="font-medium">Add Case</span>.
                 </p>
               )}
+
+              {/* Bottom action bar — duplicates the page-header buttons
+               *  so that after a user types a long input they don't
+               *  have to scroll up to add another or kick off a run. */}
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/30">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addCase}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Case
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={runAll}
+                  disabled={!canRun}
+                  title={runDisabledTitle(noProvider, running, cases)}
+                >
+                  {running ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Running…
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 mr-2" />
+                      Run All ({cases.filter((c) => c.input.trim().length > 0).length})
+                    </>
+                  )}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -1012,6 +1104,8 @@ function CaseEditor({
   onRunOne,
   onSetOverride,
   canRun,
+  shouldScrollIntoView,
+  onDidScroll,
 }: {
   index: number
   c: TestCase
@@ -1024,6 +1118,11 @@ function CaseEditor({
   onRunOne: () => void
   onSetOverride: (override: string[] | null) => void
   canRun: boolean
+  /** When true, scroll this card into view on mount (next paint).
+   *  Used by the parent to make "Add Case" obviously do something even
+   *  when the new case is appended below the fold. */
+  shouldScrollIntoView?: boolean
+  onDidScroll?: () => void
 }) {
   const expectedValue =
     c.expectedTool.kind === "tool"
@@ -1043,8 +1142,21 @@ function CaseEditor({
   const effectiveTools = resolveCaseTools(c, globalSelected)
   const usingOverride = c.toolOverride !== null
 
+  // Auto-scroll when this card was just added. Pure UX glue; the
+  // parent owns the "which id to scroll" state so two simultaneous
+  // adds can't fight each other.
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!shouldScrollIntoView || !cardRef.current) return
+    cardRef.current.scrollIntoView({ behavior: "smooth", block: "center" })
+    onDidScroll?.()
+  }, [shouldScrollIntoView, onDidScroll])
+
   return (
-    <div className="rounded-lg border border-border/60 bg-secondary/10 p-3 space-y-2">
+    <div
+      ref={cardRef}
+      className="rounded-lg border border-border/60 bg-secondary/10 p-3 space-y-2"
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-[10px]">
@@ -1056,6 +1168,7 @@ function CaseEditor({
         </div>
         <div className="flex items-center gap-1">
           <Button
+            type="button"
             variant="ghost"
             size="sm"
             className="h-7 px-2"
@@ -1070,6 +1183,7 @@ function CaseEditor({
             <Play className="h-3.5 w-3.5" />
           </Button>
           <Button
+            type="button"
             variant="ghost"
             size="sm"
             className="h-7 px-2 text-muted-foreground hover:text-destructive"
@@ -1712,7 +1826,11 @@ function ModelSlotCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        {/* Provider slot picker */}
+        {/* Provider slot picker — just the provider name. The model id
+         *  for the selected provider lives in the model picker below
+         *  and in the card subtitle, so duplicating it here was noisy.
+         *  We still flag unconfigured slots in yellow so the user
+         *  knows they can't switch to them yet. */}
         <Select value={slot} onValueChange={(v) => onSlotChange(v as LlmSlot)}>
           <SelectTrigger className="bg-secondary/50 h-9">
             <SelectValue />
@@ -1725,11 +1843,7 @@ function ModelSlotCard({
                 <SelectItem key={s} value={s}>
                   <span className="flex items-center gap-2">
                     <span>{meta.label}</span>
-                    {c ? (
-                      <span className="text-[10px] text-muted-foreground">
-                        ({c.model})
-                      </span>
-                    ) : (
+                    {!c && (
                       <span className="text-[10px] text-yellow-400">
                         (not configured)
                       </span>

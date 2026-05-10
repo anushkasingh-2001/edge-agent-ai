@@ -236,3 +236,108 @@ export async function fetchGitCompareScan(args: {
   })
   return jsonOrThrow<GitCompareScanResponse>(res)
 }
+
+/* -------------------------------------------------------------------------- */
+/* Pull / Commit / Push                                                       */
+/*                                                                            */
+/* Unlike the read-only endpoints above these can FAIL with structured        */
+/* `{ ok: false, blocked, phase, ... }` payloads (e.g. uncommitted-changes    */
+/* on pull, critical/high findings on commit/push). Callers branch on `ok`/  */
+/* `blocked`, so we don't throw on non-2xx — we surface the JSON as-is.       */
+/* -------------------------------------------------------------------------- */
+
+export type GitOpReportSummary = {
+  risk_score: number
+  summary: {
+    critical: number
+    high: number
+    medium: number
+    low: number
+    total: number
+  }
+}
+
+export type GitPullResponse = {
+  ok: boolean
+  branch?: string
+  blocked?: boolean
+  reason?: "uncommitted_changes"
+  phase?: "fetch" | "pull"
+  workingTreeStatus?: GitWorkingTreeStatus
+  message?: string
+  stdout?: string
+  stderr?: string
+  error?: string
+}
+
+export type GitCommitResponse = {
+  ok: boolean
+  blocked?: boolean
+  reason?: "critical_or_high_findings"
+  noChanges?: boolean
+  phase?: "scan" | "add" | "commit"
+  message?: string
+  sha?: string | null
+  report?: GitOpReportSummary | null
+  stdout?: string
+  stderr?: string
+  error?: string
+}
+
+export type GitPushResponse = {
+  ok: boolean
+  branch?: string
+  blocked?: boolean
+  reason?: "critical_or_high_findings"
+  phase?: "scan" | "push"
+  message?: string
+  report?: GitOpReportSummary | null
+  stdout?: string
+  stderr?: string
+  error?: string
+}
+
+async function jsonAlways<T>(res: Response): Promise<T> {
+  const data = (await res.json().catch(() => ({}))) as T
+  return data
+}
+
+export async function gitPull(args: {
+  projectPath: string
+  branch: string
+}): Promise<GitPullResponse> {
+  const res = await fetch("/api/git/pull", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return jsonAlways<GitPullResponse>(res)
+}
+
+export async function gitCommit(args: {
+  projectPath: string
+  message: string
+  runScanBeforeCommit: boolean
+  warnOnCriticalFindings: boolean
+}): Promise<GitCommitResponse> {
+  const res = await fetch("/api/git/commit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return jsonAlways<GitCommitResponse>(res)
+}
+
+export async function gitPush(args: {
+  projectPath: string
+  branch: string
+  runScanBeforePush: boolean
+  warnOnCriticalFindings: boolean
+}): Promise<GitPushResponse> {
+  const res = await fetch("/api/git/push", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return jsonAlways<GitPushResponse>(res)
+}

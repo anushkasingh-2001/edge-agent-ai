@@ -1,0 +1,22 @@
+mode: block # warn | block | auto_merge
+
+security:
+  block_if_critical: true
+  block_if_high_increased: true
+  require_risk_score_not_increase: true
+
+agents:
+  SalesAgent:
+    accuracy:
+      min_absolute: 0.85
+      require_delta_gte: 0.0
+    runtime_ms:
+      max_absolute: 2000
+      require_delta_lte: 0
+    tool_selection:
+      min_pass_rate: 0.90
+
+auto_merge:
+  enabled: false
+  trusted_branches_only: true
+  require_clean_worktree: true

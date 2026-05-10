@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AppSidebar, type ViewType } from "@/components/app-sidebar"
 import { TopBar } from "@/components/top-bar"
 import { Overview } from "@/components/views/overview"
@@ -254,6 +254,13 @@ export default function Home() {
     return next
   }, [])
 
+  // Holds the in-flight scan's AbortController so the Scan Center
+  // "Stop" button can actually cancel the request. We keep it in a ref
+  // (not state) because we don't want re-renders to fire when the
+  // controller swaps out, and because async closures need to read the
+  // *latest* controller, not whatever was current when they captured.
+  const scanAbortRef = useRef<AbortController | null>(null)
+
   const executeScan = useCallback(
     async (
       selectedCheckIds: string[],
@@ -272,6 +279,14 @@ export default function Home() {
         )
         return { beforeCount: 0, afterCount: 0, narrowed: false }
       }
+      // Cancel any prior in-flight scan first — clicking "Run Scan"
+      // again while one is running should supersede, not pile on.
+      if (scanAbortRef.current) {
+        scanAbortRef.current.abort()
+      }
+      const controller = new AbortController()
+      scanAbortRef.current = controller
+
       setScanning(true)
       setScanError(null)
       try {
@@ -283,6 +298,11 @@ export default function Home() {
             projectPath: target.path,
             checks: checks && checks.length > 0 ? checks : undefined,
           }),
+          // Wiring the AbortSignal here is what makes the Stop button
+          // actually do something: aborting the controller rejects the
+          // fetch with an AbortError, which we catch below and surface
+          // as "Scan cancelled" rather than "Scan failed".
+          signal: controller.signal,
         })
         const raw = await res.json()
         if (!res.ok) {
@@ -322,14 +342,34 @@ export default function Home() {
           narrowed: Boolean(narrow),
         }
       } catch (e) {
-        setScanError(e instanceof Error ? e.message : "Scan failed")
+        // AbortError shouldn't read like a failure — the user asked for
+        // it. We clear the error too so the red banner doesn't linger.
+        if (
+          (e instanceof DOMException && e.name === "AbortError") ||
+          (e instanceof Error && e.name === "AbortError")
+        ) {
+          setScanError("Scan cancelled.")
+        } else {
+          setScanError(e instanceof Error ? e.message : "Scan failed")
+        }
         return { beforeCount: 0, afterCount: 0, narrowed: false }
       } finally {
+        // Only clear the ref if this run is still the active one — a
+        // newer run may have already replaced it.
+        if (scanAbortRef.current === controller) {
+          scanAbortRef.current = null
+        }
         setScanning(false)
       }
     },
     [selectedProject, currentBranch]
   )
+
+  /** Public abort hook — exposed to ScanCenter so the red Stop button
+   *  can cancel the in-flight scan. No-op when nothing is running. */
+  const abortScan = useCallback(() => {
+    scanAbortRef.current?.abort()
+  }, [])
 
   /** Load a historical scan back into the current view. If the scan belongs
    * to a different project than the currently-selected one, switch to that
@@ -436,6 +476,7 @@ export default function Home() {
               executeScan(ids, undefined, narrow)
             }
             isScanning={scanning}
+            onStopScan={abortScan}
             scanError={scanError}
             lastIssueCount={scanReport?.summary.total ?? null}
             lastScanTime={
@@ -502,8 +543,26 @@ export default function Home() {
             projectId={selectedProject?.id ?? null}
           />
         )
-      case "chat-assistant":
-        return <ChatAssistant currentBranch={currentBranch} />
+      case "chat-assistant": {
+        // Pass the latest scan id+timestamp so the right-rail "Scan
+        // run" + "Scanned at" rows show real values instead of the
+        // old hardcoded `scan-001`. We pull from the project's scan
+        // history (newest first) so the id matches what shows up in
+        // Recent Scans elsewhere.
+        const projectScans = scanHistoryForProject(
+          scanHistory,
+          selectedProject?.id
+        )
+        return (
+          <ChatAssistant
+            currentBranch={currentBranch}
+            scanReport={scanReport}
+            selectedProject={selectedProject}
+            latestScanId={projectScans[0]?.id ?? null}
+            latestScanTimestamp={projectScans[0]?.timestamp ?? null}
+          />
+        )
+      }
       case "settings":
         return <Settings />
       default:
@@ -534,6 +593,12 @@ export default function Home() {
         gitLoading={gitLoading}
         scanReport={scanReport}
         project={selectedProject}
+        onGitOpComplete={() => {
+          // Refresh the branch list (and HEAD detection) after every
+          // successful pull/commit/push so the rest of the app sees
+          // the new state.
+          void refreshBranches(selectedProject)
+        }}
       />
       <div className="flex flex-1 overflow-hidden">
         <AppSidebar
