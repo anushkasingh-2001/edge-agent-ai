@@ -30,13 +30,22 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, GitPullRequest, GitCommit, ArrowUpFromLine } from "lucide-react"
+import {
+  Loader2,
+  GitPullRequest,
+  GitCommit,
+  ArrowUpFromLine,
+  Trash2,
+  AlertTriangle,
+} from "lucide-react"
 import { toast } from "sonner"
 import {
   gitCommit,
+  gitDiscard,
   gitPull,
   gitPush,
   type GitCommitResponse,
+  type GitDiscardResponse,
   type GitOpReportSummary,
   type GitPullResponse,
   type GitPushResponse,
@@ -249,15 +258,45 @@ export function PullConfirmDialog({
 /* Commit                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Pull a sane default commit message out of a `git stash` subject.
+ *   "WIP on main: 1234abc fix login bug"  → "fix login bug"
+ *   "On low: my note"                      → "my note"
+ *   anything else                          → ""
+ *
+ * Only used as a placeholder/default when the saved draft message is
+ * empty — the user can always overwrite it.
+ */
+function defaultMessageFromStashSubject(subject: string | null | undefined): string {
+  if (!subject) return ""
+  const m = subject.match(/^(?:WIP )?[Oo]n \S+?:\s*(.*)$/)
+  if (!m) return ""
+  let rest = m[1].trim()
+  rest = rest.replace(/^[0-9a-f]{7,}\s+/, "")
+  return rest
+}
+
 export function CommitDialog({
   open,
   onOpenChange,
   projectPath,
   branch,
   workingTreeStatus,
+  latestStashRef,
+  latestStashMessage,
+  stashCount,
   onComplete,
 }: CommonProps & {
   workingTreeStatus: "uncommitted" | "clean" | null
+  /** Most recent `git stash` entry attributed to the current branch.
+   * When set, the dialog offers to pop+commit it as part of the same
+   * action — the API takes care of the actual `stash pop`. */
+  latestStashRef?: string | null
+  /** Subject of that stash (e.g. "WIP on main: 1234abc fix bug"). */
+  latestStashMessage?: string | null
+  /** Total number of stashes on this branch. Drives the "+N more"
+   * hint when there's more than one. */
+  stashCount?: number
 }) {
   const [message, setMessage] = useState("")
   const [runScan, setRunScan] = useState(false)
@@ -278,6 +317,18 @@ export function CommitDialog({
   // confused into thinking the gate is opt-in.
   const [policyMode, setPolicyMode] = useState<Policy["mode"] | null>(null)
   const policyEnforces = policyMode === "block"
+  // Discard-changes flow. `confirmDiscard` is a transient state: first
+  // click on the destructive button arms it, second click within the
+  // dialog session actually fires the request. We never auto-arm it,
+  // and we reset it on any successful commit / dialog close.
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const [lastDiscard, setLastDiscard] = useState<GitDiscardResponse | null>(
+    null
+  )
+  const [lastStaging, setLastStaging] = useState<
+    GitCommitResponse["staging"] | null
+  >(null)
 
   useEffect(() => {
     if (!open) return
@@ -291,13 +342,24 @@ export function CommitDialog({
     setBlockedReport(null)
     setPolicyResponse(null)
     setPolicyMode(null)
+    setConfirmDiscard(false)
+    setLastDiscard(null)
+    setLastStaging(null)
+    // Prefer the user's saved draft; fall back to a derived default
+    // pulled from the latest stash subject when the branch is
+    // "stash-only-dirty" so the user gets a sensible starting point.
+    let initial = ""
     if (typeof window !== "undefined") {
       try {
-        setMessage(window.localStorage.getItem(LS_KEYS.lastCommitMessage) ?? "")
+        initial = window.localStorage.getItem(LS_KEYS.lastCommitMessage) ?? ""
       } catch {
-        setMessage("")
+        initial = ""
       }
     }
+    if (!initial.trim() && latestStashRef) {
+      initial = defaultMessageFromStashSubject(latestStashMessage)
+    }
+    setMessage(initial)
     // Fetch the policy mode so the UI can lock the toggle when the
     // project enforces. Best-effort — failure just leaves the toggle
     // user-controlled, and the server still enforces independently.
@@ -323,6 +385,11 @@ export function CommitDialog({
         cancelled = true
       }
     }
+    // We deliberately exclude `latestStashRef` / `latestStashMessage`
+    // from the deps below: those props are reflected into state once
+    // when the dialog opens. Reacting to them mid-flight would clobber
+    // the user's typed message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, projectPath])
 
   useEffect(() => {
@@ -335,6 +402,13 @@ export function CommitDialog({
   const trimmed = message.trim()
   const canCommit = !!projectPath && trimmed.length > 0 && !busy
   const dirty = workingTreeStatus === "uncommitted"
+  const hasStash = !!latestStashRef
+  // "Stash-only-dirty" = the only thing making the branch dirty is a
+  // stash sitting in the stash list. Drives a friendlier dialog
+  // header and a hint that the click will pop+commit the stash.
+  const stashOnlyDirty =
+    hasStash &&
+    (workingTreeStatus === "clean" || workingTreeStatus === null)
 
   const handleCommit = async () => {
     if (!canCommit) return
@@ -349,6 +423,11 @@ export function CommitDialog({
         message: trimmed,
         runScanBeforeCommit: runScan,
         warnOnCriticalFindings: warnOnCritical,
+        // Pop+commit the latest stash for this branch in the same
+        // request when there is one. The server runs the policy
+        // gate against working-tree + stash@{0} (auto-merged in
+        // the scan route), then pops only on the way through.
+        stashRef: latestStashRef ?? undefined,
       })
     } catch (e) {
       setServerError(e instanceof Error ? e.message : "Commit request failed")
@@ -360,6 +439,7 @@ export function CommitDialog({
     if (res.evaluation && res.policy) {
       setPolicyResponse(toPolicyResponse(res.policy, res.evaluation, res))
     }
+    setLastStaging(res.staging ?? null)
     if (res.ok && res.noChanges) {
       toast.message("No changes to commit.")
       // Don't auto-close; the user may still want to inspect the policy
@@ -375,7 +455,24 @@ export function CommitDialog({
       } catch {
         /* ignore */
       }
-      toast.success(res.message ?? "Commit complete.")
+      // Surface the attribution overlap count so the user knows we
+      // also pulled in untracked files that originated on other
+      // branches (informational — they were committed regardless).
+      const fromOther = res.staging?.untrackedFromOtherBranchCount ?? 0
+      const baseMsg = res.message ?? "Commit complete."
+      const stashMsg = res.stashPopped
+        ? `Applied ${res.stashPopped.ref} and committed.`
+        : null
+      const otherMsg =
+        fromOther > 0
+          ? `${fromOther} untracked file${
+              fromOther === 1 ? "" : "s"
+            } originally from other branches also committed.`
+          : null
+      const fullMsg = [baseMsg, stashMsg, otherMsg]
+        .filter(Boolean)
+        .join(" ")
+      toast.success(fullMsg)
       setMessage("")
       onOpenChange(false)
       void onComplete?.()
@@ -396,6 +493,14 @@ export function CommitDialog({
       toast.error(msg)
       return
     }
+    if (res.blocked && res.reason === "stash_pop_conflict") {
+      const msg =
+        res.message ??
+        `Could not apply ${latestStashRef ?? "stash"}. Resolve manually with \`git stash pop\` and commit again.`
+      setServerError(msg)
+      toast.error(msg)
+      return
+    }
     const detail = res.message ?? res.error ?? "git commit failed"
     setServerError(`${detail}${res.stderr ? `\n${res.stderr}` : ""}`)
     toast.error(detail)
@@ -412,18 +517,84 @@ export function CommitDialog({
     }
   }
 
+  const handleDiscard = async () => {
+    if (!projectPath) return
+    // Two-step confirmation. The first click only arms the destructive
+    // action; the second call (button now reads "Confirm discard")
+    // actually fires.
+    if (!confirmDiscard) {
+      setConfirmDiscard(true)
+      return
+    }
+    setDiscarding(true)
+    setServerError(null)
+    let res: GitDiscardResponse | null = null
+    try {
+      res = await gitDiscard({ projectPath, confirm: true })
+    } catch (e) {
+      setServerError(
+        e instanceof Error ? e.message : "Discard request failed"
+      )
+      setDiscarding(false)
+      setConfirmDiscard(false)
+      return
+    }
+    setDiscarding(false)
+    setConfirmDiscard(false)
+    setLastDiscard(res)
+    if (!res?.ok) {
+      const msg = res?.error ?? "Discard failed."
+      setServerError(msg)
+      toast.error(msg)
+      return
+    }
+    toast.success(res.message ?? "Local changes discarded.")
+    // Re-run the policy gate by clearing the prior block — the next
+    // click on Commit will re-scan against a clean working tree.
+    setBlockedReport(null)
+    setPolicyResponse(null)
+    setLastStaging(null)
+    void onComplete?.()
+  }
+
   return (
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => !busy && !discarding && onOpenChange(o)}
+    >
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <GitCommit className="h-5 w-5" />
-            Commit local changes
+            {stashOnlyDirty
+              ? "Commit stashed WIP"
+              : hasStash
+                ? "Commit local changes + stash"
+                : "Commit local changes"}
           </DialogTitle>
           <DialogDescription>
-            Stages all tracked + untracked changes (<code>git add -A</code>) and
-            commits them locally. Push is a separate, explicitly confirmed
-            step.
+            {stashOnlyDirty
+              ? (
+                <>
+                  Working tree is clean but{" "}
+                  <code>{branch || "this branch"}</code> has a stash. We&apos;ll
+                  pop <code>{latestStashRef}</code>, run the policy gate, and
+                  commit the result. Push is a separate step.
+                </>
+              )
+              : (
+                <>
+                  Stages every tracked change and every untracked file in the
+                  working tree
+                  {hasStash ? (
+                    <>
+                      , then pops <code>{latestStashRef}</code> and commits the
+                      combined result
+                    </>
+                  ) : null}
+                  . Push is a separate step.
+                </>
+              )}
           </DialogDescription>
         </DialogHeader>
 
@@ -447,6 +618,28 @@ export function CommitDialog({
               {workingTreeStatus ?? "unknown"}
             </Badge>
           </div>
+          {hasStash && (
+            <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2 text-xs text-blue-200 space-y-1">
+              <div className="font-medium">
+                Latest stash on '{branch}': {latestStashRef}
+                {(stashCount ?? 0) > 1 && (
+                  <span className="text-blue-200/70">
+                    {" "}
+                    (+{(stashCount ?? 0) - 1} more not popped)
+                  </span>
+                )}
+              </div>
+              <div className="text-blue-200/80 font-mono text-[11px] truncate">
+                {latestStashMessage ?? "(no message)"}
+              </div>
+              <div className="text-blue-200/70">
+                Clicking <strong>Commit</strong> will run the same scan +
+                policy gate and, if it passes, pop this stash before staging
+                so its contents land in the commit. On a stash-pop conflict
+                the commit is aborted and the stash is preserved.
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1">
             <Label htmlFor="commit-message">Commit message</Label>
@@ -530,6 +723,63 @@ export function CommitDialog({
             <PolicyStatusCard response={policyResponse} compact />
           )}
 
+          {lastStaging &&
+            (lastStaging.untrackedFromOtherBranchCount ?? 0) > 0 && (
+              <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2 text-xs text-blue-200 space-y-1">
+                <div className="font-medium">
+                  {lastStaging.untrackedFromOtherBranchCount} untracked file
+                  {lastStaging.untrackedFromOtherBranchCount === 1
+                    ? ""
+                    : "s"}{" "}
+                  also committed (originally from other branches)
+                </div>
+                <div className="text-blue-200/80">
+                  These leaked across when you switched branches; they were
+                  staged with the rest. Use{" "}
+                  <code>git log --all -- &lt;file&gt;</code> if you want to
+                  see where each one originally came from.
+                </div>
+                {lastStaging.untrackedFromOtherBranches &&
+                  lastStaging.untrackedFromOtherBranches.length > 0 && (
+                    <ul className="font-mono text-[11px] pl-1 space-y-0.5">
+                      {lastStaging.untrackedFromOtherBranches.map((d) => (
+                        <li key={d.path} className="truncate">
+                          {d.path}
+                          <span className="text-blue-200/60">
+                            {" "}
+                            ← {d.branch}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+              </div>
+            )}
+
+          {lastDiscard?.ok && (
+            <div className="rounded-md border border-green-500/30 bg-green-500/5 p-2 text-xs text-green-200 space-y-1">
+              <div className="font-medium">{lastDiscard.message}</div>
+              <div className="text-green-200/80">
+                Reverted {lastDiscard.revertedTracked ?? 0} tracked file
+                {lastDiscard.revertedTracked === 1 ? "" : "s"}. Untracked
+                files were left untouched (
+                {lastDiscard.keptUntracked ?? 0} kept).
+              </div>
+              {lastDiscard.keptUntrackedByBranch &&
+                Object.keys(lastDiscard.keptUntrackedByBranch).length > 0 && (
+                  <ul className="font-mono text-[11px] pl-1 space-y-0.5 text-green-200/70">
+                    {Object.entries(lastDiscard.keptUntrackedByBranch).map(
+                      ([b, n]) => (
+                        <li key={b}>
+                          {n} on <span className="text-green-100">'{b}'</span>
+                        </li>
+                      )
+                    )}
+                  </ul>
+                )}
+            </div>
+          )}
+
           {blockedReport && !policyResponse && (
             <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300 space-y-1">
               <div className="font-medium">Pre-commit scan blocked the commit.</div>
@@ -541,8 +791,9 @@ export function CommitDialog({
                 {blockedReport.summary.low} low
               </div>
               <div>
-                Review the findings, fix or accept the risk, then disable
-                &ldquo;Block on critical / high&rdquo; or rerun.
+                Review the findings, fix them, or click <strong>Discard
+                local changes</strong> below to revert this branch back to its
+                last commit.
               </div>
             </div>
           )}
@@ -551,25 +802,93 @@ export function CommitDialog({
               {serverError}
             </div>
           )}
+
+          {confirmDiscard && (
+            <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-200 space-y-2">
+              <div className="font-medium flex items-center gap-1.5">
+                <AlertTriangle className="h-4 w-4" />
+                Discard tracked changes on{" "}
+                <code>{branch || "this branch"}</code>?
+              </div>
+              <ul className="list-disc pl-5 space-y-0.5 text-red-200/80">
+                <li>
+                  Tracked file edits will be reverted to the last commit on
+                  this branch. Cannot be undone.
+                </li>
+                <li>
+                  Untracked files (including ones from other branches) are
+                  <strong> never deleted</strong> by this action. Use{" "}
+                  <code>git clean</code> in a terminal if you really want
+                  them gone.
+                </li>
+              </ul>
+              <div>Click the red button again to confirm.</div>
+            </div>
+          )}
         </div>
 
-        <DialogFooter className="gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={busy}
-          >
-            Cancel
-          </Button>
-          <Button type="button" onClick={handleCommit} disabled={!canCommit}>
-            {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            {busy
-              ? runScan
-                ? "Scanning + committing…"
-                : "Committing…"
-              : "Commit"}
-          </Button>
+        <DialogFooter className="gap-2 sm:justify-between">
+          {/* Destructive escape hatch — only available when there are
+              actual tracked or untracked changes to revert. A pure
+              "stash-only-dirty" branch has nothing for `git checkout
+              -- .` to do, so we hide the button instead of offering
+              a misleading no-op. (Drop stash via `git stash drop`.)
+              Two-step confirmation prevents fat-finger data loss. */}
+          {dirty && !stashOnlyDirty && !lastDiscard?.ok ? (
+            <Button
+              type="button"
+              variant={confirmDiscard ? "destructive" : "outline"}
+              onClick={handleDiscard}
+              disabled={busy || discarding || !projectPath}
+              className={
+                confirmDiscard
+                  ? ""
+                  : "border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+              }
+            >
+              {discarding ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-2" />
+              )}
+              {discarding
+                ? "Discarding…"
+                : confirmDiscard
+                  ? "Confirm discard"
+                  : "Discard local changes"}
+            </Button>
+          ) : (
+            <span />
+          )}
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={busy || discarding}
+            >
+              {lastDiscard?.ok ? "Close" : "Cancel"}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleCommit}
+              disabled={!canCommit || discarding}
+            >
+              {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {busy
+                ? runScan
+                  ? "Scanning + committing…"
+                  : hasStash
+                    ? "Popping stash + committing…"
+                    : "Committing…"
+                : hasStash
+                  ? stashOnlyDirty
+                    ? "Pop stash & commit"
+                    : "Commit + pop stash"
+                  : "Commit"}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -13,6 +13,14 @@ SKIP_DIR_NAMES: frozenset[str] = frozenset(
         "venv",
         ".venv",
         ".turbo",
+        # Edge Agent AI's own bookkeeping (policy.yaml, last-scan.json,
+        # base-scan-cache.json, untracked-attribution.json). Without
+        # this skip, the scanner walks our cached scan reports — which
+        # contain serialised dangerous-tool names, secret patterns,
+        # and code snippets from real findings — and re-flags them
+        # against the project, causing main's issue count to balloon
+        # every time a baseline scan ran. See the "9 → 21 jump" bug.
+        ".edgeagent",
     }
 )
 

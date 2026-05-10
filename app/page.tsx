@@ -304,6 +304,13 @@ export default function Home() {
           body: JSON.stringify({
             projectPath: target.path,
             checks: checks && checks.length > 0 ? checks : undefined,
+            // Pass the *user-selected* branch through to the API so
+            // selecting `gt` or `yeye` in the dropdown actually scans
+            // those branches via a temp `git worktree`, instead of
+            // silently re-scanning whatever's checked out on disk.
+            // The API no-ops the worktree path when this matches the
+            // current HEAD branch.
+            branch: currentBranch || undefined,
           }),
           // Wiring the AbortSignal here is what makes the Stop button
           // actually do something: aborting the controller rejects the
@@ -385,7 +392,11 @@ export default function Home() {
    * server returns its safe defaults so the UI still gets a decision.
    */
   const runPolicyForReport = useCallback(
-    async (report: ScanReport, project: Project | null) => {
+    async (
+      report: ScanReport,
+      project: Project | null,
+      opts: { refreshBase?: boolean } = {}
+    ) => {
       if (!project?.path) {
         setPolicyResponse(null)
         return
@@ -399,6 +410,11 @@ export default function Home() {
         const resp = await evaluatePolicyApi({
           projectPath: project.path,
           targetReport: report,
+          // refreshBase=true is wired to the "Re-scan main" button on
+          // the policy card; the server then bypasses the on-disk
+          // base-scan cache and re-runs the scanner against the base
+          // branch's HEAD so we recover from a stale baseline.
+          refreshBase: opts.refreshBase,
           context: {
             branch: currentBranch || project.branch,
             // Working-tree status is fetched lazily by TopBar; the policy
@@ -419,6 +435,15 @@ export default function Home() {
     },
     [currentBranch]
   )
+
+  /** Public refresh hook for the "Re-scan <base>" button on the
+   *  Overview's policy card. Re-evaluates the current scan against a
+   *  fresh base-branch scan, ignoring any cached entry. No-op when
+   *  there's no current scan or project. */
+  const refreshPolicyBaseline = useCallback(() => {
+    if (!scanReport || !selectedProject) return
+    void runPolicyForReport(scanReport, selectedProject, { refreshBase: true })
+  }, [scanReport, selectedProject, runPolicyForReport])
 
   // Re-evaluate policy whenever the *current* scan report changes
   // (executeScan, handleLoadScan, project switch). Keeps the Overview
@@ -531,6 +556,7 @@ export default function Home() {
             failedRuleIds={failedRuleIds}
             policyResponse={policyResponse}
             policyLoading={policyLoading}
+            onRefreshPolicyBaseline={refreshPolicyBaseline}
             projectPath={selectedProject?.path ?? null}
             // The "policy gate" runs as a side-effect of every scan, so
             // the scan report's own generated_at is the cleanest proxy

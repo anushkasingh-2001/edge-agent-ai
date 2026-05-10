@@ -122,6 +122,17 @@ class ScanReport(BaseModel):
     summary: Summary = Field(default_factory=Summary)
     risk_score: int = Field(ge=0, le=100)
     findings: list[Finding] = Field(default_factory=list)
+    # Number of text files the walker actually fed into the rules. Surfaced
+    # so the UI can show "342 files scanned · 9 issues" — important UX
+    # because the scanner is regex/keyword based, so a file with arbitrary
+    # text ("vfj rgjgi") is INSPECTED but contributes 0 findings. Without
+    # this number users (rightly) wonder whether their new file was even
+    # looked at, or whether the scan is silently missing it.
+    files_scanned: int = 0
+    # Per-extension breakdown of scanned files, e.g. {".py": 41, ".md": 8}.
+    # Lets the UI reveal "you added a .txt file but only 3 .txt files were
+    # scanned — the others were skipped (binary, oversized, or in node_modules)."
+    files_scanned_by_ext: dict[str, int] = Field(default_factory=dict)
 
 
 def utc_now_iso() -> str:

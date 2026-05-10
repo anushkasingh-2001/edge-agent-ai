@@ -54,6 +54,121 @@ const AgentHitSchema = z.object({
   framework: z.string().nullable().optional(),
 })
 
+/**
+ * Snapshot of `git status --porcelain` at scan time. Stamped on every
+ * report by /api/scan when the scan target is a git repo. Lets the UI
+ * disambiguate "this is what main looks like" from "this is what main
+ * looks like *plus* the uncommitted changes you forgot to clean up
+ * after switching branches" — the failure mode that drove this field
+ * being added in the first place.
+ *
+ * `clean === true` means working tree matches HEAD: zero modified,
+ * zero untracked, zero staged-but-uncommitted. Anything else and the
+ * scan results don't represent a pure committed state, and the
+ * Policy card / Recent Scans rows surface a warning so the user
+ * knows.
+ *
+ * `branch` is recorded too because users frequently misremember which
+ * branch they were on; pairing the badge with the actual branch makes
+ * "Scan 17 on main · 26 issues · +3 untracked" unambiguous.
+ */
+const WorkingTreeStatusSchema = z.object({
+  clean: z.boolean(),
+  branch: z.string().nullable().optional(),
+  /** Files in the working tree that aren't tracked at all (`??`). */
+  untracked: z.number(),
+  /** Tracked files with any kind of pending change — modified, added,
+   *  deleted, renamed, etc. (anything that isn't `??`). */
+  modified: z.number(),
+  /** untracked + modified, pre-computed for convenience. */
+  total: z.number(),
+  /** True when the scanner walked the tree with ALL untracked files
+   *  removed from its file list (the `includeUntracked: false` opt-out
+   *  used by the pre-commit gate). The default in-place scan now
+   *  always includes every untracked file, so this is false/undefined
+   *  in normal usage. */
+  untracked_excluded_from_scan: z.boolean().optional(),
+  /** Total number of untracked files explicitly excluded by the
+   *  blanket opt-out. Always 0 in normal scans. */
+  untracked_excluded_count: z.number().optional(),
+  /** Informational: how many of the SCANNED untracked files were
+   *  attributed to a non-current branch. The scanner still processed
+   *  them; this just lets the UI show "of N untracked, M originally
+   *  came from branch X". */
+  untracked_attributed_other_branch_count: z.number().optional(),
+  /** Up to ~10 (path, branch) pairs for the cross-branch attributed
+   *  files so the UI can name names ("from low, low, slot42")
+   *  without bloating the report payload. */
+  untracked_attributed_other_branches: z
+    .array(z.object({ path: z.string(), branch: z.string() }))
+    .optional(),
+  /** True when the scan was run against a temporary `git worktree`
+   *  checkout rather than the user's actual working tree — set when
+   *  the caller asked to scan a different branch than the one
+   *  currently checked out. In this case the working-tree counts are
+   *  always zero and the dirty-tree warning shouldn't fire because
+   *  the checkout is pristine by construction. */
+  virtual_checkout: z.boolean().optional(),
+  /** Short SHA of the commit that was checked out when
+   *  `virtual_checkout === true`. Lets the UI show "branch HEAD only"
+   *  alongside the actual ref. */
+  virtual_checkout_sha: z.string().optional(),
+  /** True when this scan was a stash-only scan: the route applied a
+   *  `git stash` entry on top of HEAD in a temp worktree, isolated
+   *  the files the stash actually touched, and scanned just those
+   *  files. Findings come exclusively from the stashed WIP — the
+   *  committed code is NOT part of this scan. */
+  stash_scan: z.boolean().optional(),
+  /** True when this was a normal in-place scan that ALSO automatically
+   *  pulled in EVERY `git stash` entry attributed to the current
+   *  branch as a second scanner pass and merged the findings. The
+   *  stash extracts are unioned (latest wins on per-file conflicts)
+   *  so the scanner sees one canonical version of each touched file.
+   *  Differs from `stash_scan` in that the working tree was scanned
+   *  too — `stash_included` is additive, `stash_scan` is exclusive.
+   *  The single-stash fields below describe the LATEST stash for
+   *  backward compat; `stashes_included` carries the full list. */
+  stash_included: z.boolean().optional(),
+  /** Latest stash ref folded into this scan (`stash@{0}` for the
+   *  current branch). Older stashes for the same branch live in
+   *  `stashes_included`. */
+  stash_ref: z.string().optional(),
+  /** Concrete commit SHA of the latest stash entry, for unambiguous
+   *  logging. */
+  stash_sha: z.string().optional(),
+  /** Latest stash's subject ("WIP on main: a1d57d6 fix bug").
+   *  Surfaced in the Recent Scans row so the user can tell stashes
+   *  apart at a glance. */
+  stash_message: z.string().optional(),
+  /** First ~50 UNIQUE paths the merged stash union touched (across
+   *  all included stashes; latest version of each file wins). Lets
+   *  the UI list them in a tooltip without inflating the payload. */
+  stash_files: z.array(z.string()).optional(),
+  /** Total number of UNIQUE files across all included stashes
+   *  (`stash_files` may be truncated; this is the unbounded count). */
+  stash_file_count: z.number().optional(),
+  /** Per-stash breakdown for every stash on the current branch that
+   *  got folded into this scan. Newest-first to match `git stash list`.
+   *  `file_count` is the count of files THIS stash touched (not the
+   *  union — that's `stash_file_count`). */
+  stashes_included: z
+    .array(
+      z.object({
+        ref: z.string(),
+        sha: z.string(),
+        message: z.string(),
+        file_count: z.number(),
+      })
+    )
+    .optional(),
+  /** Total number of stashes folded in. Equals
+   *  `stashes_included.length` and lets the UI badge "+ 3 stashes ·
+   *  12 files" without computing the array. */
+  stashes_included_count: z.number().optional(),
+})
+
+export type WorkingTreeStatus = z.infer<typeof WorkingTreeStatusSchema>
+
 export const ScanReportSchema = z.object({
   schema_version: z.string(),
   scan_root: z.string(),
@@ -77,6 +192,23 @@ export const ScanReportSchema = z.object({
   }),
   risk_score: z.number(),
   findings: z.array(ScannerFindingSchema),
+  /** Total text files the walker actually fed into the rules. The
+   * scanner is regex/keyword based, so a file is INSPECTED whenever
+   * its extension is in the allow list — but a file full of arbitrary
+   * text contributes 0 findings. Surfacing this number stops users
+   * (rightly) thinking "0 issues for my new file = scanner skipped
+   * it"; the answer is "scanner saw it; no patterns matched". */
+  files_scanned: z.number().int().min(0).optional(),
+  /** Per-extension breakdown of `files_scanned`, e.g.
+   * `{".py": 41, ".md": 8, ".txt": 3}`. Lets the UI explain things
+   * like "you added a .pdf but the walker only looks at .py/.txt/etc.
+   * — your file was skipped, that's why it shows no findings." */
+  files_scanned_by_ext: z.record(z.string(), z.number().int().min(0)).optional(),
+  // Optional — only present when the scan target is a git repo and
+  // /api/scan succeeded in stamping it. Pre-existing reports stored
+  // in localStorage from before this field landed will simply not
+  // have it (the UI treats absent === unknown, not === clean).
+  working_tree: WorkingTreeStatusSchema.optional(),
 })
 
 export type ScanReport = z.infer<typeof ScanReportSchema>

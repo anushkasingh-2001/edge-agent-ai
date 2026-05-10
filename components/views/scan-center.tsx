@@ -52,7 +52,11 @@ interface ScanCenterProps {
    * report so the UI only shows findings the active user-defined suite was
    * generated from. Prefer `findingIds` when available (most precise — one
    * test ⇒ one finding); fall back to `files` for older suites that don't
-   * carry finding ids. Without this the suite was decorative. */
+   * carry finding ids. Without this the suite was decorative.
+   *
+   * Stash contents are NEVER a separate scan mode — the scan API folds
+   * `stash@{0}` into every regular scan automatically, so a "Run Full
+   * Scan" already covers committed code + working tree + stashed WIP. */
   onRunScan: (
     selectedCheckIds: string[],
     narrow?: { findingIds?: string[]; files?: string[] }
@@ -199,7 +203,9 @@ export function ScanCenter({
    *  - Suite active + "selected":  intersection of ticked rules and suite
    *                                rules. Lets users tighten further.
    */
-  const startScan = async (mode: "full" | "selected") => {
+  const startScan = async (
+    mode: "full" | "selected"
+  ) => {
     let ids: string[]
     if (activeSuite && suiteRules.length > 0) {
       if (mode === "selected" && selectedChecks.length > 0) {
@@ -563,37 +569,320 @@ export function ScanCenter({
                           : undefined
                       }
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
-                          <span className="text-sm font-medium truncate">
-                            {idx === 0 ? "Latest scan" : `Scan ${scanHistory.length - idx}`}
-                          </span>
-                        </div>
-                        {scan.findingCount > 0 ? (
-                          <Badge
-                            variant="outline"
-                            className="text-xs border-orange-500/50 text-orange-400 shrink-0"
-                          >
-                            {scan.findingCount} issues
-                          </Badge>
-                        ) : (
-                          <Badge
-                            variant="outline"
-                            className="text-xs border-green-500/50 text-green-400 shrink-0"
-                          >
-                            Clean
-                          </Badge>
-                        )}
-                      </div>
+                      {(() => {
+                        // Pull the stash-only flag once so the title,
+                        // status badge, and tooltips all stay in sync.
+                        // A stash-only scan inspects ONLY the files
+                        // inside the stash entry — the rest of the
+                        // branch is NOT scanned. That's a critical
+                        // distinction: a "Clean" stash scan does NOT
+                        // mean the branch is clean, and the issue
+                        // count isn't comparable with branch scans.
+                        const isStashOnly =
+                          scan.report?.working_tree?.stash_scan === true
+                        const stashFileCount =
+                          scan.report?.working_tree?.stash_file_count ?? 0
+                        const titleText = isStashOnly
+                          ? idx === 0
+                            ? "Latest stash scan"
+                            : "Stash scan"
+                          : idx === 0
+                            ? "Latest scan"
+                            : `Scan ${scanHistory.length - idx}`
+                        return (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <CheckCircle2
+                                className={`h-4 w-4 shrink-0 ${
+                                  isStashOnly
+                                    ? "text-blue-300"
+                                    : "text-green-400"
+                                }`}
+                              />
+                              <span
+                                className="text-sm font-medium truncate"
+                                title={
+                                  isStashOnly
+                                    ? `Stash-only scan: only the ${stashFileCount} file${
+                                        stashFileCount === 1 ? "" : "s"
+                                      } inside the stash were inspected. The rest of the branch was NOT scanned — use Run Full Scan for branch-wide results.`
+                                    : undefined
+                                }
+                              >
+                                {titleText}
+                              </span>
+                            </div>
+                            {scan.findingCount > 0 ? (
+                              <Badge
+                                variant="outline"
+                                className={`text-xs shrink-0 ${
+                                  isStashOnly
+                                    ? "border-orange-500/50 text-orange-400"
+                                    : "border-orange-500/50 text-orange-400"
+                                }`}
+                                title={
+                                  isStashOnly
+                                    ? `${scan.findingCount} issue${
+                                        scan.findingCount === 1 ? "" : "s"
+                                      } found inside the stash only — branch contents were NOT scanned.`
+                                    : undefined
+                                }
+                              >
+                                {isStashOnly
+                                  ? `Stash: ${scan.findingCount} issue${
+                                      scan.findingCount === 1 ? "" : "s"
+                                    }`
+                                  : `${scan.findingCount} issues`}
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="outline"
+                                className={`text-xs shrink-0 ${
+                                  isStashOnly
+                                    ? "border-blue-500/50 text-blue-300"
+                                    : "border-green-500/50 text-green-400"
+                                }`}
+                                title={
+                                  isStashOnly
+                                    ? `Only the ${stashFileCount} file${
+                                        stashFileCount === 1 ? "" : "s"
+                                      } inside the stash were checked and they had no findings. The rest of the branch was NOT scanned — this does NOT mean the branch is clean.`
+                                    : undefined
+                                }
+                              >
+                                {isStashOnly
+                                  ? `Stash clean (${stashFileCount} file${
+                                      stashFileCount === 1 ? "" : "s"
+                                    })`
+                                  : "Clean"}
+                              </Badge>
+                            )}
+                          </div>
+                        )
+                      })()}
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <Clock className="h-3 w-3 shrink-0" />
                         <span className="truncate">
                           {formatScanTime(scan.timestamp)}
-                          {scan.branch ? ` · ${scan.branch}` : ""}
+                          {/* Stash scans don't belong to a branch
+                              conceptually — show the stash ref
+                              instead so the user can tell at a
+                              glance "this row was a stash run". */}
+                          {scan.report?.working_tree?.stash_scan
+                            ? ` · ${
+                                scan.report.working_tree.stash_ref ?? "stash"
+                              }`
+                            : scan.branch
+                              ? ` · ${scan.branch}`
+                              : ""}
+                          {/* When this scan was run via temp git
+                              worktree (user picked a non-checked-out
+                              branch in the dropdown) the report
+                              carries the resolved SHA. Surfacing it
+                              clarifies that the result is the
+                              branch's pristine HEAD, not the working
+                              tree on disk. */}
+                          {scan.report?.working_tree?.virtual_checkout &&
+                          scan.report.working_tree.virtual_checkout_sha
+                            ? `@${scan.report.working_tree.virtual_checkout_sha.slice(
+                                0,
+                                7
+                              )}`
+                            : ""}
                           {` · risk ${scan.riskScore}/100`}
+                          {/* Proof-of-coverage. Older scan history
+                              entries (pre-field) just won't show
+                              this segment. Critical UX context
+                              because the scanner is regex-based:
+                              "0 issues" can mean two very different
+                              things and this number disambiguates. */}
+                          {typeof scan.report?.files_scanned === "number" && (
+                            <span
+                              title={
+                                scan.report.files_scanned_by_ext
+                                  ? `Files actually inspected by the rules. The scanner only walks text files (${Object.keys(
+                                      scan.report.files_scanned_by_ext
+                                    ).join(", ")}); binaries, oversized files, and ignored dirs are skipped. A file that IS inspected can still produce 0 findings if no rule pattern matches.`
+                                  : "Files actually inspected by the rules."
+                              }
+                            >
+                              {` · ${scan.report.files_scanned} file${
+                                scan.report.files_scanned === 1 ? "" : "s"
+                              } scanned`}
+                            </span>
+                          )}
                         </span>
                       </div>
+                      {/* Stash-scan badge. Lets the user distinguish a
+                          stash row from a branch row at a glance and
+                          surfaces the stash subject ("WIP on main:
+                          a1d57d6 fix bug") so they remember what was
+                          in it. Total file count comes from the
+                          unbounded counter (`stash_files` may be
+                          truncated to ~50 for payload size). */}
+                      {scan.report?.working_tree?.stash_scan && (
+                        <>
+                          <div className="flex items-center gap-1 flex-wrap text-[10px]">
+                            <Badge
+                              variant="outline"
+                              className="border-blue-500/50 text-blue-300 px-1.5 py-0 h-4 font-mono"
+                              title={
+                                scan.report.working_tree.stash_message
+                                  ? `Stash scan: ${scan.report.working_tree.stash_message}`
+                                  : "Stash-only scan: only files inside the stash were analysed."
+                              }
+                            >
+                              stash ·{" "}
+                              {scan.report.working_tree.stash_file_count ?? 0}{" "}
+                              file
+                              {(scan.report.working_tree.stash_file_count ??
+                                0) === 1
+                                ? ""
+                                : "s"}
+                            </Badge>
+                          </div>
+                          {/* Inline disclaimer so the user can't read a
+                              "Clean" stash row as a clean BRANCH. The
+                              row is intentionally chatty — past UX
+                              feedback was that the small badge alone
+                              got missed and people assumed the whole
+                              branch had been scanned. */}
+                          <p className="text-[10px] text-blue-300/80 leading-snug">
+                            Stash-only — only the files in this stash were
+                            scanned. The rest of '{scan.branch ?? "this branch"}'
+                            was <strong>not</strong> inspected. Click{" "}
+                            <em>Run Full Scan</em> for branch-wide results.
+                          </p>
+                        </>
+                      )}
+                      {/* Scope strip — always rendered for branch and
+                          virtual-checkout scans so the user can see
+                          AT A GLANCE what was inspected:
+                            [all of <branch>]  +N untracked  +M modified  + stash · K files
+                          The leading green anchor is critical UX:
+                          without it, "+5 untracked" looks like the
+                          ENTIRE scope of the scan instead of an
+                          addition on top of the full branch HEAD.
+                          That misread was the source of the user's
+                          "why is it only scanning untracked?"
+                          confusion. Stash-only history rows are
+                          handled separately above (they render
+                          their own "Stash-only" disclaimer). */}
+                      {scan.report?.working_tree &&
+                        scan.report.working_tree.stash_scan !== true &&
+                        (() => {
+                          const wt = scan.report.working_tree
+                          const blanketOpt =
+                            wt.untracked_excluded_from_scan === true
+                          const crossBranchN =
+                            wt.untracked_attributed_other_branch_count ?? 0
+                          const crossBranchName =
+                            wt.untracked_attributed_other_branches?.[0]
+                              ?.branch ?? null
+                          const branchLabel =
+                            wt.virtual_checkout && wt.virtual_checkout_sha
+                              ? `${wt.branch ?? scan.branch ?? "branch"}@${wt.virtual_checkout_sha.slice(
+                                  0,
+                                  7
+                                )}`
+                              : (wt.branch ?? scan.branch ?? "branch HEAD")
+                          const totalAddedFiles =
+                            (!blanketOpt ? (wt.untracked ?? 0) : 0) +
+                            (wt.modified ?? 0) +
+                            (wt.stash_included
+                              ? (wt.stash_file_count ?? 0)
+                              : 0)
+                          return (
+                            <div className="flex items-center gap-1 flex-wrap text-[10px]">
+                              <Badge
+                                variant="outline"
+                                className="border-emerald-500/50 text-emerald-300 px-1.5 py-0 h-4 font-mono"
+                                title={
+                                  totalAddedFiles > 0
+                                    ? `Scope: every file on '${branchLabel}' was scanned, plus ${totalAddedFiles} extra (uncommitted + stashed). The badges to the right are ADDITIONS on top, not the entire scope.`
+                                    : `Scope: every file on '${branchLabel}' was scanned. Working tree was clean and no stash was attached.`
+                                }
+                              >
+                                all of {branchLabel}
+                              </Badge>
+                              {!blanketOpt && (wt.untracked ?? 0) > 0 && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-yellow-500/50 text-yellow-400 px-1.5 py-0 h-4 font-mono"
+                                  title={
+                                    crossBranchN > 0 && crossBranchName
+                                      ? `Untracked files in the working tree at scan time, scanned IN ADDITION to '${branchLabel}'. ${crossBranchN} of them originated on '${crossBranchName}' (still included).`
+                                      : `Untracked files in the working tree at scan time, scanned IN ADDITION to '${branchLabel}'.`
+                                  }
+                                >
+                                  +{wt.untracked} untracked
+                                  {crossBranchN > 0 && crossBranchName
+                                    ? ` (${crossBranchN} from ${crossBranchName})`
+                                    : ""}
+                                </Badge>
+                              )}
+                              {blanketOpt && (wt.untracked ?? 0) > 0 && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-muted-foreground/50 text-muted-foreground px-1.5 py-0 h-4 font-mono"
+                                  title="Untracked files were skipped from this scan (pre-commit gate, includeUntracked: false). They do not appear in the issue counts."
+                                >
+                                  +{wt.untracked} untracked (skipped)
+                                </Badge>
+                              )}
+                              {(wt.modified ?? 0) > 0 && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-yellow-500/50 text-yellow-400 px-1.5 py-0 h-4 font-mono"
+                                  title={`Tracked files with uncommitted edits at scan time, scanned IN ADDITION to '${branchLabel}'.`}
+                                >
+                                  +{wt.modified} modified
+                                </Badge>
+                              )}
+                              {wt.stash_included && (() => {
+                                // Multi-stash aware label. When more
+                                // than one stash on this branch was
+                                // folded in, we say "+ 3 stashes · 12
+                                // unique files" and surface the list
+                                // of refs in the tooltip. For a
+                                // single stash we keep the original
+                                // "+ stash · K files" wording so old
+                                // muscle memory still works.
+                                const stashCount =
+                                  wt.stashes_included_count ??
+                                  (wt.stashes_included?.length ?? 1)
+                                const fileCount = wt.stash_file_count ?? 0
+                                const fileWord =
+                                  fileCount === 1 ? "file" : "files"
+                                const refs = wt.stashes_included
+                                  ? wt.stashes_included
+                                      .map(
+                                        (s) =>
+                                          `${s.ref}: ${s.message} (${s.file_count} file${s.file_count === 1 ? "" : "s"})`
+                                      )
+                                      .join("\n")
+                                  : wt.stash_message
+                                    ? `${wt.stash_ref ?? "stash@{0}"}: ${wt.stash_message}`
+                                    : (wt.stash_ref ?? "stash@{0}")
+                                const tooltipBody =
+                                  stashCount > 1
+                                    ? `${stashCount} stashes on this branch folded into the scan (latest wins on per-file conflicts → ${fileCount} unique ${fileWord} scanned). Newest first:\n${refs}`
+                                    : `${refs}\n\n${fileCount} ${fileWord} folded into this scan automatically — there's no separate "scan stash" step.`
+                                return (
+                                  <Badge
+                                    variant="outline"
+                                    className="border-blue-500/50 text-blue-300 px-1.5 py-0 h-4 font-mono"
+                                    title={tooltipBody}
+                                  >
+                                    {stashCount > 1
+                                      ? `+ ${stashCount} stashes · ${fileCount} unique ${fileWord}`
+                                      : `+ stash · ${fileCount} ${fileWord}`}
+                                  </Badge>
+                                )
+                              })()}
+                            </div>
+                          )
+                        })()}
                     </button>
                   ))
                 )}

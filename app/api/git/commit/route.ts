@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import {
   GitError,
   assertGitRepo,
+  listStashes,
   resolveProjectPath,
   runGit,
 } from "@/lib/server-git"
@@ -13,6 +14,10 @@ import {
   writeLastScan,
 } from "@/lib/server-policy"
 import type { ScanReport } from "@/lib/scan-report"
+import {
+  attributeUntrackedFiles,
+  listUntrackedFiles,
+} from "@/lib/server-untracked-attribution"
 
 /**
  * POST /api/git/commit
@@ -32,14 +37,25 @@ import type { ScanReport } from "@/lib/scan-report"
  *      `warnOnCriticalFindings` and the scan reports any critical/high
  *      findings, return 409 with `{ blocked: true, report }` so the UI
  *      can present the findings before letting the user proceed.
- *   4. `git status --short`; if empty, return `{ ok: true, noChanges: true }`.
- *   5. `git add -A` then `git commit -m <message>`.
+ *   4. If `stashRef` was provided AND the policy gate passed,
+ *      `git stash pop <stashRef>` so the stashed contents land in the
+ *      working tree before staging. On conflict we bail with
+ *      `{ blocked: true, reason: "stash_pop_conflict" }` and the
+ *      stash is left intact for the user to resolve manually.
+ *   5. `git status --short`; if empty, return `{ ok: true, noChanges: true }`.
+ *   6. `git add -A` then `git commit -m <message>`.
  *
  * The route never pushes — push is a separate, explicitly confirmed
  * action under /api/git/push.
+ *
+ * The optional `stashRef` field lets the UI commit a "stash-only-
+ * dirty" branch (yellow Commit dot driven purely by the stash) in a
+ * single click: scan + policy gate first (the scan route already
+ * auto-merges stash@{0} contents), then pop and commit.
  */
 
 const MAX_MESSAGE_LEN = 4000
+const STASH_REF_RE = /^stash@\{\d+\}$/
 
 export async function POST(request: Request) {
   try {
@@ -48,10 +64,29 @@ export async function POST(request: Request) {
       message?: string
       runScanBeforeCommit?: boolean
       warnOnCriticalFindings?: boolean
+      stashRef?: string
     }
 
     const { resolved } = resolveProjectPath(body.projectPath)
     assertGitRepo(resolved)
+
+    // Validate stashRef strictly — git accepts a lot of refspecs and
+    // we don't want to forward arbitrary user input to `git stash pop`.
+    // The format must be exactly "stash@{N}".
+    let requestedStashRef: string | null = null
+    if (typeof body.stashRef === "string" && body.stashRef.trim()) {
+      const candidate = body.stashRef.trim()
+      if (!STASH_REF_RE.test(candidate)) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: `Invalid stashRef "${candidate}" — must look like "stash@{0}".`,
+          },
+          { status: 400 }
+        )
+      }
+      requestedStashRef = candidate
+    }
 
     const rawMessage = typeof body.message === "string" ? body.message : ""
     const message = rawMessage.trim()
@@ -194,6 +229,51 @@ export async function POST(request: Request) {
       }
     }
 
+    /* ----- Optional stash pop ------------------------------------- */
+    //
+    // Runs only after the policy gate passed (or was skipped). The
+    // pre-commit scan already auto-merges `stash@{0}` contents, so
+    // policy was effectively evaluated against working-tree + stash.
+    // Now we materialise the stash into the working tree so the
+    // upcoming `git add -A` picks it up. On conflict we surface a
+    // 409 — the stash itself is preserved by `git stash pop` when
+    // apply fails, so the user can resolve manually.
+    let stashPopped: { ref: string; subject: string } | null = null
+    if (requestedStashRef) {
+      const stashes = listStashes(resolved)
+      const entry = stashes.find((s) => s.ref === requestedStashRef)
+      if (!entry) {
+        return NextResponse.json(
+          {
+            ok: false,
+            phase: "stash_pop",
+            error: `Stash ${requestedStashRef} not found. The stash may have been popped or dropped externally — refresh and try again.`,
+          },
+          { status: 404 }
+        )
+      }
+      const pop = runGit(resolved, ["stash", "pop", requestedStashRef], {
+        timeoutMs: 30_000,
+      })
+      if (pop.status !== 0) {
+        return NextResponse.json(
+          {
+            ok: false,
+            blocked: true,
+            reason: "stash_pop_conflict",
+            phase: "stash_pop",
+            message: `Could not apply ${requestedStashRef}: ${
+              pop.stderr.split("\n")[0] || "conflict while applying stash"
+            }. The stash was kept — resolve manually with \`git stash pop\` and commit again.`,
+            stderr: pop.stderr.slice(0, 4000),
+            stdout: pop.stdout.slice(0, 2000),
+          },
+          { status: 409 }
+        )
+      }
+      stashPopped = { ref: requestedStashRef, subject: entry.subject }
+    }
+
     const status = runGit(resolved, ["status", "--short"])
     if (status.status !== 0) {
       return NextResponse.json(
@@ -220,21 +300,48 @@ export async function POST(request: Request) {
         baseBranch: policyMeta?.baseBranch,
         baseSha: policyMeta?.baseSha,
         scanForcedByPolicy: policyMeta?.scanForcedByPolicy,
+        stashPopped,
       })
     }
 
-    const add = runGit(resolved, ["add", "-A"], { timeoutMs: 60_000 })
-    if (add.status !== 0) {
+    /* ----- Inclusive staging -------------------------------------- */
+    //
+    // We snapshot untracked files BEFORE `git add -A` (since adding
+    // moves them into the index and makes them "tracked" from
+    // `ls-files --others`'s perspective). The attribution map is
+    // updated for informational reporting — tooltips can say "3
+    // untracked from `low` were also committed" — but we no longer
+    // skip cross-branch files. The user asked for `git commit` to
+    // behave like `git commit -A` and commit everything visible.
+    const headBranchInfo = runGit(resolved, [
+      "rev-parse",
+      "--abbrev-ref",
+      "HEAD",
+    ])
+    const headBranch =
+      headBranchInfo.status === 0 ? headBranchInfo.stdout.trim() || null : null
+    const allUntrackedPreStage = listUntrackedFiles(resolved)
+    const attribution = attributeUntrackedFiles(
+      resolved,
+      headBranch,
+      allUntrackedPreStage
+    )
+
+    const addAll = runGit(resolved, ["add", "-A"], { timeoutMs: 60_000 })
+    if (addAll.status !== 0) {
       return NextResponse.json(
         {
           ok: false,
           phase: "add",
           message: "git add -A failed",
-          stderr: add.stderr.slice(0, 4000),
+          stderr: addAll.stderr.slice(0, 4000),
         },
         { status: 500 }
       )
     }
+
+    const untrackedStaged = allUntrackedPreStage.length
+    const untrackedSkipped = 0
 
     const commit = runGit(resolved, ["commit", "-m", message], {
       timeoutMs: 30_000,
@@ -295,6 +402,19 @@ export async function POST(request: Request) {
       baseBranch: policyMeta?.baseBranch,
       baseSha: policyMeta?.baseSha,
       scanForcedByPolicy: policyMeta?.scanForcedByPolicy,
+      // Attribution-aware reporting (informational): how many of the
+      // staged untracked files we believed belong to `headBranch`
+      // vs another branch. Both buckets were committed; the split
+      // lets the UI show "N untracked from `low` also committed."
+      staging: {
+        untrackedStaged,
+        untrackedSkipped,
+        untrackedFromOtherBranches: attribution.otherBranch
+          .slice(0, 10)
+          .map((e) => ({ path: e.path, branch: e.branch })),
+        untrackedFromOtherBranchCount: attribution.otherBranch.length,
+      },
+      stashPopped,
     })
   } catch (err) {
     if (err instanceof GitError) {

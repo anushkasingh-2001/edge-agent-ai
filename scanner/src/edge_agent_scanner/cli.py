@@ -29,6 +29,18 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RULE_ID",
         help="Limit report to these rule_id values (repeatable). Default: all rules.",
     )
+    scan_p.add_argument(
+        "--exclude",
+        action="append",
+        dest="excludes",
+        metavar="REL_PATH",
+        help=(
+            "Skip a file from the scan (POSIX-style path relative to the "
+            "repo root). Repeatable. The Edge Agent AI server passes one "
+            "of these per untracked file so e.g. a scan of main doesn't "
+            "include experimental files left over from a feature branch."
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.command != "scan":
@@ -49,7 +61,13 @@ def main(argv: list[str] | None = None) -> int:
             print("Error: no valid --check values", file=sys.stderr)
             return 3
 
-    report = run_scan(repo, enabled_rule_ids=enabled)
+    excludes: frozenset[str] | None = None
+    if args.excludes:
+        # Normalize defensively — accept Windows-style separators in case
+        # the caller didn't (the walker compares against POSIX paths).
+        excludes = frozenset(p.replace("\\", "/") for p in args.excludes if p)
+
+    report = run_scan(repo, enabled_rule_ids=enabled, exclude_rel_paths=excludes)
     out_path: Path = args.out
     out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(f"Wrote {out_path.resolve()} ({report.summary.total} findings, risk_score={report.risk_score})")

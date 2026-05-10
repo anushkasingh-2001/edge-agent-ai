@@ -16,7 +16,38 @@ export type GitStatusResponse = {
   isRepo: boolean
   currentBranch: string | null
   remote: string | null
+  /** "uncommitted" whenever there are tracked-modified files OR any
+   * untracked files OR a `git stash` entry attributed to the current
+   * branch. Stashes count too: a stash on `main` makes `main` look
+   * uncommitted even when the working tree itself is empty. */
   workingTreeStatus: GitWorkingTreeStatus | null
+  /** Number of tracked files with uncommitted changes on the current
+   * branch. Used by the dialog to break "uncommitted" down precisely. */
+  trackedModifiedCount?: number
+  /** Untracked files attributed to the current branch — either the
+   * user just created them here, or they were first observed on
+   * this branch. Contributes to `workingTreeStatus === "uncommitted"`
+   * and gets staged on commit. */
+  ownBranchUntrackedCount?: number
+  /** Untracked files attributed to OTHER branches that happen to be
+   * physically present in the working tree (followed `git checkout`
+   * here). Inclusive: still trips the yellow dot and gets committed. */
+  crossBranchUntrackedCount?: number
+  /** Distinct other-branch names referenced by `crossBranchUntracked`. */
+  crossBranchUntrackedBranches?: string[]
+  /** How many `git stash` entries were created on the current branch
+   * (parsed from the stash subject "WIP on <branch>:"). When > 0 the
+   * current branch is "uncommitted" even with an otherwise clean
+   * working tree, and the commit dialog will offer to pop+commit
+   * the latest stash. */
+  currentBranchStashCount?: number
+  /** Ref of the most recent stash for the current branch, e.g.
+   * "stash@{0}" or "stash@{2}". Pass to `commit` to apply+commit
+   * the stash. */
+  latestCurrentBranchStashRef?: string | null
+  /** Subject of the most recent stash for the current branch, used
+   * in tooltips and the commit dialog. */
+  latestCurrentBranchStashMessage?: string | null
   lastCommitSha: string | null
   lastCommitMessage: string | null
 }
@@ -280,9 +311,9 @@ import type { Policy, PolicyEvaluation } from "@/lib/policy"
 export type GitCommitResponse = {
   ok: boolean
   blocked?: boolean
-  reason?: "critical_or_high_findings" | "policy_block"
+  reason?: "critical_or_high_findings" | "policy_block" | "stash_pop_conflict"
   noChanges?: boolean
-  phase?: "scan" | "add" | "commit"
+  phase?: "scan" | "stash_pop" | "add" | "commit"
   message?: string
   sha?: string | null
   report?: GitOpReportSummary | null
@@ -293,6 +324,48 @@ export type GitCommitResponse = {
   policySource?: "file" | "default"
   policyErrors?: string[]
   evaluation?: PolicyEvaluation | null
+  /** Inclusive staging breakdown — set on successful (or no-op)
+   * commits. `untrackedStaged` is every untracked file we added,
+   * `untrackedFromOtherBranches` shows how many of those were
+   * attributed elsewhere (informational; they were committed
+   * regardless). `untrackedSkipped` stays for backward compat with
+   * older UI strings — always 0 now. */
+  staging?: {
+    untrackedStaged: number
+    untrackedSkipped: number
+    untrackedFromOtherBranchCount?: number
+    untrackedFromOtherBranches?: { path: string; branch: string }[]
+  }
+  /** Set when the route popped a `git stash` entry into the working
+   * tree before committing. Mirrors what the dialog needs to show
+   * "Stash <ref> applied and committed: <subject>". */
+  stashPopped?: {
+    ref: string
+    subject: string
+  } | null
+}
+
+/** Response from POST /api/git/discard — see route docstring.
+ *  IMPORTANT: discard NEVER deletes untracked files. It only
+ *  reverts tracked-file modifications back to HEAD. The kept-
+ *  untracked counts are informational so the UI can show the
+ *  user what was preserved. */
+export type GitDiscardResponse = {
+  ok: boolean
+  branch?: string | null
+  /** Number of tracked-modified files we reset back to HEAD. */
+  revertedTracked?: number
+  /** Number of untracked files we left in place (always equal to
+   * the working tree's untracked count after revert). */
+  keptUntracked?: number
+  /** Per-branch breakdown of kept untracked files, e.g.
+   * `{ main: 2, low: 1 }`. Used by the dialog to show "kept 3
+   * untracked: 2 on main, 1 on low". */
+  keptUntrackedByBranch?: Record<string, number>
+  revertError?: string | null
+  message?: string
+  error?: string
+  stderr?: string
 }
 
 export type GitPushResponse = {
@@ -359,6 +432,11 @@ export async function gitCommit(args: {
   message: string
   runScanBeforeCommit: boolean
   warnOnCriticalFindings: boolean
+  /** When set, the commit route will `git stash pop <stashRef>`
+   * after the policy gate passes and before `git add -A`. Used by
+   * the UI to commit "stash-only-dirty" branches in one click. The
+   * ref must look like "stash@{N}". */
+  stashRef?: string
 }): Promise<GitCommitResponse> {
   const res = await fetch("/api/git/commit", {
     method: "POST",
@@ -380,4 +458,62 @@ export async function gitPush(args: {
     body: JSON.stringify(args),
   })
   return jsonAlways<GitPushResponse>(res)
+}
+
+/**
+ * Discard local changes for the current branch:
+ *   - reverts tracked-file modifications back to HEAD
+ *   - deletes untracked files attributed to the current branch
+ *   - leaves untracked files that belong to other branches alone
+ *
+ * Destructive — caller must show a confirmation UI before calling.
+ * The route enforces `confirm: true` server-side too.
+ */
+export async function gitDiscard(args: {
+  projectPath: string
+  confirm: true
+}): Promise<GitDiscardResponse> {
+  const res = await fetch("/api/git/discard", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return jsonAlways<GitDiscardResponse>(res)
+}
+
+/** Response from POST /api/git/reattribute. */
+export type GitReattributeResponse = {
+  ok: boolean
+  branch?: string | null
+  /** Number of entries removed from the OLD attribution map. */
+  removedEntries?: number
+  /** Files now attributed to the current branch after re-inference. */
+  ownBranch?: string[]
+  /** Files now attributed elsewhere. */
+  otherBranch?: { path: string; branch: string }[]
+  message?: string
+  error?: string
+  stderr?: string
+}
+
+/**
+ * Wipe the attribution map + head snapshot and re-infer attribution
+ * from scratch using the reflog + mtime heuristic. Useful when the
+ * map got locked in with wrong entries (e.g. files were tagged to
+ * `main` because that was the very first branch the app saw, even
+ * though the files were actually created on a feature branch).
+ *
+ * Non-destructive to working-tree contents — only edits the
+ * `.edgeagent/` bookkeeping files.
+ */
+export async function gitReattribute(args: {
+  projectPath: string
+  confirm: true
+}): Promise<GitReattributeResponse> {
+  const res = await fetch("/api/git/reattribute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return jsonAlways<GitReattributeResponse>(res)
 }

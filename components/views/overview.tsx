@@ -63,6 +63,11 @@ interface OverviewProps {
    * Branch Compare and commit/push dialogs. */
   policyResponse?: PolicyApiResponse | null
   policyLoading?: boolean
+  /** Force a fresh scan of the policy's base branch (default `main`)
+   * and re-evaluate. Surfaced as the "Re-scan main" button on the
+   * policy card; lets the user recover from a stale baseline without
+   * restarting the dev server. */
+  onRefreshPolicyBaseline?: () => void
   /** Selected project path — required for the PR Gate card to fetch
    * GitHub PR status. Optional so old call sites still compile. */
   projectPath?: string | null
@@ -91,6 +96,7 @@ export function Overview({
   failedRuleIds = [],
   policyResponse = null,
   policyLoading = false,
+  onRefreshPolicyBaseline,
   projectPath = null,
   lastGateRunAt = null,
   branches = [],
@@ -199,6 +205,8 @@ export function Overview({
       <PolicyStatusCard
         response={policyResponse}
         loading={policyLoading}
+        onRefreshBaseline={onRefreshPolicyBaseline}
+        refreshing={policyLoading}
       />
 
       {/* PR Gate Status — current branch / base / PR / last gate run,

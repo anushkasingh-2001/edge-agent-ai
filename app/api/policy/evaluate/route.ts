@@ -29,8 +29,8 @@ import {
   type PolicyEvalContext,
   type PolicyEvaluation,
 } from "@/lib/policy"
-import { loadPolicyFor } from "@/lib/server-policy"
-import type { ScanReport } from "@/lib/scan-report"
+import { loadComparisonBaseline, loadPolicyFor } from "@/lib/server-policy"
+import type { ScanReport, WorkingTreeStatus } from "@/lib/scan-report"
 
 /**
  * The evaluator only reads `risk_score` and `summary`, so we accept a
@@ -79,6 +79,17 @@ interface PostBody {
   targetMetrics?: EvalMetrics
   baseMetrics?: EvalMetrics
   context?: PolicyEvalContext
+  /** When false, the route does NOT auto-fetch a base-branch scan
+   *  to fill in a missing `baseReport`. Branch Compare leaves this
+   *  unset (defaults to true) but explicitly supplies both reports
+   *  so the auto-fetch never runs there anyway. Most callers can
+   *  ignore this — the auto-fetch is what makes Overview / dialog
+   *  policy cards report regressions instead of "skipped (no base)". */
+  autoLoadBase?: boolean
+  /** Force a fresh scan of the base branch, ignoring the on-disk
+   *  cache. The "Re-scan main" button passes this to recover from
+   *  stale baselines. */
+  refreshBase?: boolean
 }
 
 export async function POST(request: Request) {
@@ -129,6 +140,47 @@ export async function POST(request: Request) {
     }
 
     const loaded = loadPolicyFor(resolved)
+
+    // Auto-fill the baseline if the caller didn't supply one. This is
+    // the load-bearing fix for callers like Overview's policy card —
+    // they only have the latest scan in hand, so without this branch
+    // the evaluator marks every delta rule "inapplicable" and the
+    // card always shows "pass · 2 conditions skipped (no base)" even
+    // when Branch Compare next door is correctly screaming "blocked,
+    // high +18". Branch Compare itself supplies both reports so this
+    // path is a no-op there.
+    let baseSource: "request" | "base_branch" | "snapshot" | "none" =
+      baseReport ? "request" : "none"
+    let baseBranch: string | null = null
+    let baseSha: string | null = null
+    let baseCachedAt: string | null = null
+    let baseRiskScore: number | null = null
+    let baseSummary: ScanReport["summary"] | null = null
+    if (!baseReport && body.autoLoadBase !== false) {
+      const baseline = await loadComparisonBaseline(resolved, {
+        policy: loaded.policy,
+        currentBranch: body.context?.branch ?? null,
+        skipBaseCache: !!body.refreshBase,
+      })
+      if (baseline.baseReport) {
+        baseReport = baseline.baseReport
+        baseSource = baseline.baseSource
+        baseBranch = baseline.baseBranchScan.branch
+        baseSha = baseline.baseBranchScan.sha
+        baseCachedAt = baseline.baseBranchScan.cachedAt
+        // Surface the actual baseline numbers so the UI can render
+        // "main@abc1234 · risk 87 · high 5" alongside the verdict
+        // and users can spot a stale baseline at a glance.
+        if (baseline.baseBranchScan.snapshot) {
+          baseRiskScore = baseline.baseBranchScan.snapshot.risk_score
+          baseSummary = baseline.baseBranchScan.snapshot.summary as ScanReport["summary"]
+        } else if (baseline.snapshot) {
+          baseRiskScore = baseline.snapshot.risk_score
+          baseSummary = baseline.snapshot.summary as ScanReport["summary"]
+        }
+      }
+    }
+
     const evaluation: PolicyEvaluation = evaluatePolicy({
       baseReport,
       targetReport: targetParse.data as unknown as ScanReport,
@@ -138,7 +190,27 @@ export async function POST(request: Request) {
       context: body.context,
     })
 
-    return NextResponse.json({ ...loaded, evaluation })
+    // Pull the working_tree stamp off the *target* report and forward
+    // it to the client. The base report comes from `loadBaseBranchScan`
+    // which always materialises a pristine `git worktree` checkout, so
+    // by construction it can never be dirty — we only need the target
+    // side to power the "Scanned with N uncommitted files" warning in
+    // PolicyStatusCard.
+    const targetWt =
+      (body.targetReport as { working_tree?: WorkingTreeStatus } | undefined)
+        ?.working_tree ?? null
+
+    return NextResponse.json({
+      ...loaded,
+      evaluation,
+      baseSource,
+      baseBranch,
+      baseSha,
+      baseCachedAt,
+      baseRiskScore,
+      baseSummary,
+      targetWorkingTree: targetWt,
+    })
   } catch (err) {
     if (err instanceof GitError) {
       return NextResponse.json(

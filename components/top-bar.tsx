@@ -523,7 +523,75 @@ export function TopBar({
           {(() => {
             const gitDisabled =
               !hasProject || !isGitRepo || !currentBranch || !project?.path
+            // INCLUSIVE dirty signal: tracked-modified, any untracked,
+            // OR a `git stash` entry on this branch. The status route
+            // does the calculation; we just consume the boolean here.
+            // Stashes are per-branch — a stash on `main` will trip
+            // the yellow dot only when `main` is checked out, never
+            // when the user is sitting on `low`.
             const dirty = gitStatus?.workingTreeStatus === "uncommitted"
+            const trackedDirty = (gitStatus?.trackedModifiedCount ?? 0) > 0
+            const ownUntrackedCount =
+              gitStatus?.ownBranchUntrackedCount ?? 0
+            const crossBranchCount =
+              gitStatus?.crossBranchUntrackedCount ?? 0
+            const crossBranchNames =
+              gitStatus?.crossBranchUntrackedBranches ?? []
+            const stashCount = gitStatus?.currentBranchStashCount ?? 0
+            // Pull-context dirtiness EXCLUDES the stash — a stash
+            // doesn't conflict with `git pull --ff-only`. Used for
+            // the Pull button tooltip so it doesn't yell "commit
+            // first" when the only "dirt" is a stash that pull
+            // wouldn't touch anyway.
+            const pullDirty =
+              trackedDirty ||
+              ownUntrackedCount > 0 ||
+              crossBranchCount > 0
+            // Quieter secondary signal: cross-branch leakage. Doesn't
+            // light up the yellow dot but a grey dot lets the user
+            // know git status would show changes — they're just
+            // attributed elsewhere.
+            const hasSecondaryOnly = !dirty && crossBranchCount > 0
+            const dirtyTooltip = (() => {
+              if (!dirty) return null
+              const parts: string[] = []
+              if (trackedDirty)
+                parts.push(
+                  `${gitStatus?.trackedModifiedCount} tracked file${
+                    gitStatus?.trackedModifiedCount === 1 ? "" : "s"
+                  } modified`
+                )
+              if (ownUntrackedCount > 0)
+                parts.push(
+                  `${ownUntrackedCount} new file${
+                    ownUntrackedCount === 1 ? "" : "s"
+                  } on '${currentBranch}'`
+                )
+              if (crossBranchCount > 0)
+                parts.push(
+                  `${crossBranchCount} untracked from ${
+                    crossBranchNames.length > 0
+                      ? crossBranchNames.map((b) => `'${b}'`).join(", ")
+                      : "other branches"
+                  }`
+                )
+              if (stashCount > 0)
+                parts.push(
+                  `${stashCount} stash${
+                    stashCount === 1 ? "" : "es"
+                  } on '${currentBranch}'`
+                )
+              return parts.join(" · ")
+            })()
+            const secondaryTooltip = hasSecondaryOnly
+              ? `'${currentBranch}' is clean. ${crossBranchCount} untracked file${
+                  crossBranchCount === 1 ? "" : "s"
+                } belong${crossBranchCount === 1 ? "s" : ""} to ${
+                  crossBranchNames.length > 0
+                    ? crossBranchNames.map((b) => `'${b}'`).join(", ")
+                    : "other branches"
+                } and won't be committed here.`
+              : null
             return (
               <>
                 <Tooltip>
@@ -544,7 +612,7 @@ export function TopBar({
                     <p>
                       {gitDisabled
                         ? "Open a Git repo to enable pull"
-                        : dirty
+                        : pullDirty
                           ? "Working tree has uncommitted changes — commit/stash first"
                           : `Pull latest changes for '${currentBranch}'`}
                     </p>
@@ -566,7 +634,13 @@ export function TopBar({
                       {dirty && (
                         <span
                           className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-yellow-400"
-                          title="Working tree has uncommitted changes"
+                          title={dirtyTooltip ?? "Uncommitted changes"}
+                        />
+                      )}
+                      {hasSecondaryOnly && (
+                        <span
+                          className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/60"
+                          title={secondaryTooltip ?? ""}
                         />
                       )}
                     </Button>
@@ -576,8 +650,12 @@ export function TopBar({
                       {gitDisabled
                         ? "Open a Git repo to enable commit"
                         : dirty
-                          ? "Commit local changes (uncommitted edits detected)"
-                          : "Commit local changes (working tree currently clean)"}
+                          ? `'${currentBranch}' has local changes${
+                              dirtyTooltip ? `: ${dirtyTooltip}` : ""
+                            }`
+                          : hasSecondaryOnly
+                            ? secondaryTooltip ?? ""
+                            : `Commit local changes ('${currentBranch}' is currently clean)`}
                     </p>
                   </TooltipContent>
                 </Tooltip>
@@ -660,7 +738,19 @@ export function TopBar({
             onOpenChange={setPullOpen}
             projectPath={project.path}
             branch={currentBranch}
-            workingTreeStatus={gitStatus?.workingTreeStatus ?? null}
+            // Pull only cares about REAL working-tree dirtiness; a
+            // stash sitting in `.git/refs/stash` doesn't conflict
+            // with `git pull --ff-only`. So we recompute the
+            // status here, deliberately ignoring the stash count.
+            workingTreeStatus={
+              gitStatus
+                ? (gitStatus.trackedModifiedCount ?? 0) > 0 ||
+                  (gitStatus.ownBranchUntrackedCount ?? 0) > 0 ||
+                  (gitStatus.crossBranchUntrackedCount ?? 0) > 0
+                  ? "uncommitted"
+                  : "clean"
+                : null
+            }
             headBranch={gitCurrentBranch}
             onComplete={handleAfterGitOp}
           />
@@ -670,6 +760,11 @@ export function TopBar({
             projectPath={project.path}
             branch={currentBranch}
             workingTreeStatus={gitStatus?.workingTreeStatus ?? null}
+            latestStashRef={gitStatus?.latestCurrentBranchStashRef ?? null}
+            latestStashMessage={
+              gitStatus?.latestCurrentBranchStashMessage ?? null
+            }
+            stashCount={gitStatus?.currentBranchStashCount ?? 0}
             onComplete={handleAfterGitOp}
           />
         </>

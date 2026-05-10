@@ -27,15 +27,29 @@ def _is_probably_binary(sample: bytes) -> bool:
     return text_chars / max(len(sample), 1) < 0.7
 
 
-def iter_scanned_files(root: Path, max_bytes: int = MAX_FILE_BYTES) -> list[ScannedFile]:
+def iter_scanned_files(
+    root: Path,
+    max_bytes: int = MAX_FILE_BYTES,
+    exclude_rel_paths: frozenset[str] | None = None,
+) -> list[ScannedFile]:
     """
     Recursively collect readable text files under root.
     Skips configured directories, non-extensions, binaries, and oversized files.
+
+    `exclude_rel_paths` is an optional set of POSIX-style paths (relative to
+    `root`) that should be omitted entirely. Used by the API layer to skip
+    untracked files — when the user is on `main` but their working tree
+    still contains an experimental file from another branch they forgot to
+    clean up, that file should not pollute "main"'s scan results.
+    Tracked-but-modified files are *not* excluded; those are real edits on
+    the current branch and the user genuinely wants to see findings for
+    them.
     """
     root = root.resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"Not a directory: {root}")
 
+    excluded = exclude_rel_paths or frozenset()
     results: list[ScannedFile] = []
 
     for path in root.rglob("*"):
@@ -52,6 +66,11 @@ def iter_scanned_files(root: Path, max_bytes: int = MAX_FILE_BYTES) -> list[Scan
             continue
 
         if path.suffix.lower() not in TEXT_EXTENSIONS:
+            continue
+
+        # POSIX-style relative path, matching the format the API layer
+        # uses when it passes `git ls-files --others` output through.
+        if excluded and rel.as_posix() in excluded:
             continue
 
         try:

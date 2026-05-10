@@ -369,3 +369,53 @@ export function explainChange(
       return `Application code ${verb}. Re-run the full scanner against the target branch to surface any new findings introduced by this change.`
   }
 }
+
+export type StashEntry = {
+  /** e.g. "stash@{0}" — usable directly with `git stash apply/pop`. */
+  ref: string
+  /** Subject line, e.g. "WIP on main: a1b2c3d fix bug" or "On low: my note". */
+  subject: string
+  /** Branch name parsed from the subject (after "WIP on " / "On "), or null. */
+  branch: string | null
+}
+
+/**
+ * Parse `git stash list` and return all stash entries in order
+ * (newest = stash@{0} first). Each subject line is matched against
+ * "(WIP )?[Oo]n <branch>:" so we can attribute the stash to the
+ * branch it was created on.
+ *
+ * Returns [] when there are no stashes or the command fails — stash
+ * support is optional, never fatal.
+ */
+export function listStashes(projectPath: string): StashEntry[] {
+  const r = runGit(projectPath, ["stash", "list", "--format=%gd|%s"], {
+    timeoutMs: 10_000,
+  })
+  if (r.status !== 0) return []
+  const out: StashEntry[] = []
+  for (const line of r.stdout.split("\n")) {
+    if (!line) continue
+    const idx = line.indexOf("|")
+    if (idx <= 0) continue
+    const ref = line.slice(0, idx)
+    const subject = line.slice(idx + 1)
+    const m = subject.match(/^(?:WIP )?[Oo]n (\S+?):/)
+    out.push({ ref, subject, branch: m ? m[1] : null })
+  }
+  return out
+}
+
+/**
+ * Return all stashes whose subject indicates they were created on
+ * `branch`. Order matches `git stash list` (newest first), so the
+ * caller can pop the first entry to grab the most recent WIP for
+ * that branch.
+ */
+export function listStashesForBranch(
+  projectPath: string,
+  branch: string | null
+): StashEntry[] {
+  if (!branch) return []
+  return listStashes(projectPath).filter((s) => s.branch === branch)
+}

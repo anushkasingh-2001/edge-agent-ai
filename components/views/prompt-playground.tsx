@@ -28,8 +28,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Play,
+import { 
+  Play, 
   Plus,
   Trash2,
   Save,
@@ -726,18 +726,18 @@ export function PromptPlayground({
        *  typing inputs. Sticky makes it follow them down. */}
       <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-border/40">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <div>
-            <h1 className="text-2xl font-semibold">Prompt Playground</h1>
+        <div>
+          <h1 className="text-2xl font-semibold">Prompt Playground</h1>
             <p className="text-muted-foreground text-sm">
               Compare two models on the same prompt, tools, and test cases —
               assert which tool each picks per case.
             </p>
-          </div>
-          <div className="flex gap-2">
+        </div>
+        <div className="flex gap-2">
             <Button type="button" variant="outline" onClick={openSaveDialog}>
               <Save className="h-4 w-4 mr-2" />
               Save Session
-            </Button>
+          </Button>
             <Button
               type="button"
               onClick={runAll}
@@ -751,11 +751,11 @@ export function PromptPlayground({
                 </>
               ) : (
                 <>
-                  <Play className="h-4 w-4 mr-2" />
+            <Play className="h-4 w-4 mr-2" />
                   Run All
                 </>
               )}
-            </Button>
+          </Button>
           </div>
         </div>
       </div>
@@ -805,7 +805,7 @@ export function PromptPlayground({
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Textarea
+              <Textarea 
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 className="min-h-[160px] font-mono text-sm bg-secondary/30 resize-y"
@@ -1213,25 +1213,25 @@ function CaseEditor({
             </label>
             <Select value={expectedValue} onValueChange={setExpected}>
               <SelectTrigger className="bg-secondary/30 h-9">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
                 <SelectItem value="any">Any tool from selected set</SelectItem>
                 <SelectItem value="none">No tool (text only)</SelectItem>
                 {effectiveTools.length > 0 && (
                   <>
                     <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                       Specific tool {usingOverride ? "(case override)" : ""}
-                    </div>
+                      </div>
                     {effectiveTools.map((n) => (
                       <SelectItem key={n} value={`tool:${n}`}>
                         {n}
-                      </SelectItem>
-                    ))}
+                    </SelectItem>
+                  ))}
                   </>
                 )}
-              </SelectContent>
-            </Select>
+                </SelectContent>
+              </Select>
             {c.expectedTool.kind === "tool" &&
               !effectiveTools.includes(c.expectedTool.name) && (
                 <p className="text-[10px] text-yellow-400 mt-1">
@@ -1347,8 +1347,8 @@ function ToolPicker({
   }
 
   return (
-    <Card className="bg-card border-border">
-      <CardHeader className="pb-3">
+          <Card className="bg-card border-border">
+            <CardHeader className="pb-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Wrench className="h-4 w-4 text-blue-400" />
@@ -1359,8 +1359,8 @@ function ToolPicker({
               {selected.length}
             </span>{" "}
             of {toolCatalog.length} selected
-          </div>
-        </div>
+                  </div>
+                  </div>
         <CardDescription>
           Detected from the latest scan, grouped by agent. Click chips to
           multi-select. The selected set is the default for every case;
@@ -1399,7 +1399,7 @@ function ToolPicker({
               >
                 Clear ({selected.length})
               </button>
-            </div>
+                </div>
 
             {/* Selection summary chip strip — gives a quick read of what's
              *  picked without scrolling the whole catalog. Capped to 12
@@ -1416,7 +1416,7 @@ function ToolPicker({
                   </span>
                 ))}
                 {selected.length > 12 && <span>+{selected.length - 12} more</span>}
-              </div>
+                  </div>
             )}
 
             {/* Groups */}
@@ -1442,7 +1442,7 @@ function ToolPicker({
                             ({g.tools.filter((t) => selected.includes(t.name)).length}/
                             {g.tools.length})
                           </span>
-                        </div>
+                  </div>
                         <button
                           type="button"
                           onClick={() => toggleGroup(g.agent)}
@@ -1450,7 +1450,7 @@ function ToolPicker({
                         >
                           {allOn ? "Clear group" : someOn ? "Select rest" : "Select group"}
                         </button>
-                      </div>
+                </div>
                       <div className="flex flex-wrap gap-1.5">
                         {g.tools.map((t) => {
                           const on = selected.includes(t.name)
@@ -1482,11 +1482,11 @@ function ToolPicker({
                             </button>
                           )
                         })}
-                      </div>
-                    </div>
+                  </div>
+                  </div>
                   )
                 })}
-              </div>
+                </div>
             )}
           </>
         )}
@@ -1588,7 +1588,7 @@ function CaseToolOverride({
             Override for this case
           </button>
         )}
-      </div>
+                  </div>
       {expanded && usingOverride && (
         <div className="mt-2 space-y-2">
           {toolGroups.map((g) => {
@@ -1616,7 +1616,7 @@ function CaseToolOverride({
                   >
                     {allOn ? "Clear" : someOn ? "Add rest" : "Add group"}
                   </button>
-                </div>
+                  </div>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {g.tools.map((t) => {
                     const on = (c.toolOverride ?? []).includes(t.name)
@@ -1649,7 +1649,7 @@ function CaseToolOverride({
           })}
         </div>
       )}
-    </div>
+      </div>
   )
 }
 
@@ -1673,7 +1673,7 @@ function RunOutcomeCard({
     return (
       <div className="rounded border border-border/40 bg-secondary/20 p-2 text-xs text-muted-foreground">
         Model {label}: no result.
-      </div>
+          </div>
     )
   }
 
@@ -1685,9 +1685,9 @@ function RunOutcomeCard({
         {outcome.notConfigured && (
           <div className="text-[10px] text-muted-foreground mt-1">
             Configure this slot in Settings.
-          </div>
+                </div>
         )}
-      </div>
+                    </div>
     )
   }
 
@@ -1703,7 +1703,7 @@ function RunOutcomeCard({
           <Clock className="h-3 w-3" />
           {outcome.latencyMs} ms
         </span>
-      </div>
+                  </div>
       <div className="flex items-center gap-2 flex-wrap">
         <PassPill kind="Tool" status={toolStatus} />
         <span className="text-muted-foreground">
@@ -1718,18 +1718,18 @@ function RunOutcomeCard({
             <> (+{outcome.toolCalls.length - 1} more)</>
           )}
         </span>
-      </div>
+                    </div>
       {expectedText.trim().length > 0 && (
         <div className="flex items-center gap-2">
           <PassPill kind="Text" status={textStatus} />
-        </div>
+                  </div>
       )}
       {outcome.text && (
         <div className="rounded bg-secondary/40 p-2 text-foreground/90 whitespace-pre-wrap break-words">
           {outcome.text}
-        </div>
+                </div>
       )}
-    </div>
+              </div>
   )
 }
 
@@ -1894,7 +1894,7 @@ function ModelSlotCard({
               ))}
               <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                 Other
-              </div>
+          </div>
               <SelectItem value={CUSTOM}>Custom model name…</SelectItem>
             </SelectContent>
           </Select>
@@ -1924,8 +1924,8 @@ function ModelSlotCard({
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
   )
 }
 

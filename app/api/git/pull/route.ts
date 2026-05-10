@@ -6,6 +6,10 @@ import {
   runGit,
   validateRef,
 } from "@/lib/server-git"
+import {
+  attributeUntrackedFiles,
+  listUntrackedFiles,
+} from "@/lib/server-untracked-attribution"
 
 /**
  * POST /api/git/pull
@@ -39,27 +43,65 @@ export async function POST(request: Request) {
     assertGitRepo(resolved)
     const branch = validateRef(body.branch, "branch")
 
-    const status = runGit(resolved, ["status", "--short"])
-    if (status.status !== 0) {
+    /* ----- Attribution-aware "is dirty?" gate -------------------- */
+    //
+    // Old behaviour: refuse pull on ANY working-tree change. That
+    // included untracked files leaked from other branches (e.g.
+    // `dang.py` created on `low` while we now want to pull on
+    // `main`), which surprised users — Commit showed "clean" but
+    // Pull said "uncommitted".
+    //
+    // New behaviour: the gate only fires for THIS branch's own
+    // changes (tracked-modified + untracked attributed to current
+    // branch). Untracked files belonging to other branches don't
+    // block the pull; if a real overlap occurs git itself will
+    // refuse the merge and we surface that error.
+    const trackedStatus = runGit(resolved, [
+      "status",
+      "--porcelain",
+      "--untracked-files=no",
+    ])
+    if (trackedStatus.status !== 0) {
       return NextResponse.json(
         {
           ok: false,
           error: "git status failed",
-          stderr: status.stderr.slice(0, 2000),
+          stderr: trackedStatus.stderr.slice(0, 2000),
         },
         { status: 500 }
       )
     }
-    if (status.stdout.trim().length > 0) {
+    const trackedModifiedCount = trackedStatus.stdout
+      .split("\n")
+      .filter((l) => l.length > 0).length
+
+    const headInfo = runGit(resolved, ["rev-parse", "--abbrev-ref", "HEAD"])
+    const headBranch =
+      headInfo.status === 0 ? headInfo.stdout.trim() || null : null
+    const allUntracked = listUntrackedFiles(resolved)
+    const attribution = attributeUntrackedFiles(
+      resolved,
+      headBranch,
+      allUntracked
+    )
+    // Only block on own-branch changes. Cross-branch leaked files
+    // are git-safe with --ff-only — git itself refuses if a real
+    // overlap would happen, and we surface that error to the user.
+    const ownDirty =
+      trackedModifiedCount > 0 || attribution.ownBranch.length > 0
+    if (ownDirty) {
       return NextResponse.json(
         {
           ok: false,
           blocked: true,
           reason: "uncommitted_changes",
-          message:
-            "Working tree has uncommitted changes. Commit or stash before pulling.",
+          message: `Working tree has uncommitted changes on '${
+            headBranch ?? "this branch"
+          }' (${trackedModifiedCount} tracked, ${
+            attribution.ownBranch.length
+          } untracked). Commit or stash before pulling.`,
           workingTreeStatus: "uncommitted",
-          stdout: status.stdout.slice(0, 2000),
+          stdout: trackedStatus.stdout.slice(0, 2000),
         },
         { status: 409 }
       )

@@ -266,6 +266,9 @@ export interface BaseScanResult {
   branch: string | null
   /** Base branch HEAD SHA. null when source = "no_base"/"error". */
   sha: string | null
+  /** When this snapshot was captured. ISO-8601. Lets the UI render
+   *  "scanned 5m ago" so users can spot a stale baseline. */
+  cachedAt: string | null
   /** Human-readable explanation when source = "error" / "no_base". */
   message?: string
 }
@@ -444,6 +447,7 @@ export async function loadBaseBranchScan(
       source: "no_base",
       branch: null,
       sha: null,
+      cachedAt: null,
       message:
         "Could not resolve a base branch (looked for policy.pull_request.base_branch, main, master).",
     }
@@ -458,6 +462,7 @@ export async function loadBaseBranchScan(
       source: "current_branch",
       branch: baseBranch,
       sha: null,
+      cachedAt: null,
     }
   }
   const baseSha = resolveSha(projectPath, baseBranch)
@@ -467,6 +472,7 @@ export async function loadBaseBranchScan(
       source: "no_base",
       branch: baseBranch,
       sha: null,
+      cachedAt: null,
       message: `Could not resolve SHA for base branch '${baseBranch}'.`,
     }
   }
@@ -479,6 +485,7 @@ export async function loadBaseBranchScan(
         source: "cache",
         branch: baseBranch,
         sha: baseSha,
+        cachedAt: cached.cached_at,
       }
     }
   }
@@ -487,6 +494,7 @@ export async function loadBaseBranchScan(
   const stamp = Date.now()
   const rand = Math.random().toString(36).slice(2, 8)
   const wt = path.join(os.tmpdir(), `edge-base-scan-${stamp}-${rand}`)
+  const cachedAt = new Date().toISOString()
   try {
     addWorktree(projectPath, wt, baseSha)
     const scan = await runScannerOn(wt)
@@ -494,13 +502,14 @@ export async function loadBaseBranchScan(
       branch: baseBranch,
       sha: baseSha,
       scan,
-      cached_at: new Date().toISOString(),
+      cached_at: cachedAt,
     })
     return {
       snapshot: scanToSnapshot(scan, baseBranch, baseSha),
       source: "fresh",
       branch: baseBranch,
       sha: baseSha,
+      cachedAt,
     }
   } catch (e) {
     return {
@@ -508,6 +517,7 @@ export async function loadBaseBranchScan(
       source: "error",
       branch: baseBranch,
       sha: baseSha,
+      cachedAt: null,
       message: `Base-branch scan failed: ${
         e instanceof Error ? e.message : String(e)
       }`,
@@ -532,14 +542,26 @@ export async function loadBaseBranchScan(
  */
 export async function loadComparisonBaseline(
   projectPath: string,
-  options: { policy: Policy; currentBranch?: string | null }
+  options: {
+    policy: Policy
+    currentBranch?: string | null
+    /** Force a fresh scan of the base branch, ignoring any cached
+     *  entry. Used by the "Re-scan main" button so users can recover
+     *  from a stale baseline (e.g. they updated rules, edited
+     *  scanner, or just want certainty). */
+    skipBaseCache?: boolean
+  }
 ): Promise<{
   baseReport: ScanReport | undefined
   baseSource: "base_branch" | "snapshot" | "none"
   baseBranchScan: BaseScanResult
   snapshot: LastScanSnapshot | null
 }> {
-  const baseBranchScan = await loadBaseBranchScan(projectPath, options)
+  const baseBranchScan = await loadBaseBranchScan(projectPath, {
+    policy: options.policy,
+    currentBranch: options.currentBranch,
+    skipCache: options.skipBaseCache,
+  })
   const snapshot = readLastScan(projectPath)
 
   if (baseBranchScan.snapshot) {
