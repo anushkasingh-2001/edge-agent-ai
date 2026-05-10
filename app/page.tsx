@@ -9,6 +9,7 @@ import { DetectedAgents } from "@/components/views/detected-agents"
 import { Findings } from "@/components/views/findings"
 import { RunTraces } from "@/components/views/run-traces"
 import { BranchCompare } from "@/components/views/branch-compare"
+import { Evaluations } from "@/components/views/evaluations"
 import { PromptPlayground } from "@/components/views/prompt-playground"
 import { ChatAssistant } from "@/components/views/chat-assistant"
 import { Settings } from "@/components/views/settings"
@@ -645,6 +646,17 @@ export default function Home() {
               refreshBranches(selectedProject, opts)
             }
             currentPolicyResponse={policyResponse}
+          />
+        )
+      case "evaluations":
+        return (
+          <Evaluations
+            projectPath={selectedProject?.path}
+            isGitRepo={gitInfo?.isRepo ?? false}
+            branches={gitInfo?.branches ?? []}
+            remoteOnlyBranches={gitInfo?.remoteOnly ?? []}
+            currentBranch={currentBranch}
+            stashesByBranch={gitInfo?.stashesByBranch ?? {}}
           />
         )
       case "prompt-playground":

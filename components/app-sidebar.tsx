@@ -14,6 +14,7 @@ import {
   FolderOpen,
   Github,
   FolderPlus,
+  Gauge,
 } from "lucide-react"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
@@ -36,6 +37,7 @@ export type ViewType =
   | "findings"
   | "run-traces"
   | "branch-compare"
+  | "evaluations"
   | "prompt-playground"
   | "chat-assistant"
   | "settings"
@@ -58,6 +60,7 @@ const mainNavItems = [
   { id: "findings" as ViewType, label: "Findings", icon: AlertTriangle, badge: true },
   { id: "run-traces" as ViewType, label: "Run Traces", icon: Activity },
   { id: "branch-compare" as ViewType, label: "Branch Compare", icon: GitCompare },
+  { id: "evaluations" as ViewType, label: "Evaluations", icon: Gauge },
   { id: "prompt-playground" as ViewType, label: "Prompt Playground", icon: MessageSquare },
   { id: "chat-assistant" as ViewType, label: "Chat Assistant", icon: TestTube },
 ]
