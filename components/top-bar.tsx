@@ -30,11 +30,11 @@ import {
   GitCompare,
   Download,
   Upload,
-  ArrowUpFromLine,
   Play,
   Bot,
   Check,
   Wrench,
+  GitPullRequest,
 } from "lucide-react"
 import {
   Tooltip,
@@ -42,6 +42,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { toast } from "sonner"
 import { ExportReportButton } from "@/components/export-report-button"
 import {
   ALL_AGENTS_OPTION,
@@ -54,8 +55,16 @@ import { fetchGitStatus, type GitStatusResponse } from "@/lib/git-client"
 import {
   CommitDialog,
   PullConfirmDialog,
-  PushConfirmDialog,
 } from "@/components/git-ops-dialogs"
+import { CreatePrDialog } from "@/components/git-pr-dialog"
+import {
+  GithubAuthBadge,
+  GithubLoginDialog,
+} from "@/components/github-login-dialog"
+import {
+  fetchGitHubAuthStatus,
+  type GitHubAuthStatusResponse,
+} from "@/lib/github-client"
 
 interface TopBarProps {
   projectName: string
@@ -147,8 +156,24 @@ export function TopBar({
   const [toolsPickerOpen, setToolsPickerOpen] = useState(false)
   const [pullOpen, setPullOpen] = useState(false)
   const [commitOpen, setCommitOpen] = useState(false)
-  const [pushOpen, setPushOpen] = useState(false)
+  const [createPrOpen, setCreatePrOpen] = useState(false)
   const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null)
+  // Top-bar GitHub auth indicator. Refreshed on mount and after the
+  // sign-in dialog reports a change so the badge flips from "Sign in"
+  // to "@user" without a page reload.
+  const [signInOpen, setSignInOpen] = useState(false)
+  const [ghAuth, setGhAuth] = useState<GitHubAuthStatusResponse | null>(null)
+  const refreshGhAuth = useCallback(async () => {
+    try {
+      const s = await fetchGitHubAuthStatus()
+      setGhAuth(s)
+    } catch {
+      setGhAuth(null)
+    }
+  }, [])
+  useEffect(() => {
+    void refreshGhAuth()
+  }, [refreshGhAuth])
 
   // Fetch a lightweight git status snapshot so the dialogs can show
   // working-tree state and the pull button can pre-warn on uncommitted
@@ -474,6 +499,15 @@ export function TopBar({
       {/* Right Section: Actions in order: Run Scan, Pull, Commit, Push, Export Report */}
       <TooltipProvider>
         <div className="flex items-center gap-2">
+          {/* GitHub auth indicator. Renders "Sign in to GitHub" when
+            * no token/CLI is configured, and "@user signed in" once
+            * the user has authenticated. Clicking either opens the
+            * sign-in dialog so users can swap accounts or sign out. */}
+          <GithubAuthBadge
+            status={ghAuth}
+            onSignInClick={() => setSignInOpen(true)}
+          />
+
           {/* Run Scan - Primary */}
           <Button onClick={onRunScan} size="sm" className="gap-2">
             <Play className="h-4 w-4" />
@@ -548,25 +582,54 @@ export function TopBar({
                   </TooltipContent>
                 </Tooltip>
 
+                {/* Create PR replaces the old raw Push button. We
+                 *  intentionally keep this button enabled at all times
+                 *  so users always get feedback when they click it —
+                 *  the dialog (or a toast) explains *why* if some
+                 *  pre-condition isn't met. A disabled button with no
+                 *  feedback was the previous bug source ("button not
+                 *  clickable"). */}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
                       type="button"
-                      variant="outline"
                       size="sm"
                       className="gap-2"
-                      disabled={gitDisabled}
-                      onClick={() => setPushOpen(true)}
+                      onClick={() => {
+                        if (!hasProject || !project?.path) {
+                          toast.error(
+                            "Open a project before creating a pull request."
+                          )
+                          return
+                        }
+                        if (!isGitRepo) {
+                          toast.error(
+                            "This folder is not a Git repository — initialise it with `git init` first."
+                          )
+                          return
+                        }
+                        if (!currentBranch) {
+                          toast.error(
+                            "No branch is currently selected. Pick a branch in the top bar first."
+                          )
+                          return
+                        }
+                        setCreatePrOpen(true)
+                      }}
                     >
-                      <ArrowUpFromLine className="h-4 w-4" />
-                      Push
+                      <GitPullRequest className="h-4 w-4" />
+                      Create PR
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
                     <p>
-                      {gitDisabled
-                        ? "Open a Git repo to enable push"
-                        : `Push '${currentBranch}' to origin`}
+                      {!hasProject
+                        ? "Open a project to create a pull request"
+                        : !isGitRepo
+                          ? "Folder is not a Git repository"
+                          : !currentBranch
+                            ? "Pick a branch first"
+                            : "Run policy gate, push branch, and open a PR"}
                     </p>
                   </TooltipContent>
                 </Tooltip>
@@ -584,6 +647,12 @@ export function TopBar({
         </div>
       </TooltipProvider>
 
+      {/* Pull / Commit dialogs strictly need a path + git repo to do
+          anything meaningful — keep them gated so they can't crash on
+          null props. The Create PR dialog renders its own hard-block
+          panel for those cases, so it's mounted unconditionally and
+          its open click always opens *something* (avoiding the silent
+          "button not clickable" trap). */}
       {project?.path && isGitRepo && currentBranch && (
         <>
           <PullConfirmDialog
@@ -603,17 +672,29 @@ export function TopBar({
             workingTreeStatus={gitStatus?.workingTreeStatus ?? null}
             onComplete={handleAfterGitOp}
           />
-          <PushConfirmDialog
-            open={pushOpen}
-            onOpenChange={setPushOpen}
-            projectPath={project.path}
-            branch={currentBranch}
-            headBranch={gitCurrentBranch}
-            remote={gitStatus?.remote ?? null}
-            onComplete={handleAfterGitOp}
-          />
         </>
       )}
+      <CreatePrDialog
+        open={createPrOpen}
+        onOpenChange={setCreatePrOpen}
+        projectPath={project?.path ?? null}
+        headBranch={currentBranch || null}
+        branches={branches ?? []}
+        onCreated={handleAfterGitOp}
+      />
+      {/* In-app GitHub sign-in dialog. Always mounted so the badge in
+          the header can open it regardless of which view is active. */}
+      <GithubLoginDialog
+        open={signInOpen}
+        onOpenChange={setSignInOpen}
+        onAuthChanged={() => {
+          void refreshGhAuth()
+          // Refresh git status too — sign-in changes which account
+          // is used for permission checks the next time the user
+          // hits Pull/Commit/Push.
+          void refreshLocalGitStatus()
+        }}
+      />
     </div>
   )
 }

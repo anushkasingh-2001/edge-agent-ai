@@ -39,6 +39,7 @@ import {
   Lock,
   Workflow,
   Activity,
+  GitPullRequest,
 } from "lucide-react"
 import {
   fetchGitCompare,
@@ -55,6 +56,9 @@ import {
 } from "@/lib/git-client"
 import { SCANNER_RULE_IDS } from "@/lib/scan-report"
 import { SECURITY_CHECKS } from "@/lib/security-checks"
+import { evaluatePolicyApi, type PolicyApiResponse } from "@/lib/policy-client"
+import { PolicyStatusCard } from "@/components/policy-status-card"
+import { CreatePrDialog } from "@/components/git-pr-dialog"
 
 /**
  * Branch Compare runs `git diff` between two branches in the open project
@@ -67,6 +71,14 @@ import { SECURITY_CHECKS } from "@/lib/security-checks"
  */
 
 interface BranchCompareProps {
+  /**
+   * Latest policy evaluation for the *currently checked-out* branch
+   * (computed by app/page.tsx after each scan). Used as a quick preview
+   * card when no comparison has been run yet, and replaced by a fresh
+   * policy evaluation against the deep-compare result once the user
+   * runs a comparison.
+   */
+  currentPolicyResponse?: PolicyApiResponse | null
   /** Currently checked-out branch — used as the default base. */
   currentBranch?: string
   /** Real local branches sourced from /api/git/branches in the parent. */
@@ -161,6 +173,7 @@ export function BranchCompare({
   projectPath,
   isGitRepo = false,
   onRefreshBranches,
+  currentPolicyResponse = null,
 }: BranchCompareProps) {
   // Default base = currently checked-out branch when present in the list.
   const defaultBase = branches.includes(currentBranch)
@@ -202,6 +215,21 @@ export function BranchCompare({
   const [scanResult, setScanResult] = useState<GitCompareScanResponse | null>(
     null
   )
+
+  // Policy evaluation against the deep-compare result. Lives inside the
+  // component because it depends on baseScan + targetScan from the
+  // compare-scan endpoint, which the parent doesn't have. Reset on each
+  // new comparison so we don't show stale verdicts.
+  const [policyResult, setPolicyResult] = useState<PolicyApiResponse | null>(
+    null
+  )
+  const [policyLoading, setPolicyLoading] = useState(false)
+
+  // "Create PR from this branch" — re-uses the same dialog as the top
+  // bar but pre-fills base = baseBranch (the comparison's left side)
+  // and head = targetBranch (the comparison's right side). The dialog
+  // itself enforces the "head must not be main/master" rule.
+  const [createPrOpen, setCreatePrOpen] = useState(false)
 
   // Reset selection if the branches list changes (project switch / remote
   // refresh). Stale dropdown values otherwise produce confusing empty
@@ -254,6 +282,7 @@ export function BranchCompare({
     setScanError(null)
     setResult(null)
     setScanResult(null)
+    setPolicyResult(null)
     setCategoryFilter("all")
 
     // Fire diff and dual-branch scan in parallel — they're independent
@@ -280,6 +309,42 @@ export function BranchCompare({
     }
     if (scanRes.status === "fulfilled") {
       setScanResult(scanRes.value)
+      // Once the deep compare is back we have both base + target scan
+      // summaries — feed them into the policy engine so the user sees
+      // the same pass/warn/block verdict the commit/push dialogs would.
+      // If `sameSha` (no real diff) we skip — the engine has nothing
+      // delta-shaped to evaluate beyond the per-branch absolute rules.
+      if (!scanRes.value.sameSha && scanRes.value.targetScan) {
+        const baseLite = scanRes.value.baseScan
+        const targetLite = scanRes.value.targetScan
+        setPolicyLoading(true)
+        try {
+          const policy = await evaluatePolicyApi({
+            projectPath: path,
+            // The API accepts the lite shape via PolicyReportInputSchema —
+            // it only reads risk_score + summary. Cast through unknown to
+            // satisfy TS without cloning into a faux ScanReport.
+            targetReport: {
+              risk_score: targetLite.risk_score,
+              summary: targetLite.summary,
+            } as unknown as Parameters<typeof evaluatePolicyApi>[0]["targetReport"],
+            baseReport: baseLite
+              ? ({
+                  risk_score: baseLite.risk_score,
+                  summary: baseLite.summary,
+                } as unknown as Parameters<typeof evaluatePolicyApi>[0]["baseReport"])
+              : undefined,
+            context: { branch: target },
+          })
+          setPolicyResult(policy)
+        } catch {
+          // Don't surface as a blocker — the scan still rendered. The
+          // PolicyStatusCard's empty state is informative enough.
+          setPolicyResult(null)
+        } finally {
+          setPolicyLoading(false)
+        }
+      }
     } else {
       setScanError(
         scanRes.reason instanceof Error
@@ -390,8 +455,49 @@ export function BranchCompare({
               "Run Deep Comparison"
             )}
           </Button>
+          {(() => {
+            // We don't pre-disable for "target is main/master" — the
+            // dialog renders a clearer hard-block reason than a tooltip.
+            // Hard disable only when there's literally nothing to open
+            // a dialog about (no project, not a git repo, no target
+            // branch picked).
+            const targetIsDefault =
+              !!targetBranch &&
+              (targetBranch.toLowerCase() === "main" ||
+                targetBranch.toLowerCase() === "master")
+            return (
+              <Button
+                variant="outline"
+                onClick={() => setCreatePrOpen(true)}
+                disabled={!projectPath || !isGitRepo || !targetBranch}
+                title={
+                  !projectPath
+                    ? "Open a project to create a PR"
+                    : !targetBranch
+                      ? "Pick a target branch first"
+                      : targetIsDefault
+                        ? `Target '${targetBranch}' is the default branch — open the dialog for next steps.`
+                        : `Open a PR from '${targetBranch}' into '${baseBranch}'`
+                }
+              >
+                <GitPullRequest className="h-4 w-4 mr-2" />
+                Create PR from this branch
+              </Button>
+            )
+          })()}
         </div>
       </div>
+
+      {projectPath && targetBranch && (
+        <CreatePrDialog
+          open={createPrOpen}
+          onOpenChange={setCreatePrOpen}
+          projectPath={projectPath}
+          headBranch={targetBranch}
+          baseBranchHint={baseBranch || null}
+          branches={branches}
+        />
+      )}
 
       <Card className="bg-card border-border">
         <CardContent className="pt-6">
@@ -469,6 +575,25 @@ export function BranchCompare({
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {/* Policy verdict for the comparison. Shown above the deep-compare
+       *  panel so the user can see "block" / "warn" before scrolling
+       *  through severity breakdowns. Falls back to the most-recent
+       *  single-branch evaluation when no comparison has been run yet,
+       *  so the page isn't empty before the user clicks Compare. */}
+      {(policyResult || policyLoading) && (
+        <PolicyStatusCard
+          response={policyResult}
+          loading={policyLoading}
+          title="Policy decision (target branch vs base)"
+        />
+      )}
+      {!policyResult && !policyLoading && currentPolicyResponse && (
+        <PolicyStatusCard
+          response={currentPolicyResponse}
+          title="Policy decision (current scan)"
+        />
       )}
 
       {/* Categorical comparison is the headline. It runs the same scan

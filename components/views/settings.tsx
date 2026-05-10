@@ -34,6 +34,10 @@ import {
   Trash2,
   CheckCircle2,
   AlertTriangle,
+  Github,
+  Loader2,
+  RefreshCw,
+  XCircle,
 } from "lucide-react"
 import {
   loadProviderConfigs,
@@ -48,8 +52,22 @@ import {
   type ModelProviderConfig,
 } from "@/lib/model-keys"
 import { MODEL_CATALOG, isKnownModel } from "@/lib/model-catalog"
+import {
+  fetchGitHubRepoPermission,
+  fetchGitHubStatus,
+  type GitHubRepoPermissionResponse,
+  type GitHubStatusResponse,
+} from "@/lib/github-client"
+import { GithubLoginDialog } from "@/components/github-login-dialog"
 
-export function Settings() {
+export interface SettingsProps {
+  /** Currently opened project's filesystem path. Required for the
+   *  "Selected project remote" + permission lookup in the GitHub
+   *  Account card. Null when no project is open. */
+  projectPath?: string | null
+}
+
+export function Settings({ projectPath = null }: SettingsProps = {}) {
   const { theme, setTheme } = useTheme()
   const [webhookEnabled, setWebhookEnabled] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -134,6 +152,12 @@ export function Settings() {
           </div>
         </CardContent>
       </Card>
+
+      {/* B2. GitHub Account — checks gh CLI install/auth and per-repo
+          push permission so the user knows which account git push will
+          actually use before they run it. Settings is the canonical
+          place to fix "wrong account cached" type errors. */}
+      <GitHubAccountCard projectPath={projectPath} />
 
       {/* C. Scan Preferences */}
       <Card className="bg-card border-border">
@@ -673,5 +697,377 @@ function ModelPicker({
         <SelectItem value={CUSTOM_SENTINEL}>Custom model name…</SelectItem>
       </SelectContent>
     </Select>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* GitHub Account card                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Self-contained "GitHub Account" settings card. It hits two read-only
+ * endpoints (`/api/github/status`, `/api/github/repo-permission`) on
+ * mount and again whenever the user clicks one of the refresh buttons.
+ *
+ * We deliberately do *not* attempt to launch `gh auth login` from the
+ * server: that command opens a browser and prints a one-time code on
+ * stdin, which is hostile from inside a Next.js dev server. Instead
+ * we render the exact command and let the user run it in their own
+ * terminal — then click "Refresh".
+ *
+ * No tokens, passwords, or PATs are persisted by this component.
+ * Authentication state lives entirely in the user's `gh` CLI / system
+ * credential manager.
+ */
+function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
+  const [status, setStatus] = useState<GitHubStatusResponse | null>(null)
+  const [statusLoading, setStatusLoading] = useState(false)
+  const [perm, setPerm] = useState<GitHubRepoPermissionResponse | null>(null)
+  const [permLoading, setPermLoading] = useState(false)
+  // The CLI-only instructions panel is kept as a fallback for users
+  // who'd rather use `gh` than paste a token. Hidden by default now
+  // that the in-app sign-in dialog is the recommended path.
+  const [showConnectInstructions, setShowConnectInstructions] =
+    useState(false)
+  const [showDisconnectInstructions, setShowDisconnectInstructions] =
+    useState(false)
+  const [signInOpen, setSignInOpen] = useState(false)
+
+  const refreshStatus = async () => {
+    setStatusLoading(true)
+    try {
+      const s = await fetchGitHubStatus()
+      setStatus(s)
+    } catch {
+      setStatus({
+        ghInstalled: false,
+        authenticated: false,
+        login: null,
+        message: "Failed to reach /api/github/status.",
+      })
+    } finally {
+      setStatusLoading(false)
+    }
+  }
+
+  const refreshPermissions = async () => {
+    if (!projectPath) {
+      setPerm(null)
+      return
+    }
+    setPermLoading(true)
+    try {
+      const p = await fetchGitHubRepoPermission(projectPath)
+      setPerm(p)
+    } catch {
+      setPerm({
+        message: "Failed to reach /api/github/repo-permission.",
+      })
+    } finally {
+      setPermLoading(false)
+    }
+  }
+
+  // Initial load + re-load whenever the selected project path changes
+  // so the "Selected project remote" line stays in sync.
+  useEffect(() => {
+    void refreshStatus()
+  }, [])
+  useEffect(() => {
+    void refreshPermissions()
+  }, [projectPath])
+
+  const ghInstalled = !!status?.ghInstalled
+  const authed = !!status?.authenticated
+  const login = status?.login ?? null
+
+  let permLabel = "unknown"
+  let permClass = "bg-secondary text-muted-foreground"
+  if (perm?.resolved && perm.permissions) {
+    if (perm.permissions.admin) {
+      permLabel = "admin"
+      permClass = "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+    } else if (perm.permissions.maintain || perm.permissions.push) {
+      permLabel = "write"
+      permClass = "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+    } else if (perm.permissions.triage || perm.permissions.pull) {
+      permLabel = "read"
+      permClass = "bg-yellow-500/15 text-yellow-300 border-yellow-500/40"
+    } else {
+      permLabel = "none"
+      permClass = "bg-red-500/15 text-red-300 border-red-500/40"
+    }
+  }
+
+  return (
+    <Card className="bg-card border-border">
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <Github className="h-4 w-4" />
+          GitHub Account
+        </CardTitle>
+        <CardDescription>
+          Detect which GitHub account git/gh is using and whether it can
+          push to the currently opened repo. We never ask for your
+          password or store a personal access token — authentication
+          lives in <code>gh</code> / your system credential manager.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Status grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <StatRow
+            label="GitHub CLI installed"
+            value={
+              statusLoading
+                ? "Checking…"
+                : ghInstalled
+                  ? "yes"
+                  : "no"
+            }
+            ok={ghInstalled}
+            warn={!statusLoading && !ghInstalled}
+          />
+          <StatRow
+            label="Authenticated user"
+            value={
+              statusLoading
+                ? "Checking…"
+                : authed
+                  ? login ?? "unknown"
+                  : "Not connected"
+            }
+            ok={authed}
+            warn={!statusLoading && ghInstalled && !authed}
+          />
+          <StatRow
+            label="Selected project remote"
+            value={
+              !projectPath
+                ? "No project open"
+                : permLoading
+                  ? "Checking…"
+                  : perm?.notGitHub
+                    ? "Not a GitHub remote"
+                    : perm?.owner && perm?.repo
+                      ? `${perm.owner}/${perm.repo}`
+                      : "—"
+            }
+            ok={!!perm?.owner && !!perm?.repo}
+            warn={!!projectPath && !!perm && !perm.owner && !permLoading}
+          />
+          <StatRow
+            label="Permission"
+            value={permLoading ? "Checking…" : permLabel}
+            ok={
+              perm?.resolved === true &&
+              !!perm.permissions &&
+              (perm.permissions.admin ||
+                perm.permissions.maintain ||
+                perm.permissions.push)
+            }
+            warn={
+              perm?.resolved === true &&
+              !!perm.permissions &&
+              !perm.permissions.admin &&
+              !perm.permissions.maintain &&
+              !perm.permissions.push
+            }
+            badgeClass={permClass}
+          />
+        </div>
+
+        {/* Status message banner */}
+        {(status?.message || perm?.message) && (
+          <div className="rounded-md border border-border bg-secondary/20 p-2 text-xs text-muted-foreground space-y-1">
+            {status?.message && (
+              <div>
+                <span className="font-medium text-foreground">CLI:</span>{" "}
+                {status.message}
+              </div>
+            )}
+            {perm?.message && (
+              <div>
+                <span className="font-medium text-foreground">Repo:</span>{" "}
+                {perm.message}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Cached-credentials warning for HTTPS remotes */}
+        {ghInstalled &&
+          authed &&
+          perm?.protocol === "https" &&
+          perm.resolved === false && (
+            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-2 text-xs text-yellow-300">
+              Heads up: this remote uses HTTPS. Your browser/CLI login may
+              be correct, but <code>git push</code> uses stored Git
+              credentials. If push fails with 403, re-authenticate Git
+              with <code>gh auth login</code> or switch the remote to
+              SSH.
+            </div>
+          )}
+
+        {/* Action buttons */}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={refreshStatus}
+            disabled={statusLoading}
+          >
+            {statusLoading ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Check GitHub Status
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setSignInOpen(true)}
+          >
+            <Github className="h-3.5 w-3.5 mr-1.5" />
+            {status?.authenticated ? "Manage GitHub account" : "Sign in with GitHub"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setShowConnectInstructions((v) => !v)}
+            className="text-xs text-muted-foreground"
+          >
+            Use gh CLI instead
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={refreshPermissions}
+            disabled={permLoading || !projectPath}
+          >
+            {permLoading ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Refresh Permissions
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setShowDisconnectInstructions((v) => !v)}
+          >
+            <XCircle className="h-3.5 w-3.5 mr-1.5" />
+            Disconnect…
+          </Button>
+        </div>
+
+        {/* Connect instructions panel */}
+        {showConnectInstructions && (
+          <InstructionsPanel
+            title="Sign in to GitHub from your terminal"
+            steps={[
+              "Open a terminal in this project folder.",
+              "Run: gh auth login",
+              "Choose GitHub.com, HTTPS, then 'Login with a web browser'.",
+              "Paste the one-time code into the browser window gh opens.",
+              "Come back here and click 'Check GitHub Status'.",
+            ]}
+            footer={
+              ghInstalled
+                ? undefined
+                : "First install the GitHub CLI from https://cli.github.com/."
+            }
+          />
+        )}
+        {showDisconnectInstructions && (
+          <InstructionsPanel
+            title="Disconnect GitHub account"
+            steps={[
+              "If you signed in inside Edge Agent AI, click 'Manage GitHub account' above and use 'Sign out' — that deletes the local token.",
+              "If you used the gh CLI: gh auth logout",
+              "If git push still uses an old account, also clear the cached HTTPS credential:",
+              "  macOS: printf 'host=github.com\\nprotocol=https\\n' | git credential-osxkeychain erase",
+              "  Linux (libsecret): git credential-cache exit",
+              "  Windows: open 'Credential Manager' and remove github.com entries",
+              "Click 'Check GitHub Status' to confirm.",
+            ]}
+          />
+        )}
+      </CardContent>
+      {/* In-app sign-in modal. Refreshes both status + permission
+          after a successful login so the badges reflect the new
+          identity immediately. */}
+      <GithubLoginDialog
+        open={signInOpen}
+        onOpenChange={setSignInOpen}
+        onAuthChanged={() => {
+          void refreshStatus()
+          void refreshPermissions()
+        }}
+      />
+    </Card>
+  )
+}
+
+/** Tiny labelled value row used by the GitHub Account stat grid. */
+function StatRow({
+  label,
+  value,
+  ok,
+  warn,
+  badgeClass,
+}: {
+  label: string
+  value: string
+  ok?: boolean
+  warn?: boolean
+  badgeClass?: string
+}) {
+  const cls =
+    badgeClass ??
+    (ok
+      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+      : warn
+        ? "bg-yellow-500/15 text-yellow-300 border-yellow-500/40"
+        : "bg-secondary text-muted-foreground")
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-secondary/10 px-3 py-2">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <Badge variant="outline" className={cls}>
+        {value}
+      </Badge>
+    </div>
+  )
+}
+
+function InstructionsPanel({
+  title,
+  steps,
+  footer,
+}: {
+  title: string
+  steps: string[]
+  footer?: string
+}) {
+  return (
+    <div className="rounded-md border border-border bg-secondary/20 p-3 text-xs space-y-2">
+      <div className="font-medium text-sm">{title}</div>
+      <ol className="list-decimal pl-5 space-y-1 text-muted-foreground">
+        {steps.map((s, i) => (
+          <li key={i} className="font-mono whitespace-pre-wrap">
+            {s}
+          </li>
+        ))}
+      </ol>
+      {footer && (
+        <div className="text-[11px] text-muted-foreground">{footer}</div>
+      )}
+    </div>
   )
 }

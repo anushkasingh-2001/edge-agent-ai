@@ -8,6 +8,9 @@ import type { OverviewAgentCard } from "@/lib/scan-report"
 import { loadSavedSuites, type TestSuite } from "@/lib/test-cases"
 import { SECURITY_CHECKS } from "@/lib/security-checks"
 import { SCANNER_RULE_IDS } from "@/lib/scan-report"
+import type { PolicyApiResponse } from "@/lib/policy-client"
+import { PolicyStatusCard } from "@/components/policy-status-card"
+import { PrGateStatusCard, CreatePrDialog } from "@/components/git-pr-dialog"
 import {
   AlertTriangle,
   Shield,
@@ -55,6 +58,21 @@ interface OverviewProps {
    * latest scan. Used to compute "X / Y tests passed" in the Tests tile so
    * the count refreshes with every scan. */
   failedRuleIds?: string[]
+  /** Latest evaluation of `.edgeagent/policy.yaml` against this scan.
+   * Lives at the page level so the same evaluation is reused by the
+   * Branch Compare and commit/push dialogs. */
+  policyResponse?: PolicyApiResponse | null
+  policyLoading?: boolean
+  /** Selected project path — required for the PR Gate card to fetch
+   * GitHub PR status. Optional so old call sites still compile. */
+  projectPath?: string | null
+  /** ISO timestamp of when the latest scan + policy evaluation
+   * completed. Drives the "Last gate run" stat. */
+  lastGateRunAt?: string | null
+  /** All branches in the repo. Forwarded to CreatePrDialog so users
+   * can pick the head branch directly without bouncing through the
+   * top-bar branch picker. */
+  branches?: string[]
 }
 
 export function Overview({
@@ -71,7 +89,15 @@ export function Overview({
   hasScan = false,
   activeSuite = null,
   failedRuleIds = [],
+  policyResponse = null,
+  policyLoading = false,
+  projectPath = null,
+  lastGateRunAt = null,
+  branches = [],
 }: OverviewProps) {
+  // Local "Create PR" dialog so the Overview's PR card button can open
+  // the same flow without bouncing the user up to the top bar.
+  const [createPrOpen, setCreatePrOpen] = useState(false)
   const riskInfo = getRiskLevel(riskScore)
   const criticalIssues = scanSummary?.critical ?? 0
   const sev = scanSummary ?? { critical: 0, high: 0, medium: 0, low: 0, total: 0 }
@@ -166,6 +192,39 @@ export function Overview({
           Run Scan
         </Button>
       </div>
+
+      {/* Policy status — surfaces .edgeagent/policy.yaml decision against
+          the latest scan. Empty state explains "no policy file" without
+          shouting; populated state shows pass/warn/block + reasons. */}
+      <PolicyStatusCard
+        response={policyResponse}
+        loading={policyLoading}
+      />
+
+      {/* PR Gate Status — current branch / base / PR / last gate run,
+          plus a Create PR shortcut. Hidden until we know enough to
+          render anything useful (project + branch). */}
+      {projectPath && currentBranch && (
+        <PrGateStatusCard
+          projectPath={projectPath}
+          headBranch={currentBranch}
+          policy={policyResponse}
+          decision={policyResponse?.evaluation?.decision ?? null}
+          lastGateRunAt={lastGateRunAt}
+          onCreatePr={() => setCreatePrOpen(true)}
+        />
+      )}
+      {/* Mounted unconditionally so the dialog can render its own
+          hard-block panel ("No project is open", etc.) instead of
+          silently no-op'ing when the gate card's button is clicked
+          before the project finishes loading. */}
+      <CreatePrDialog
+        open={createPrOpen}
+        onOpenChange={setCreatePrOpen}
+        projectPath={projectPath || null}
+        headBranch={currentBranch || null}
+        branches={branches}
+      />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-4 gap-4">

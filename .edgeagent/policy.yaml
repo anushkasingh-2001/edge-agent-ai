@@ -1,22 +1,85 @@
-mode: block # warn | block | auto_merge
+# Edge Agent AI policy file
+# ----------------------------------------------------------------------------
+# Drop this at <projectRoot>/.edgeagent/policy.yaml. The Edge Agent app reads
+# it on every commit / push / branch comparison and turns the rules below
+# into a single decision: pass | warn | block | auto_merge_allowed.
+#
+# Anything you leave out is filled in from the safe defaults documented in
+# `lib/policy.ts` → `DEFAULT_POLICY`.
+# ----------------------------------------------------------------------------
 
+# How strict the engine should be:
+#   warn        — never blocks; surfaces yellow badges so you can see what
+#                 *would* be blocked before turning enforcement on.
+#   block       — failed conditions become hard blockers in the Commit /
+#                 Push dialogs and Branch Compare.
+#   auto_merge  — same as `block`, plus the engine returns an
+#                 `auto_merge_allowed` decision when every condition passes
+#                 AND the gates under `auto_merge` below are satisfied.
+#                 (The actual merge action is not wired yet — only the
+#                 decision is exposed in the UI for now.)
+mode: warn
+
+# ----------------------------------------------------------------------------
+# Security gates — evaluated against the latest scan report.
+# Delta rules (anything mentioning "increase") need a base scan to fire;
+# without one they're silently skipped, not failed.
+# ----------------------------------------------------------------------------
 security:
-  block_if_critical: true
-  block_if_high_increased: true
-  require_risk_score_not_increase: true
+  block_if_critical: true                # ANY critical finding fails
+  block_if_high_increased: false         # high count grew between branches
+  require_risk_score_not_increase: false # 0..100 risk_score grew
+  # max_risk_score: 75                   # absolute ceiling on risk_score
 
+# ----------------------------------------------------------------------------
+# Per-agent quality gates. These compare metrics produced by the (future)
+# eval runner. Until the runner is wired the engine returns a single
+# `warn` per evaluation with the standard sentence:
+#   "Accuracy/runtime metrics are unavailable because eval runner has
+#    not been run."
+# ----------------------------------------------------------------------------
 agents:
+  # Example — copy/paste per agent you care about and tune the numbers.
   SalesAgent:
     accuracy:
-      min_absolute: 0.85
-      require_delta_gte: 0.0
+      min_absolute: 0.85          # absolute floor (0..1)
+      require_delta_gte: 0.0      # never let accuracy drop vs base
     runtime_ms:
-      max_absolute: 2000
-      require_delta_lte: 0
+      max_absolute: 2000          # average ms per case
+      require_delta_lte: 0        # never let runtime regress vs base
     tool_selection:
-      min_pass_rate: 0.90
+      min_pass_rate: 0.90         # tool-choice correctness floor (0..1)
 
+# ----------------------------------------------------------------------------
+# Pull-request gating — controls the "Create PR" button. The PR action
+# is derived from the policy decision via `resolvePrAction(...)` in
+# lib/policy.ts:
+#
+#   block → never push, never create PR (when block_if_policy_blocks)
+#   warn  → create *draft* PR only, after explicit user confirmation
+#           (when create_draft_if_warn)
+#   pass  → push branch + open PR (when create_if_policy_passes)
+#   auto_merge_allowed → open PR; if the user toggles auto-merge in the
+#                        dialog AND `auto_merge.enabled` below is true,
+#                        we ask GitHub to auto-merge once checks pass.
+# ----------------------------------------------------------------------------
+pull_request:
+  create_if_policy_passes: true   # open PR when decision is `pass`
+  create_draft_if_warn: true      # allow draft PR on `warn`
+  block_if_policy_blocks: true    # refuse PR on `block`
+  base_branch: main               # default base in the Create PR dialog
+
+# ----------------------------------------------------------------------------
+# Auto-merge gates — only consulted when `mode: auto_merge` AND every
+# security/metric rule above passed AND every gate below is satisfied.
+# When all of those line up the engine returns `auto_merge_allowed`,
+# which the Create PR dialog can use to enable GitHub auto-merge on
+# the freshly opened PR.
+# ----------------------------------------------------------------------------
 auto_merge:
   enabled: false
-  trusted_branches_only: true
-  require_clean_worktree: true
+  trusted_branches_only: true     # only allow on branches in the
+                                   # caller's `trustedBranches` list
+  require_clean_worktree: true    # working tree must be clean
+  require_branch_not_main: true   # never auto-merge from main/master
+  require_policy_pass: true       # demand a clean `pass` (no warns)

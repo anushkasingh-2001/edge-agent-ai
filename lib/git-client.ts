@@ -270,10 +270,17 @@ export type GitPullResponse = {
   error?: string
 }
 
+/**
+ * Policy artefacts surfaced by /api/git/commit and /api/git/push when a
+ * pre-op scan was requested. We import the types lazily to avoid a
+ * circular dep between the git client and the policy client.
+ */
+import type { Policy, PolicyEvaluation } from "@/lib/policy"
+
 export type GitCommitResponse = {
   ok: boolean
   blocked?: boolean
-  reason?: "critical_or_high_findings"
+  reason?: "critical_or_high_findings" | "policy_block"
   noChanges?: boolean
   phase?: "scan" | "add" | "commit"
   message?: string
@@ -282,19 +289,52 @@ export type GitCommitResponse = {
   stdout?: string
   stderr?: string
   error?: string
+  policy?: Policy
+  policySource?: "file" | "default"
+  policyErrors?: string[]
+  evaluation?: PolicyEvaluation | null
 }
 
 export type GitPushResponse = {
   ok: boolean
   branch?: string
   blocked?: boolean
-  reason?: "critical_or_high_findings"
-  phase?: "scan" | "push"
+  reason?:
+    | "critical_or_high_findings"
+    | "policy_block"
+    | "no_push_permission"
+    | "permission_denied"
+  phase?: "scan" | "push" | "permission"
   message?: string
   report?: GitOpReportSummary | null
   stdout?: string
   stderr?: string
   error?: string
+  policy?: Policy
+  policySource?: "file" | "default"
+  policyErrors?: string[]
+  evaluation?: PolicyEvaluation | null
+  /** GitHub auth + permission detail attached when the route was able
+   * to query `gh`. Present on both pre-flight blocks and post-push
+   * 403 errors so the UI can render the same banner either way. */
+  github?: {
+    login: string | null
+    owner: string
+    repo: string
+    remoteUrl: string
+    protocol: "https" | "ssh"
+    permissions?: {
+      admin: boolean
+      maintain: boolean
+      push: boolean
+      triage: boolean
+      pull: boolean
+    }
+    canPush?: boolean
+  }
+  /** Suggested fixes (gh auth login, clear credential helper, switch
+   * to SSH, …). Only set on permission-denied 403 errors. */
+  suggestions?: string[]
 }
 
 async function jsonAlways<T>(res: Response): Promise<T> {

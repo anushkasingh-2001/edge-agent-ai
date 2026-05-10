@@ -41,6 +41,15 @@ import {
   type GitPullResponse,
   type GitPushResponse,
 } from "@/lib/git-client"
+import type { Policy, PolicyEvaluation } from "@/lib/policy"
+import type { PolicyApiResponse } from "@/lib/policy-client"
+import { loadPolicy } from "@/lib/policy-client"
+import { PolicyStatusCard } from "@/components/policy-status-card"
+import { Lock } from "lucide-react"
+import {
+  fetchGitHubRepoPermission,
+  type GitHubRepoPermissionResponse,
+} from "@/lib/github-client"
 
 const LS_KEYS = {
   runScanBeforeCommit: "edge-agent-ai.git.runScanBeforeCommit",
@@ -67,6 +76,27 @@ function writeBool(key: string, value: boolean): void {
     window.localStorage.setItem(key, value ? "true" : "false")
   } catch {
     /* ignore quota errors */
+  }
+}
+
+/**
+ * Construct a `PolicyApiResponse`-shaped object from the policy fields
+ * a /api/git/commit or /api/git/push response includes. The git routes
+ * embed the policy/evaluation/source/errors directly in their response
+ * (instead of requiring a second round-trip), so we just shape it back
+ * into what `PolicyStatusCard` expects.
+ */
+function toPolicyResponse(
+  policy: Policy,
+  evaluation: PolicyEvaluation,
+  meta: { policySource?: "file" | "default"; policyErrors?: string[] }
+): PolicyApiResponse {
+  return {
+    policy,
+    policySource: meta.policySource ?? "default",
+    policyErrors: meta.policyErrors ?? [],
+    policyPath: null,
+    evaluation,
   }
 }
 
@@ -237,13 +267,30 @@ export function CommitDialog({
   const [blockedReport, setBlockedReport] = useState<GitOpReportSummary | null>(
     null
   )
+  // Policy verdict pulled out of the commit response. We render it via
+  // PolicyStatusCard regardless of whether the commit succeeded, so the
+  // user always sees the policy decision after a pre-commit scan.
+  const [policyResponse, setPolicyResponse] =
+    useState<PolicyApiResponse | null>(null)
+  // Mode of the project's `.edgeagent/policy.yaml` (or "block" by
+  // default). When "block", the server FORCES the pre-commit scan and
+  // ignores the toggle — we lock the UI to match so the user isn't
+  // confused into thinking the gate is opt-in.
+  const [policyMode, setPolicyMode] = useState<Policy["mode"] | null>(null)
+  const policyEnforces = policyMode === "block"
 
   useEffect(() => {
     if (!open) return
-    setRunScan(readBool(LS_KEYS.runScanBeforeCommit, false))
+    // Default ON. Without a pre-commit scan the policy gate never
+    // runs, so any tightening of `.edgeagent/policy.yaml` would be
+    // invisible to the user. Power users can toggle it off and we
+    // remember the choice via LS_KEYS.runScanBeforeCommit.
+    setRunScan(readBool(LS_KEYS.runScanBeforeCommit, true))
     setWarnOnCritical(readBool(LS_KEYS.warnOnCriticalCommit, true))
     setServerError(null)
     setBlockedReport(null)
+    setPolicyResponse(null)
+    setPolicyMode(null)
     if (typeof window !== "undefined") {
       try {
         setMessage(window.localStorage.getItem(LS_KEYS.lastCommitMessage) ?? "")
@@ -251,7 +298,32 @@ export function CommitDialog({
         setMessage("")
       }
     }
-  }, [open])
+    // Fetch the policy mode so the UI can lock the toggle when the
+    // project enforces. Best-effort — failure just leaves the toggle
+    // user-controlled, and the server still enforces independently.
+    if (projectPath) {
+      let cancelled = false
+      ;(async () => {
+        try {
+          const res = await loadPolicy(projectPath)
+          if (cancelled) return
+          setPolicyMode(res.policy?.mode ?? null)
+          // When policy enforces, force the scan ON locally too — the
+          // server will do it anyway, but this keeps the visible state
+          // honest before the user clicks Commit.
+          if (res.policy?.mode === "block") {
+            setRunScan(true)
+            setWarnOnCritical(true)
+          }
+        } catch {
+          /* leave policyMode null; server still enforces */
+        }
+      })()
+      return () => {
+        cancelled = true
+      }
+    }
+  }, [open, projectPath])
 
   useEffect(() => {
     writeBool(LS_KEYS.runScanBeforeCommit, runScan)
@@ -269,6 +341,7 @@ export function CommitDialog({
     setBusy(true)
     setServerError(null)
     setBlockedReport(null)
+    setPolicyResponse(null)
     let res: GitCommitResponse | null = null
     try {
       res = await gitCommit({
@@ -284,9 +357,13 @@ export function CommitDialog({
     }
     setBusy(false)
     if (!res) return
+    if (res.evaluation && res.policy) {
+      setPolicyResponse(toPolicyResponse(res.policy, res.evaluation, res))
+    }
     if (res.ok && res.noChanges) {
       toast.message("No changes to commit.")
-      onOpenChange(false)
+      // Don't auto-close; the user may still want to inspect the policy
+      // verdict that came back with the no-op response.
       void onComplete?.()
       return
     }
@@ -304,10 +381,17 @@ export function CommitDialog({
       void onComplete?.()
       return
     }
-    if (res.blocked && res.reason === "critical_or_high_findings") {
+    if (
+      res.blocked &&
+      (res.reason === "critical_or_high_findings" ||
+        res.reason === "policy_block")
+    ) {
       setBlockedReport(res.report ?? null)
       const msg =
-        res.message ?? "Commit blocked by pre-commit scan findings."
+        res.message ??
+        (res.reason === "policy_block"
+          ? "Commit blocked by .edgeagent/policy.yaml."
+          : "Commit blocked by pre-commit scan findings.")
       setServerError(msg)
       toast.error(msg)
       return
@@ -384,44 +468,69 @@ export function CommitDialog({
               <div>
                 <Label
                   htmlFor="run-scan-commit"
-                  className="text-sm font-medium"
+                  className="text-sm font-medium flex items-center gap-1.5"
                 >
                   Run scan before commit
+                  {policyEnforces && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-400"
+                      title="Required by .edgeagent/policy.yaml mode: block"
+                    >
+                      <Lock className="h-3 w-3" />
+                      enforced
+                    </span>
+                  )}
                 </Label>
                 <p className="text-[11px] text-muted-foreground">
-                  Runs the local scanner on the project. Adds time but lets
-                  Edge Agent block on findings.
+                  {policyEnforces
+                    ? "Policy mode is block — the scan will always run and a regression vs main will refuse the commit."
+                    : "Runs the local scanner on the project. Adds time but lets Edge Agent block on findings."}
                 </p>
               </div>
               <Switch
                 id="run-scan-commit"
-                checked={runScan}
+                checked={runScan || policyEnforces}
                 onCheckedChange={setRunScan}
-                disabled={busy}
+                disabled={busy || policyEnforces}
               />
             </div>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <Label
                   htmlFor="warn-critical-commit"
-                  className="text-sm font-medium"
+                  className="text-sm font-medium flex items-center gap-1.5"
                 >
                   Block on critical / high findings
+                  {policyEnforces && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-400"
+                      title="Required by .edgeagent/policy.yaml mode: block"
+                    >
+                      <Lock className="h-3 w-3" />
+                      enforced
+                    </span>
+                  )}
                 </Label>
                 <p className="text-[11px] text-muted-foreground">
-                  Only applies when the pre-commit scan is enabled.
+                  {policyEnforces
+                    ? "Policy is enforcing — critical findings always block, regardless of this toggle."
+                    : "Only applies when the pre-commit scan is enabled."}
                 </p>
               </div>
               <Switch
                 id="warn-critical-commit"
-                checked={warnOnCritical}
+                checked={warnOnCritical || policyEnforces}
                 onCheckedChange={setWarnOnCritical}
-                disabled={busy || !runScan}
+                disabled={busy || policyEnforces || !runScan}
               />
             </div>
           </div>
 
-          {blockedReport && (
+          {policyResponse && (
+            <PolicyStatusCard response={policyResponse} compact />
+          )}
+
+          {blockedReport && !policyResponse && (
             <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300 space-y-1">
               <div className="font-medium">Pre-commit scan blocked the commit.</div>
               <div className="font-mono">
@@ -437,7 +546,7 @@ export function CommitDialog({
               </div>
             </div>
           )}
-          {serverError && !blockedReport && (
+          {serverError && !blockedReport && !policyResponse && (
             <div className="rounded-md border border-red-500/40 bg-red-500/5 p-2 text-xs text-red-300 whitespace-pre-wrap font-mono max-h-40 overflow-auto">
               {serverError}
             </div>
@@ -490,6 +599,27 @@ export function PushConfirmDialog({
   const [blockedReport, setBlockedReport] = useState<GitOpReportSummary | null>(
     null
   )
+  const [policyResponse, setPolicyResponse] =
+    useState<PolicyApiResponse | null>(null)
+  // Same UX as the commit dialog — when the project policy is in
+  // block mode, the server forces the gate and we lock the toggle so
+  // the user can't be misled into thinking they can opt out.
+  const [policyMode, setPolicyMode] = useState<Policy["mode"] | null>(null)
+  const policyEnforces = policyMode === "block"
+  // Pre-flight GitHub permission check. Runs once when the dialog
+  // opens so the user sees "wrong-account / no push" *before* clicking
+  // Push. The server side enforces the same gate; this is purely UX.
+  const [permission, setPermission] =
+    useState<GitHubRepoPermissionResponse | null>(null)
+  const [permissionLoading, setPermissionLoading] = useState(false)
+  // Permission-denied details lifted out of a 403 push response so we
+  // can render a tailored "wrong account / cached creds" panel.
+  const [permissionDenied, setPermissionDenied] = useState<{
+    message: string
+    suggestions: string[]
+    github?: GitPushResponse["github"]
+    stderr?: string
+  } | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -497,7 +627,35 @@ export function PushConfirmDialog({
     setWarnOnCritical(readBool(LS_KEYS.warnOnCriticalPush, true))
     setServerError(null)
     setBlockedReport(null)
-  }, [open])
+    setPolicyResponse(null)
+    setPermission(null)
+    setPermissionDenied(null)
+    setPolicyMode(null)
+    if (projectPath) {
+      setPermissionLoading(true)
+      fetchGitHubRepoPermission(projectPath)
+        .then((p) => setPermission(p))
+        .catch(() => setPermission(null))
+        .finally(() => setPermissionLoading(false))
+      let cancelled = false
+      ;(async () => {
+        try {
+          const res = await loadPolicy(projectPath)
+          if (cancelled) return
+          setPolicyMode(res.policy?.mode ?? null)
+          if (res.policy?.mode === "block") {
+            setRunScan(true)
+            setWarnOnCritical(true)
+          }
+        } catch {
+          /* leave policyMode null; server still enforces */
+        }
+      })()
+      return () => {
+        cancelled = true
+      }
+    }
+  }, [open, projectPath])
 
   useEffect(() => {
     writeBool(LS_KEYS.runScanBeforePush, runScan)
@@ -519,6 +677,8 @@ export function PushConfirmDialog({
     setBusy(true)
     setServerError(null)
     setBlockedReport(null)
+    setPolicyResponse(null)
+    setPermissionDenied(null)
     let res: GitPushResponse | null = null
     try {
       res = await gitPush({
@@ -534,15 +694,53 @@ export function PushConfirmDialog({
     }
     setBusy(false)
     if (!res) return
+    if (res.evaluation && res.policy) {
+      setPolicyResponse(toPolicyResponse(res.policy, res.evaluation, res))
+    }
     if (res.ok) {
       toast.success(res.message ?? "Push complete.")
       onOpenChange(false)
       void onComplete?.()
       return
     }
-    if (res.blocked && res.reason === "critical_or_high_findings") {
+    if (
+      res.blocked &&
+      (res.reason === "no_push_permission" ||
+        res.reason === "permission_denied")
+    ) {
+      const msg =
+        res.message ??
+        (res.reason === "no_push_permission"
+          ? "Authenticated GitHub account doesn't have push access."
+          : "GitHub rejected the push (403).")
+      setPermissionDenied({
+        message: msg,
+        suggestions:
+          res.suggestions ??
+          (res.reason === "no_push_permission"
+            ? [
+                "Run `gh auth login` and pick the account that owns this repo.",
+                "Run `gh auth status` to see who gh thinks you are.",
+                "Ask the repo owner for collaborator access.",
+              ]
+            : []),
+        github: res.github,
+        stderr: res.stderr,
+      })
+      toast.error(msg)
+      return
+    }
+    if (
+      res.blocked &&
+      (res.reason === "critical_or_high_findings" ||
+        res.reason === "policy_block")
+    ) {
       setBlockedReport(res.report ?? null)
-      const msg = res.message ?? "Push blocked by pre-push scan findings."
+      const msg =
+        res.message ??
+        (res.reason === "policy_block"
+          ? "Push blocked by .edgeagent/policy.yaml."
+          : "Push blocked by pre-push scan findings.")
       setServerError(msg)
       toast.error(msg)
       return
@@ -591,45 +789,82 @@ export function PushConfirmDialog({
             </div>
           )}
 
+          {/* GitHub auth + permission preview. Surfaces "wrong account"
+              before the user clicks Push. The server enforces the same
+              gate; this is purely a UX shortcut. */}
+          <GitHubPermissionPreview
+            permission={permission}
+            loading={permissionLoading}
+          />
+
           <div className="rounded-md border border-border bg-secondary/20 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <Label htmlFor="run-scan-push" className="text-sm font-medium">
+                <Label
+                  htmlFor="run-scan-push"
+                  className="text-sm font-medium flex items-center gap-1.5"
+                >
                   Run scan before push
+                  {policyEnforces && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-400"
+                      title="Required by .edgeagent/policy.yaml mode: block"
+                    >
+                      <Lock className="h-3 w-3" />
+                      enforced
+                    </span>
+                  )}
                 </Label>
                 <p className="text-[11px] text-muted-foreground">
-                  Strongly recommended — pushes are visible to teammates / CI.
+                  {policyEnforces
+                    ? "Policy mode is block — the scan will always run and a regression vs main will refuse the push."
+                    : "Strongly recommended — pushes are visible to teammates / CI."}
                 </p>
               </div>
               <Switch
                 id="run-scan-push"
-                checked={runScan}
+                checked={runScan || policyEnforces}
                 onCheckedChange={setRunScan}
-                disabled={busy}
+                disabled={busy || policyEnforces}
               />
             </div>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <Label
                   htmlFor="warn-critical-push"
-                  className="text-sm font-medium"
+                  className="text-sm font-medium flex items-center gap-1.5"
                 >
                   Block on critical / high findings
+                  {policyEnforces && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-400"
+                      title="Required by .edgeagent/policy.yaml mode: block"
+                    >
+                      <Lock className="h-3 w-3" />
+                      enforced
+                    </span>
+                  )}
                 </Label>
                 <p className="text-[11px] text-muted-foreground">
-                  Only applies when the pre-push scan is enabled.
+                  {policyEnforces
+                    ? "Policy is enforcing — critical findings always block, regardless of this toggle."
+                    : "Only applies when the pre-push scan is enabled."}
                 </p>
               </div>
               <Switch
                 id="warn-critical-push"
-                checked={warnOnCritical}
+                checked={warnOnCritical || policyEnforces}
                 onCheckedChange={setWarnOnCritical}
-                disabled={busy || !runScan}
+                disabled={busy || policyEnforces || !runScan}
               />
             </div>
           </div>
 
-          {blockedReport && (
+          {policyResponse && (
+            <PolicyStatusCard response={policyResponse} compact />
+          )}
+
+          {blockedReport && !policyResponse && (
             <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300 space-y-1">
               <div className="font-medium">Pre-push scan blocked the push.</div>
               <div className="font-mono">
@@ -646,11 +881,17 @@ export function PushConfirmDialog({
               </div>
             </div>
           )}
-          {serverError && !blockedReport && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/5 p-2 text-xs text-red-300 whitespace-pre-wrap font-mono max-h-40 overflow-auto">
-              {serverError}
-            </div>
+          {permissionDenied && (
+            <PermissionDeniedPanel detail={permissionDenied} />
           )}
+          {serverError &&
+            !blockedReport &&
+            !policyResponse &&
+            !permissionDenied && (
+              <div className="rounded-md border border-red-500/40 bg-red-500/5 p-2 text-xs text-red-300 whitespace-pre-wrap font-mono max-h-40 overflow-auto">
+                {serverError}
+              </div>
+            )}
         </div>
 
         <DialogFooter className="gap-2">
@@ -662,7 +903,21 @@ export function PushConfirmDialog({
           >
             Cancel
           </Button>
-          <Button type="button" onClick={handlePush} disabled={!canPush}>
+          <Button
+            type="button"
+            onClick={handlePush}
+            disabled={
+              !canPush ||
+              // Hard-block the button only when gh actually told us
+              // the authenticated account has no push access. Other
+              // states (gh missing, not authenticated, not GitHub)
+              // fall through and let `git push` decide.
+              !!(
+                permission?.resolved &&
+                permission.canPush === false
+              )
+            }
+          >
             {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
             {busy
               ? runScan
@@ -673,5 +928,157 @@ export function PushConfirmDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* GitHub permission helpers                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Inline mini-card under the Push dialog showing what we know about
+ * the authenticated GitHub account vs. the project's `origin`. Stays
+ * compact / informational — the *real* enforcement happens server-side.
+ */
+function GitHubPermissionPreview({
+  permission,
+  loading,
+}: {
+  permission: GitHubRepoPermissionResponse | null
+  loading: boolean
+}) {
+  if (loading) {
+    return (
+      <div className="rounded-md border border-border bg-secondary/10 p-2 text-xs text-muted-foreground flex items-center gap-2">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Checking GitHub account permissions…
+      </div>
+    )
+  }
+  if (!permission) return null
+  if (permission.notGitHub) {
+    return null
+  }
+  if (permission.ghMissing) {
+    return (
+      <div className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-2 text-xs text-yellow-300">
+        GitHub CLI (<code>gh</code>) isn&apos;t installed, so we can&apos;t
+        pre-check push permissions. Push will use whatever credentials
+        your local Git is configured with.
+      </div>
+    )
+  }
+  if (permission.notAuthenticated) {
+    return (
+      <div className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-2 text-xs text-yellow-300">
+        No GitHub CLI session detected. Run{" "}
+        <code className="font-mono">gh auth login</code> to enable
+        per-account permission checks.
+      </div>
+    )
+  }
+  if (!permission.resolved) {
+    return (
+      <div className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-2 text-xs text-yellow-300 space-y-1">
+        <div>
+          Couldn&apos;t resolve push permissions for{" "}
+          <span className="font-mono">
+            {permission.owner}/{permission.repo}
+          </span>
+          .
+        </div>
+        {permission.message && (
+          <div className="text-[11px] opacity-80">{permission.message}</div>
+        )}
+      </div>
+    )
+  }
+  if (permission.canPush) {
+    return (
+      <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-2 text-xs text-emerald-300">
+        ✓ Authenticated account can push to{" "}
+        <span className="font-mono">
+          {permission.owner}/{permission.repo}
+        </span>
+        .
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-md border border-red-500/40 bg-red-500/5 p-2 text-xs text-red-300 space-y-1">
+      <div>
+        ✗ Authenticated GitHub account does <strong>not</strong> have push
+        access to{" "}
+        <span className="font-mono">
+          {permission.owner}/{permission.repo}
+        </span>
+        .
+      </div>
+      <div className="text-[11px] opacity-80">
+        Run <code>gh auth login</code> with the correct account, or ask the
+        repo owner for collaborator access. Settings → GitHub Account has
+        more details.
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Rendered after the server returns 403 from `git push`. Shows the
+ * specific failure reason (no push perm vs. cached creds) plus the
+ * exact commands the user should try, so they don't have to leave the
+ * dialog to copy-paste them from documentation.
+ */
+function PermissionDeniedPanel({
+  detail,
+}: {
+  detail: {
+    message: string
+    suggestions: string[]
+    github?: GitPushResponse["github"]
+    stderr?: string
+  }
+}) {
+  const isHttps = detail.github?.protocol === "https"
+  return (
+    <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300 space-y-2">
+      <div className="font-medium">{detail.message}</div>
+      {detail.github && (
+        <div className="font-mono text-[11px] opacity-80">
+          Account: {detail.github.login ?? "unknown"} · Repo:{" "}
+          {detail.github.owner}/{detail.github.repo} · Remote uses{" "}
+          {detail.github.protocol.toUpperCase()}
+        </div>
+      )}
+      {isHttps && (
+        <div className="text-[11px] text-yellow-300/90">
+          Your browser login may be correct, but <code>git push</code> uses
+          stored Git credentials. Re-authenticate Git, clear the cached
+          credential, or switch the remote to SSH.
+        </div>
+      )}
+      {detail.suggestions.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[11px] uppercase tracking-wide opacity-70">
+            Suggested fixes
+          </div>
+          <ul className="list-disc pl-4 space-y-0.5">
+            {detail.suggestions.map((s, i) => (
+              <li key={i} className="text-[11px]">
+                {s}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {detail.stderr && (
+        <details className="text-[11px] opacity-80">
+          <summary className="cursor-pointer">Raw git stderr</summary>
+          <pre className="mt-1 whitespace-pre-wrap font-mono">
+            {detail.stderr}
+          </pre>
+        </details>
+      )}
+    </div>
   )
 }

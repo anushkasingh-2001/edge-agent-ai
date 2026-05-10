@@ -38,6 +38,7 @@ import {
   type ScanHistoryItem,
 } from "@/lib/scan-history"
 import type { TestSuite } from "@/lib/test-cases"
+import { evaluatePolicyApi, type PolicyApiResponse } from "@/lib/policy-client"
 
 type GitBranchesResponse = {
   isRepo: boolean
@@ -124,6 +125,12 @@ export default function Home() {
   // so views beyond Scan Center (Overview) can show the *currently active*
   // user-defined tests instead of summing across every saved suite.
   const [activeSuite, setActiveSuite] = useState<TestSuite | null>(null)
+  // Latest policy evaluation for the current scan, refreshed every time
+  // a scan completes. Null when no scan has been run (or no project).
+  const [policyResponse, setPolicyResponse] =
+    useState<PolicyApiResponse | null>(null)
+  const [policyLoading, setPolicyLoading] = useState(false)
+  const policyEvalAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     setRecentProjects(loadRecentProjects())
@@ -371,6 +378,60 @@ export default function Home() {
     scanAbortRef.current?.abort()
   }, [])
 
+  /**
+   * Re-evaluate `.edgeagent/policy.yaml` against the supplied report.
+   * Called whenever a fresh scan lands or a historical scan is loaded.
+   * The policy file is read on the server side; if it's missing the
+   * server returns its safe defaults so the UI still gets a decision.
+   */
+  const runPolicyForReport = useCallback(
+    async (report: ScanReport, project: Project | null) => {
+      if (!project?.path) {
+        setPolicyResponse(null)
+        return
+      }
+      // Cancel any prior in-flight evaluation. We don't need its result.
+      policyEvalAbortRef.current?.abort()
+      const ctl = new AbortController()
+      policyEvalAbortRef.current = ctl
+      setPolicyLoading(true)
+      try {
+        const resp = await evaluatePolicyApi({
+          projectPath: project.path,
+          targetReport: report,
+          context: {
+            branch: currentBranch || project.branch,
+            // Working-tree status is fetched lazily by TopBar; the policy
+            // evaluator only consults it when auto-merge is requested,
+            // so omitting here is fine for the scan-time evaluation.
+          },
+        })
+        if (ctl.signal.aborted) return
+        setPolicyResponse(resp)
+      } catch {
+        if (!ctl.signal.aborted) setPolicyResponse(null)
+      } finally {
+        if (policyEvalAbortRef.current === ctl) {
+          policyEvalAbortRef.current = null
+        }
+        if (!ctl.signal.aborted) setPolicyLoading(false)
+      }
+    },
+    [currentBranch]
+  )
+
+  // Re-evaluate policy whenever the *current* scan report changes
+  // (executeScan, handleLoadScan, project switch). Keeps the Overview
+  // and any consumer in sync without each one needing to re-call the
+  // API itself.
+  useEffect(() => {
+    if (!scanReport || !selectedProject?.path) {
+      setPolicyResponse(null)
+      return
+    }
+    void runPolicyForReport(scanReport, selectedProject)
+  }, [scanReport, selectedProject, runPolicyForReport])
+
   /** Load a historical scan back into the current view. If the scan belongs
    * to a different project than the currently-selected one, switch to that
    * project too so the rest of the UI lines up. */
@@ -398,6 +459,7 @@ export default function Home() {
       setSelectedProject(persisted)
       setScanReport(null)
       setScanError(null)
+      setPolicyResponse(null)
       setCurrentView("overview")
       // A suite picked for project A should not stay active when the user
       // jumps to project B — its file/finding targets won't make sense.
@@ -415,6 +477,7 @@ export default function Home() {
       setSelectedProject(persisted)
       setScanReport(null)
       setScanError(null)
+      setPolicyResponse(null)
       setCurrentView("overview")
       setActiveSuite(null)
       if (persisted.branch && persisted.branch.trim()) {
@@ -466,6 +529,15 @@ export default function Home() {
             hasScan={hasScan}
             activeSuite={activeSuite}
             failedRuleIds={failedRuleIds}
+            policyResponse={policyResponse}
+            policyLoading={policyLoading}
+            projectPath={selectedProject?.path ?? null}
+            // The "policy gate" runs as a side-effect of every scan, so
+            // the scan report's own generated_at is the cleanest proxy
+            // for "last gate run". When we add a dedicated PR gate
+            // runner this will switch to its own timestamp.
+            lastGateRunAt={scanReport?.generated_at ?? null}
+            branches={gitInfo?.branches ?? []}
           />
         )
       case "scan-center":
@@ -534,6 +606,7 @@ export default function Home() {
             onRefreshBranches={(opts) =>
               refreshBranches(selectedProject, opts)
             }
+            currentPolicyResponse={policyResponse}
           />
         )
       case "prompt-playground":
@@ -564,7 +637,7 @@ export default function Home() {
         )
       }
       case "settings":
-        return <Settings />
+        return <Settings projectPath={selectedProject?.path ?? null} />
       default:
         return null
     }
