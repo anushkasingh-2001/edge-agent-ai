@@ -8,6 +8,13 @@ export type GitBranchesResponse = {
   remoteOnly: string[]
   currentBranch: string | null
   isRepo: boolean
+  /** Per-branch stash counts inferred from `git stash list` subjects.
+   *  Keys are short branch names (e.g. "low", "main"). Branches with
+   *  zero stashes simply don't appear in the map. Used by Branch
+   *  Compare to enable/disable the per-side "commits + stashes"
+   *  toggle without an extra round-trip. Optional for backward
+   *  compat with older API responses. */
+  stashesByBranch?: Record<string, number>
 }
 
 export type GitWorkingTreeStatus = "clean" | "uncommitted"
@@ -69,6 +76,22 @@ export type GitChangedFile = {
   category: GitChangeCategory
 }
 
+/**
+ * Per-side stash inclusion summary returned by `/api/git/compare` and
+ * `/api/git/compare-scan`. `included: false` ↔ caller didn't ask to
+ * include stashes for this side; `included: true, appliedCount: 0` ↔
+ * caller asked but the branch had zero stashes attributed to it.
+ * `skipped` lists stashes the route tried to layer but couldn't (the
+ * usual cause is a merge conflict against earlier-applied content).
+ */
+export type CompareStashSummary = {
+  included: boolean
+  appliedCount: number
+  skippedCount: number
+  applied: { ref: string; subject: string }[]
+  skipped: { ref: string; subject: string; reason: string }[]
+}
+
 export type GitCompareResponse = {
   base: string
   target: string
@@ -80,6 +103,11 @@ export type GitCompareResponse = {
     byCategory: Record<GitChangeCategory, number>
     byStatus: Record<GitChangeStatus, number>
   }
+  /** Stashes layered onto the base side before diffing. Optional for
+   *  backward compat with older server responses. */
+  baseStashes?: CompareStashSummary
+  /** Stashes layered onto the target side before diffing. */
+  targetStashes?: CompareStashSummary
 }
 
 export type GitChangeDetailResponse = {
@@ -127,6 +155,12 @@ export async function fetchGitCompare(args: {
   projectPath: string
   base: string
   target: string
+  /** When true, layer every `git stash` attributed to the base
+   *  branch (oldest → newest, latest wins on per-file conflicts)
+   *  onto the base side before diffing. */
+  baseIncludeStashes?: boolean
+  /** Same as `baseIncludeStashes` but for the target side. */
+  targetIncludeStashes?: boolean
 }): Promise<GitCompareResponse> {
   const res = await fetch("/api/git/compare", {
     method: "POST",
@@ -253,12 +287,23 @@ export type GitCompareScanResponse = {
   }
   /** Per-category aggregation (Prompt Quality / MCP / Dangerous Tools / …). */
   byCategory?: CategoryImpact[]
+  /** Stashes layered onto the base side before scanning. */
+  baseStashes?: CompareStashSummary
+  /** Stashes layered onto the target side before scanning. */
+  targetStashes?: CompareStashSummary
 }
 
 export async function fetchGitCompareScan(args: {
   projectPath: string
   base: string
   target: string
+  /** When true, every `git stash` attributed to the base branch is
+   *  layered onto the base worktree before the scanner runs (oldest
+   *  → newest, latest wins on per-file conflicts). No-op when the
+   *  branch has zero stashes. */
+  baseIncludeStashes?: boolean
+  /** Same as `baseIncludeStashes` but for the target side. */
+  targetIncludeStashes?: boolean
 }): Promise<GitCompareScanResponse> {
   const res = await fetch("/api/git/compare-scan", {
     method: "POST",

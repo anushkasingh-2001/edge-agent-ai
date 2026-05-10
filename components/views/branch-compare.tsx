@@ -40,6 +40,7 @@ import {
   Workflow,
   Activity,
   GitPullRequest,
+  Archive,
 } from "lucide-react"
 import {
   fetchGitCompare,
@@ -53,6 +54,7 @@ import {
   type GitCompareScanResponse,
   type PerFileImpact,
   type CategoryImpact,
+  type CompareStashSummary,
 } from "@/lib/git-client"
 import { SCANNER_RULE_IDS } from "@/lib/scan-report"
 import { SECURITY_CHECKS } from "@/lib/security-checks"
@@ -85,6 +87,10 @@ interface BranchCompareProps {
   branches?: string[]
   /** Remote-only branches surfaced separately (origin/main etc.). */
   remoteOnlyBranches?: string[]
+  /** Per-branch `git stash` count (from /api/git/branches). Used to
+   *  enable/disable the per-side "commits + stashes" toggle —
+   *  branches with zero stashes can't switch into that mode. */
+  stashesByBranch?: Record<string, number>
   /** Selected project filesystem path — required for git operations. */
   projectPath?: string
   /** True if the parent confirmed the project is a git repo. */
@@ -170,6 +176,7 @@ export function BranchCompare({
   currentBranch = "main",
   branches = [],
   remoteOnlyBranches = [],
+  stashesByBranch = {},
   projectPath,
   isGitRepo = false,
   onRefreshBranches,
@@ -185,9 +192,37 @@ export function BranchCompare({
 
   const [baseBranch, setBaseBranch] = useState<string>(defaultBase)
   const [targetBranch, setTargetBranch] = useState<string>(defaultTarget)
+  // Per-side scope: "commits" = pristine HEAD; "commits+stashes" =
+  // HEAD with every branch-attributed stash layered on (oldest →
+  // newest, latest wins on file conflicts). Stored separately per
+  // side so the user can mix-and-match (e.g. "main commits only" vs
+  // "low commits + WIP"). Default for both sides is "commits".
+  type SideMode = "commits" | "commits+stashes"
+  const [baseMode, setBaseMode] = useState<SideMode>("commits")
+  const [targetMode, setTargetMode] = useState<SideMode>("commits")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GitCompareResponse | null>(null)
+
+  // Stash count helper. Branches with zero stashes can't enter
+  // "commits + stashes" mode, so the radio for that side is
+  // disabled with a tooltip.
+  const baseStashCount = stashesByBranch[baseBranch] ?? 0
+  const targetStashCount = stashesByBranch[targetBranch] ?? 0
+  // Auto-revert a side's mode back to "commits" if the user switches
+  // to a branch with no stashes — otherwise the request would carry
+  // a no-op `includeStashes: true` flag that's misleading in the
+  // response payload.
+  useEffect(() => {
+    if (baseStashCount === 0 && baseMode === "commits+stashes") {
+      setBaseMode("commits")
+    }
+  }, [baseStashCount, baseMode])
+  useEffect(() => {
+    if (targetStashCount === 0 && targetMode === "commits+stashes") {
+      setTargetMode("commits")
+    }
+  }, [targetStashCount, targetMode])
 
   // Per-file detail dialog.
   const [detailFile, setDetailFile] = useState<GitChangedFile | null>(null)
@@ -293,9 +328,27 @@ export function BranchCompare({
     const path = projectPath
     const base = baseBranch
     const target = targetBranch
+    // Translate the per-side mode into the API flag both endpoints
+    // accept. The diff route shortcuts the synthetic-tree path when
+    // both flags are false, so the cheap `base..target` mode is
+    // preserved for the common "no stashes" case.
+    const baseIncludeStashes = baseMode === "commits+stashes"
+    const targetIncludeStashes = targetMode === "commits+stashes"
     const [diffRes, scanRes] = await Promise.allSettled([
-      fetchGitCompare({ projectPath: path, base, target }),
-      fetchGitCompareScan({ projectPath: path, base, target }),
+      fetchGitCompare({
+        projectPath: path,
+        base,
+        target,
+        baseIncludeStashes,
+        targetIncludeStashes,
+      }),
+      fetchGitCompareScan({
+        projectPath: path,
+        base,
+        target,
+        baseIncludeStashes,
+        targetIncludeStashes,
+      }),
     ])
 
     if (diffRes.status === "fulfilled") {
@@ -501,9 +554,11 @@ export function BranchCompare({
 
       <Card className="bg-card border-border">
         <CardContent className="pt-6">
-          <div className="flex items-center gap-4">
-            <div className="flex-1">
-              <label className="text-sm text-muted-foreground mb-2 block">Base Branch</label>
+          <div className="flex items-start gap-4">
+            <div className="flex-1 space-y-2">
+              <label className="text-sm text-muted-foreground block">
+                Base Branch
+              </label>
               <Select value={baseBranch} onValueChange={setBaseBranch}>
                 <SelectTrigger className="bg-secondary/50">
                   <div className="flex items-center gap-2">
@@ -517,17 +572,39 @@ export function BranchCompare({
                       <span className="flex items-center gap-2">
                         {b.label}
                         {b.remote && (
-                          <span className="text-[10px] text-muted-foreground">remote</span>
+                          <span className="text-[10px] text-muted-foreground">
+                            remote
+                          </span>
+                        )}
+                        {(stashesByBranch[b.value] ?? 0) > 0 && (
+                          <span
+                            className="text-[10px] text-blue-300 inline-flex items-center gap-0.5"
+                            title={`${stashesByBranch[b.value]} stash${
+                              stashesByBranch[b.value] === 1 ? "" : "es"
+                            } on this branch`}
+                          >
+                            <Archive className="h-2.5 w-2.5" />
+                            {stashesByBranch[b.value]}
+                          </span>
                         )}
                       </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <SideScopeToggle
+                side="base"
+                value={baseMode}
+                onChange={setBaseMode}
+                stashCount={baseStashCount}
+                branch={baseBranch}
+              />
             </div>
-            <ArrowRight className="h-5 w-5 text-muted-foreground mt-6" />
-            <div className="flex-1">
-              <label className="text-sm text-muted-foreground mb-2 block">Target Branch</label>
+            <ArrowRight className="h-5 w-5 text-muted-foreground mt-9" />
+            <div className="flex-1 space-y-2">
+              <label className="text-sm text-muted-foreground block">
+                Target Branch
+              </label>
               <Select value={targetBranch} onValueChange={setTargetBranch}>
                 <SelectTrigger className="bg-secondary/50">
                   <div className="flex items-center gap-2">
@@ -541,17 +618,57 @@ export function BranchCompare({
                       <span className="flex items-center gap-2">
                         {b.label}
                         {b.remote && (
-                          <span className="text-[10px] text-muted-foreground">remote</span>
+                          <span className="text-[10px] text-muted-foreground">
+                            remote
+                          </span>
+                        )}
+                        {(stashesByBranch[b.value] ?? 0) > 0 && (
+                          <span
+                            className="text-[10px] text-blue-300 inline-flex items-center gap-0.5"
+                            title={`${stashesByBranch[b.value]} stash${
+                              stashesByBranch[b.value] === 1 ? "" : "es"
+                            } on this branch`}
+                          >
+                            <Archive className="h-2.5 w-2.5" />
+                            {stashesByBranch[b.value]}
+                          </span>
                         )}
                       </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <SideScopeToggle
+                side="target"
+                value={targetMode}
+                onChange={setTargetMode}
+                stashCount={targetStashCount}
+                branch={targetBranch}
+              />
             </div>
           </div>
         </CardContent>
       </Card>
+
+      {/* Stash-applied / skipped summary. Only renders once a comparison
+       *  has run AND at least one side opted into stash inclusion, so
+       *  the user gets a clear receipt of what actually got layered
+       *  vs what got skipped due to apply conflicts. */}
+      {(scanResult || result) &&
+        ((scanResult?.baseStashes?.included ?? result?.baseStashes?.included) ||
+          (scanResult?.targetStashes?.included ??
+            result?.targetStashes?.included)) && (
+          <StashApplyReceipt
+            base={baseBranch}
+            target={targetBranch}
+            baseStashes={
+              scanResult?.baseStashes ?? result?.baseStashes ?? null
+            }
+            targetStashes={
+              scanResult?.targetStashes ?? result?.targetStashes ?? null
+            }
+          />
+        )}
 
       {error && (
         <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
@@ -1621,4 +1738,211 @@ function summarizeBySeverity(
   if (c.medium) parts.push(`${c.medium} medium`)
   if (c.low) parts.push(`${c.low} low`)
   return parts.join(", ") || "—"
+}
+
+/**
+ * Per-side scope selector that sits below each branch dropdown.
+ * Two segments:
+ *
+ *   - "Commits"          — pristine HEAD of this branch (default).
+ *   - "Commits + N WIP"  — HEAD with every `git stash` attributed to
+ *                         this branch layered on (oldest → newest,
+ *                         latest version wins on per-file conflicts).
+ *
+ * The "+ stashes" segment is disabled when the branch has zero
+ * stashes, with a tooltip explaining why. We render it as native
+ * radio inputs (visually styled) instead of a Select so both options
+ * are visible at a glance — the user shouldn't have to open a menu
+ * to discover that "include stashes" exists.
+ */
+function SideScopeToggle({
+  side,
+  value,
+  onChange,
+  stashCount,
+  branch,
+}: {
+  side: "base" | "target"
+  value: "commits" | "commits+stashes"
+  onChange: (v: "commits" | "commits+stashes") => void
+  stashCount: number
+  branch: string
+}) {
+  const stashesAvailable = stashCount > 0
+  const stashLabel =
+    stashCount === 1
+      ? "1 stash"
+      : stashCount > 1
+        ? `${stashCount} stashes`
+        : "no stashes"
+  const stashTitle = stashesAvailable
+    ? `Layer all ${stashLabel} on '${branch}' (oldest → newest, latest wins on per-file conflicts)`
+    : `Branch '${branch}' has no stashes — nothing to layer`
+  return (
+    <div
+      role="radiogroup"
+      aria-label={`${side === "base" ? "Base" : "Target"} scan scope`}
+      className="inline-flex items-center rounded-md border border-border/60 bg-secondary/30 p-0.5 text-[11px]"
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === "commits"}
+        onClick={() => onChange("commits")}
+        className={`px-2 py-0.5 rounded-sm transition-colors ${
+          value === "commits"
+            ? "bg-foreground/10 text-foreground"
+            : "text-muted-foreground hover:text-foreground"
+        }`}
+        title={`Pristine HEAD of '${branch}' — committed code only`}
+      >
+        Commits
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === "commits+stashes"}
+        onClick={() => stashesAvailable && onChange("commits+stashes")}
+        disabled={!stashesAvailable}
+        className={`px-2 py-0.5 rounded-sm transition-colors inline-flex items-center gap-1 ${
+          value === "commits+stashes"
+            ? "bg-blue-500/15 text-blue-300"
+            : stashesAvailable
+              ? "text-muted-foreground hover:text-foreground"
+              : "text-muted-foreground/40 cursor-not-allowed"
+        }`}
+        title={stashTitle}
+      >
+        <Archive className="h-3 w-3" />
+        Commits + {stashLabel}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Receipt rendered beneath the branch selectors after a comparison
+ * runs. Shows, per side, exactly which stashes were layered on top
+ * of the branch HEAD and which got skipped (typically due to a
+ * merge conflict against earlier-applied content).
+ *
+ * Renders nothing for sides where `included === false` — quiet
+ * default for the common "no stashes asked, no stashes layered"
+ * case. Renders a small "no stashes attributed" line when the user
+ * asked but the branch had none.
+ */
+function StashApplyReceipt({
+  base,
+  target,
+  baseStashes,
+  targetStashes,
+}: {
+  base: string
+  target: string
+  baseStashes: CompareStashSummary | null | undefined
+  targetStashes: CompareStashSummary | null | undefined
+}) {
+  return (
+    <Card className="bg-card border-blue-500/30">
+      <CardContent className="py-3 px-4 text-xs space-y-2">
+        <div className="flex items-center gap-2 text-blue-300">
+          <Archive className="h-3.5 w-3.5" />
+          <span className="font-medium">Stashes layered into this comparison</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <StashSideReceipt
+            label={`Base · ${base}`}
+            summary={baseStashes ?? null}
+          />
+          <StashSideReceipt
+            label={`Target · ${target}`}
+            summary={targetStashes ?? null}
+          />
+        </div>
+        <p className="text-[10px] text-muted-foreground pt-1">
+          Stashes are applied oldest → newest; the most recent version of
+          each file wins. Skipped entries are usually merge conflicts
+          against earlier-applied content and are NOT scanned.
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function StashSideReceipt({
+  label,
+  summary,
+}: {
+  label: string
+  summary: CompareStashSummary | null
+}) {
+  if (!summary || !summary.included) {
+    return (
+      <div className="rounded-md border border-border/60 bg-secondary/10 p-2">
+        <div className="text-[11px] text-muted-foreground">{label}</div>
+        <div className="text-[11px] text-muted-foreground/80 mt-1">
+          Commits only — no stashes layered.
+        </div>
+      </div>
+    )
+  }
+  if (summary.appliedCount === 0 && summary.skippedCount === 0) {
+    return (
+      <div className="rounded-md border border-border/60 bg-secondary/10 p-2">
+        <div className="text-[11px] text-muted-foreground">{label}</div>
+        <div className="text-[11px] text-muted-foreground/80 mt-1">
+          Stash inclusion requested, but this branch has no stashes
+          attributed to it.
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2 space-y-1.5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-[11px] text-blue-200">{label}</span>
+        <span className="text-[10px] text-blue-300/80 font-mono">
+          {summary.appliedCount} applied
+          {summary.skippedCount > 0 && ` · ${summary.skippedCount} skipped`}
+        </span>
+      </div>
+      {summary.applied.length > 0 && (
+        <ul className="space-y-0.5 list-disc pl-4 text-[11px] text-blue-100/90 font-mono">
+          {summary.applied.slice(0, 6).map((s) => (
+            <li key={s.ref} className="truncate" title={s.subject}>
+              {s.ref} — {s.subject}
+            </li>
+          ))}
+          {summary.applied.length > 6 && (
+            <li className="list-none text-blue-100/60 font-sans">
+              +{summary.applied.length - 6} more applied
+            </li>
+          )}
+        </ul>
+      )}
+      {summary.skipped.length > 0 && (
+        <div className="border-t border-border/40 pt-1.5">
+          <div className="text-[10px] text-red-300 mb-0.5">
+            Skipped (apply conflict — not scanned):
+          </div>
+          <ul className="space-y-0.5 list-disc pl-4 text-[11px] text-red-200/90 font-mono">
+            {summary.skipped.slice(0, 4).map((s) => (
+              <li
+                key={s.ref}
+                className="truncate"
+                title={`${s.subject} — ${s.reason}`}
+              >
+                {s.ref} — {s.subject}
+              </li>
+            ))}
+            {summary.skipped.length > 4 && (
+              <li className="list-none text-red-200/60 font-sans">
+                +{summary.skipped.length - 4} more skipped
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
 }

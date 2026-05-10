@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { NextResponse } from "next/server"
 import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
+import { countStashesByBranch } from "@/lib/server-git"
 
 /**
  * GET /api/git/branches?projectPath=/abs/path[&expand=1]
@@ -132,12 +133,19 @@ export async function GET(request: Request) {
   const currentBranch =
     headProc.status === 0 ? headProc.stdout.trim() || null : null
 
+  // Per-branch stash counts. The Branch Compare view uses this to
+  // enable/disable the "commits + stashes" toggle per side without
+  // a second round-trip. Cheap (`git stash list` + parse) and
+  // returns {} for repos with no stashes.
+  const stashesByBranch = countStashesByBranch(requested)
+
   return NextResponse.json({
     isRepo: true,
     branches: [...localBranches, ...remoteOnly],
     remoteOnly,
     currentBranch,
     expanded,
+    stashesByBranch,
   })
 }
 

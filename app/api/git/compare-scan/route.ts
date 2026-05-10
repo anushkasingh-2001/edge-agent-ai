@@ -5,11 +5,13 @@ import path from "node:path"
 import { NextResponse } from "next/server"
 import {
   GitError,
+  applyBranchStashesInWorktree,
   assertGitRepo,
   resolveProjectPath,
   resolveRef,
   runGit,
   validateRef,
+  type StashApplyResult,
 } from "@/lib/server-git"
 
 /**
@@ -107,6 +109,14 @@ export async function POST(request: Request) {
       projectPath?: string
       base?: string
       target?: string
+      /** When true, every `git stash` entry attributed to the BASE
+       *  branch (via "WIP on <baseBranch>:" subject) is layered onto
+       *  the base worktree before the scanner runs. Stashes are
+       *  applied oldest → newest so the most recent WIP wins on per-
+       *  file conflicts. No-op when the base branch has zero stashes. */
+      baseIncludeStashes?: boolean
+      /** Same as `baseIncludeStashes` but for the TARGET branch. */
+      targetIncludeStashes?: boolean
     }
     const { resolved } = resolveProjectPath(body.projectPath)
     assertGitRepo(resolved)
@@ -115,8 +125,17 @@ export async function POST(request: Request) {
     const targetInput = validateRef(body.target, "target")
     const baseRef = resolveRef(resolved, baseInput)
     const targetRef = resolveRef(resolved, targetInput)
+    const baseIncludeStashes = body.baseIncludeStashes === true
+    const targetIncludeStashes = body.targetIncludeStashes === true
 
-    if (baseRef.sha === targetRef.sha) {
+    // Same-SHA early exit only fires when neither side asks to layer
+    // stashes — once stashes enter the picture the effective trees
+    // can differ even when the branch SHAs are identical.
+    if (
+      baseRef.sha === targetRef.sha &&
+      !baseIncludeStashes &&
+      !targetIncludeStashes
+    ) {
       return NextResponse.json({
         base: baseInput,
         target: targetInput,
@@ -129,6 +148,8 @@ export async function POST(request: Request) {
         introduced: [],
         fixed: [],
         persistent: 0,
+        baseStashes: stashSummary(null),
+        targetStashes: stashSummary(null),
       })
     }
 
@@ -142,6 +163,18 @@ export async function POST(request: Request) {
 
     addWorktree(resolved, baseWt, baseRef.sha)
     addWorktree(resolved, targetWt, targetRef.sha)
+
+    // Layer in any branch-attributed stashes the caller asked for.
+    // The branch name comes from the user's dropdown choice (the
+    // *input* string before resolveRef alias-walking), not the
+    // canonical ref, because stash subjects record short branch
+    // names like "WIP on low:" — not "refs/remotes/origin/low".
+    const baseStashApply: StashApplyResult = baseIncludeStashes
+      ? applyBranchStashesInWorktree(resolved, baseWt, baseInput)
+      : { applied: [], skipped: [] }
+    const targetStashApply: StashApplyResult = targetIncludeStashes
+      ? applyBranchStashesInWorktree(resolved, targetWt, targetInput)
+      : { applied: [], skipped: [] }
 
     // Both scans are independent and CPU-bound on the Python side. Running
     // them in parallel turns the wall-clock from 2× into ~1× the slower of
@@ -364,6 +397,10 @@ export async function POST(request: Request) {
         risk_score: targetScan.risk_score,
         summary: targetScan.summary,
       },
+      baseStashes: stashSummary(baseIncludeStashes ? baseStashApply : null),
+      targetStashes: stashSummary(
+        targetIncludeStashes ? targetStashApply : null
+      ),
       delta: {
         risk: targetScan.risk_score - baseScan.risk_score,
         total: targetScan.summary.total - baseScan.summary.total,
@@ -547,6 +584,39 @@ function safeUnlink(p: string) {
     if (fs.existsSync(p)) fs.unlinkSync(p)
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Shape the per-side StashApplyResult for the JSON response. `null`
+ * means the caller didn't ask to include stashes for this side, so
+ * we surface `included: false` and empty arrays — distinct from
+ * `included: true, applied: []` which means "the user asked but the
+ * branch has zero stashes" and is also a perfectly valid state.
+ */
+function stashSummary(apply: StashApplyResult | null) {
+  if (!apply) {
+    return {
+      included: false,
+      appliedCount: 0,
+      skippedCount: 0,
+      applied: [] as { ref: string; subject: string }[],
+      skipped: [] as { ref: string; subject: string; reason: string }[],
+    }
+  }
+  return {
+    included: true,
+    appliedCount: apply.applied.length,
+    skippedCount: apply.skipped.length,
+    applied: apply.applied.map((s) => ({
+      ref: s.ref,
+      subject: s.subject,
+    })),
+    skipped: apply.skipped.map((s) => ({
+      ref: s.entry.ref,
+      subject: s.entry.subject,
+      reason: s.reason,
+    })),
   }
 }
 

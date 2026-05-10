@@ -46,6 +46,10 @@ type GitBranchesResponse = {
   remoteOnly: string[]
   currentBranch: string | null
   expanded: boolean
+  /** Per-branch stash counts (from `git stash list` subjects). Empty
+   *  map ↔ no stashes anywhere. Branches with zero stashes simply
+   *  don't appear in the keys. */
+  stashesByBranch: Record<string, number>
 }
 
 /**
@@ -169,6 +173,7 @@ export default function Home() {
             remoteOnly: [],
             currentBranch: null,
             expanded: false,
+            stashesByBranch: {},
           })
           return
         }
@@ -178,6 +183,11 @@ export default function Home() {
           remoteOnly: Array.isArray(data.remoteOnly) ? data.remoteOnly : [],
           currentBranch: data.currentBranch ?? null,
           expanded: Boolean(data.expanded),
+          stashesByBranch:
+            data.stashesByBranch &&
+            typeof data.stashesByBranch === "object"
+              ? (data.stashesByBranch as Record<string, number>)
+              : {},
         }
         setGitInfo(info)
         if (
@@ -193,6 +203,7 @@ export default function Home() {
           remoteOnly: [],
           currentBranch: null,
           expanded: false,
+          stashesByBranch: {},
         })
       } finally {
         setGitLoading(false)
@@ -627,6 +638,7 @@ export default function Home() {
             currentBranch={currentBranch}
             branches={gitInfo?.branches ?? []}
             remoteOnlyBranches={gitInfo?.remoteOnly ?? []}
+            stashesByBranch={gitInfo?.stashesByBranch ?? {}}
             projectPath={selectedProject?.path}
             isGitRepo={gitInfo?.isRepo ?? false}
             onRefreshBranches={(opts) =>

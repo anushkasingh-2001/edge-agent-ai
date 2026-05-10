@@ -419,3 +419,126 @@ export function listStashesForBranch(
   if (!branch) return []
   return listStashes(projectPath).filter((s) => s.branch === branch)
 }
+
+/**
+ * Group all stashes by their inferred branch and return per-branch
+ * counts. Used by the branches API to tell the UI "branch `low` has
+ * 3 stashes, branch `main` has 1" so the per-side "commits +
+ * stashes" toggle in Branch Compare can be enabled/disabled
+ * accurately without firing a second request.
+ *
+ * Stashes whose subject doesn't match the "(WIP )?[Oo]n <branch>:"
+ * pattern (rare — only happens when the user wrote a custom subject
+ * that doesn't include the branch name) are dropped from the count
+ * because we can't confidently attribute them.
+ */
+export function countStashesByBranch(
+  projectPath: string
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const s of listStashes(projectPath)) {
+    if (!s.branch) continue
+    out[s.branch] = (out[s.branch] ?? 0) + 1
+  }
+  return out
+}
+
+export type StashApplyResult = {
+  /** Stashes that were applied successfully into the worktree, in the
+   *  order they were applied (oldest → newest). */
+  applied: StashEntry[]
+  /** Stashes we tried to apply but couldn't, with a short reason
+   *  (typically a merge conflict against earlier-applied content).
+   *  Skipped entries do NOT contribute to the synthetic tree. */
+  skipped: { entry: StashEntry; reason: string }[]
+}
+
+/**
+ * Layer every `git stash` entry attributed to `branch` on top of
+ * whatever is currently in `worktreeDir`. Stashes are applied in
+ * **oldest → newest** order so that when two stashes touch the same
+ * file the newest version wins (closest to the user's current WIP).
+ *
+ * Each apply is attempted with `--index` first (preserves staged-vs-
+ * unstaged) and falls back to plain `apply` on conflict — the most
+ * common "files don't overlap with the index" case still succeeds.
+ *
+ * Best-effort: a stash that conflicts with already-applied content is
+ * recorded in `skipped` rather than aborting the whole layering. The
+ * caller can surface that list to the UI ("2 stashes folded in,
+ * 1 skipped due to conflict").
+ *
+ * No-op (returns empty `applied` + `skipped`) when `branch` is null
+ * or has zero stashes.
+ */
+export function applyBranchStashesInWorktree(
+  repo: string,
+  worktreeDir: string,
+  branch: string | null
+): StashApplyResult {
+  const result: StashApplyResult = { applied: [], skipped: [] }
+  if (!branch) return result
+
+  const stashes = listStashesForBranch(repo, branch)
+  if (stashes.length === 0) return result
+
+  for (const entry of [...stashes].reverse()) {
+    // Resolve the ref to a SHA up front: `stash@{N}` indices can
+    // shift if anything ELSE touches the stash list between calls,
+    // but a SHA is immutable.
+    const rev = runGit(repo, [
+      "rev-parse",
+      "--verify",
+      `${entry.ref}^{commit}`,
+    ])
+    if (rev.status !== 0) {
+      result.skipped.push({ entry, reason: "could not resolve ref to SHA" })
+      continue
+    }
+    const sha = rev.stdout.trim()
+
+    let apply = runGit(worktreeDir, ["stash", "apply", "--index", sha], {
+      timeoutMs: 30_000,
+    })
+    if (apply.status !== 0) {
+      apply = runGit(worktreeDir, ["stash", "apply", sha], {
+        timeoutMs: 30_000,
+      })
+    }
+    if (apply.status !== 0) {
+      result.skipped.push({
+        entry,
+        reason:
+          (apply.stderr ?? "").slice(0, 300).trim() || "stash apply failed",
+      })
+      continue
+    }
+    result.applied.push(entry)
+  }
+  return result
+}
+
+/**
+ * Stage everything in `worktreeDir` and write the resulting tree to
+ * the shared object database via `git write-tree`. The returned SHA
+ * lets the parent repo run `git diff-tree` against it as if it were
+ * an ordinary commit's tree — which is exactly what we need to diff
+ * "branch HEAD + applied stashes" against another branch's
+ * (synthetic or real) tree without having to materialise a temporary
+ * commit.
+ *
+ * Returns `null` when `git add -A` or `git write-tree` fails
+ * (corrupted worktree, IO error, etc.). Callers should fall back to
+ * the regular `base..target` commit-vs-commit path when a synthetic
+ * tree can't be produced.
+ */
+export function writeWorktreeTreeSha(
+  worktreeDir: string
+): string | null {
+  const add = runGit(worktreeDir, ["add", "-A"], { timeoutMs: 30_000 })
+  if (add.status !== 0) return null
+  const wt = runGit(worktreeDir, ["write-tree"], { timeoutMs: 30_000 })
+  if (wt.status !== 0) return null
+  const sha = wt.stdout.trim()
+  return sha.length > 0 ? sha : null
+}
