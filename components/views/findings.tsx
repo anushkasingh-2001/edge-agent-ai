@@ -1,8 +1,15 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -20,13 +27,40 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs"
+import {
   Search,
   Shield,
   ChevronRight,
+  ChevronDown,
+  Sparkles,
+  Loader2,
+  PlayCircle,
+  Filter,
+  RefreshCw,
+  CircleCheck,
+  CircleX,
+  CircleDashed,
+  FileCode,
+  MessageSquare,
 } from "lucide-react"
 import { FindingDrawer } from "@/components/finding-drawer"
-import type { UiFinding } from "@/lib/scan-report"
+import type { ScanReport, UiFinding } from "@/lib/scan-report"
 import { SECURITY_CHECKS, displayCategoryLabel } from "@/lib/security-checks"
+import {
+  accuracyTone,
+  formatAccuracyPct,
+  runBehavioralTestsApi,
+  severityTone,
+  statusTone,
+  type BehavioralRunReport,
+  type BehavioralStatus,
+  type BehavioralTestCase,
+} from "@/lib/behavioral-tests-client"
 
 export type Finding = UiFinding
 
@@ -44,84 +78,54 @@ interface FindingsProps {
   riskScore: number
   hasProject?: boolean
   hasScan?: boolean
+  /** Required for the behavioral runner so the API can find the project
+   *  on disk. When absent the Behavioral tab degrades gracefully to a
+   *  "needs a project + scan" empty state. */
+  projectPath?: string | null
+  scanReport?: ScanReport | null
 }
 
+/**
+ * Findings tab.
+ *
+ * Two surfaces under the same risk-score header:
+ *
+ *   - **Code Analysis** — static scanner output (the existing flow).
+ *     Same 14-category dropdown vocabulary as Scan Center.
+ *   - **Behavioral Tests** — on-demand runner that points adversarial
+ *     probes (with rotating, freshly-drawn inputs each run) at the
+ *     real source files behind each scanner finding and checks for the
+ *     defenses each probe expects. No LLM, no network, no mocks.
+ *
+ * The behavioral runner is intentionally honest: it doesn't pretend to
+ * "ask the agent" — it inspects the agent's code for the defense the
+ * probe expects. That makes results actionable (a fail points at a
+ * specific file:line and the missing guard) while keeping execution
+ * cheap enough to run on every scan refresh.
+ */
 export function Findings({
   findings,
   riskScore,
   hasProject = false,
   hasScan = false,
+  projectPath = null,
+  scanReport = null,
 }: FindingsProps) {
-  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState("")
-  const [severityFilter, setSeverityFilter] = useState<string>("all")
-  const [categoryFilter, setCategoryFilter] = useState<string>("all")
-
-  // Dropdown shows the full Scan Center taxonomy (14 checks) so the
-  // category vocabulary is identical across both screens. Any scanner
-  // category that's NOT yet claimed by a SECURITY_CHECKS entry is appended
-  // at the end so a new rule can't silently disappear from the UI.
-  //
-  // Counts are computed from the current `findings` array — a check with
-  // 0 findings still appears, just dimmed and labelled `(0)` so the user
-  // sees the full list and knows which buckets are empty in this scan.
-  const findingCountByLabel = (() => {
-    const m = new Map<string, number>()
-    for (const f of findings) {
-      const label = displayCategory(f.category)
-      m.set(label, (m.get(label) ?? 0) + 1)
-    }
-    return m
-  })()
-  const knownLabels = SECURITY_CHECKS.map((c) => c.label)
-  const knownLabelSet = new Set(knownLabels)
-  const orphanLabels = [
-    ...new Set(
-      findings
-        .map((f) => displayCategory(f.category))
-        .filter((label) => !knownLabelSet.has(label))
-    ),
-  ].sort((a, b) => a.localeCompare(b))
-  const categories: string[] = [...knownLabels, ...orphanLabels]
-
-  const filteredFindings = findings.filter((f) => {
-    const matchesSearch =
-      f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      f.file.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesSeverity = severityFilter === "all" || f.severity === severityFilter
-    const matchesCategory =
-      categoryFilter === "all" || displayCategory(f.category) === categoryFilter
-    return matchesSearch && matchesSeverity && matchesCategory
-  })
+  const [tab, setTab] = useState<"code" | "behavioral">("code")
 
   const criticalCount = findings.filter((f) => f.severity === "critical").length
   const highCount = findings.filter((f) => f.severity === "high").length
   const mediumCount = findings.filter((f) => f.severity === "medium").length
   const lowCount = findings.filter((f) => f.severity === "low").length
 
-  const handleFindingClick = (finding: Finding) => {
-    setSelectedFinding(finding)
-    setDrawerOpen(true)
-  }
-
-  const severityBadgeClass = (severity: string) => {
-    switch (severity) {
-      case "critical":
-        return "bg-red-500/10 text-red-400 border-red-500/20"
-      case "high":
-        return "bg-orange-500/10 text-orange-400 border-orange-500/20"
-      case "medium":
-        return "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
-      case "low":
-        return "bg-blue-500/10 text-blue-400 border-blue-500/20"
-      default:
-        return ""
-    }
-  }
-
   const riskColor =
-    riskScore >= 86 ? "text-red-400" : riskScore >= 61 ? "text-orange-400" : riskScore >= 31 ? "text-yellow-400" : "text-green-400"
+    riskScore >= 86
+      ? "text-red-400"
+      : riskScore >= 61
+        ? "text-orange-400"
+        : riskScore >= 31
+          ? "text-yellow-400"
+          : "text-green-400"
 
   if (!hasProject || !hasScan) {
     return (
@@ -129,7 +133,9 @@ export function Findings({
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold">Findings</h1>
-            <p className="text-muted-foreground">Security issues detected in your AI agents</p>
+            <p className="text-muted-foreground">
+              Security issues detected in your AI agents
+            </p>
           </div>
         </div>
         <Card className="bg-card border-border">
@@ -147,7 +153,10 @@ export function Findings({
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Findings</h1>
-        <p className="text-muted-foreground">Security issues detected in your AI agents</p>
+        <p className="text-muted-foreground">
+          Security issues detected in your AI agents — both static code
+          patterns and adversarial behavior probes against the real code.
+        </p>
       </div>
 
       <div className="grid grid-cols-5 gap-4">
@@ -212,6 +221,107 @@ export function Findings({
         </Card>
       </div>
 
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as "code" | "behavioral")}
+      >
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="code" className="gap-2">
+            <FileCode className="h-3.5 w-3.5" />
+            Code Analysis
+            <Badge
+              variant="outline"
+              className="ml-1 h-5 px-1.5 text-[10px] font-normal"
+            >
+              {findings.length}
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="behavioral" className="gap-2">
+            <Sparkles className="h-3.5 w-3.5" />
+            Behavioral Tests
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="code" className="mt-6 space-y-6">
+          <CodeAnalysisPanel findings={findings} />
+        </TabsContent>
+
+        <TabsContent value="behavioral" className="mt-6 space-y-6">
+          <BehavioralTestsPanel
+            projectPath={projectPath}
+            scanReport={scanReport}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+// ===================================================================
+// Code Analysis tab — same logic as before, extracted into a sub-comp
+// so the Behavioral panel doesn't need to share state with it.
+// ===================================================================
+
+function CodeAnalysisPanel({ findings }: { findings: Finding[] }) {
+  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [severityFilter, setSeverityFilter] = useState<string>("all")
+  const [categoryFilter, setCategoryFilter] = useState<string>("all")
+
+  const findingCountByLabel = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const f of findings) {
+      const label = displayCategory(f.category)
+      m.set(label, (m.get(label) ?? 0) + 1)
+    }
+    return m
+  }, [findings])
+
+  const knownLabels = SECURITY_CHECKS.map((c) => c.label)
+  const knownLabelSet = useMemo(() => new Set(knownLabels), [knownLabels])
+  const orphanLabels = useMemo(
+    () =>
+      [
+        ...new Set(
+          findings
+            .map((f) => displayCategory(f.category))
+            .filter((label) => !knownLabelSet.has(label))
+        ),
+      ].sort((a, b) => a.localeCompare(b)),
+    [findings, knownLabelSet]
+  )
+  const categories: string[] = [...knownLabels, ...orphanLabels]
+
+  const filteredFindings = findings.filter((f) => {
+    const matchesSearch =
+      f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      f.file.toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesSeverity =
+      severityFilter === "all" || f.severity === severityFilter
+    const matchesCategory =
+      categoryFilter === "all" ||
+      displayCategory(f.category) === categoryFilter
+    return matchesSearch && matchesSeverity && matchesCategory
+  })
+
+  const severityBadgeClass = (severity: string) => {
+    switch (severity) {
+      case "critical":
+        return "bg-red-500/10 text-red-400 border-red-500/20"
+      case "high":
+        return "bg-orange-500/10 text-orange-400 border-orange-500/20"
+      case "medium":
+        return "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+      case "low":
+        return "bg-blue-500/10 text-blue-400 border-blue-500/20"
+      default:
+        return ""
+    }
+  }
+
+  return (
+    <>
       <Card className="bg-card border-border">
         <CardContent className="pt-4">
           <div className="flex items-center gap-4">
@@ -246,9 +356,6 @@ export function Findings({
                 </SelectItem>
                 {categories.map((cat) => {
                   const count = findingCountByLabel.get(cat) ?? 0
-                  // Dim empty buckets so the user can still see the full
-                  // 14-check taxonomy without confusing zero-count rows
-                  // with active ones.
                   return (
                     <SelectItem key={cat} value={cat}>
                       <span
@@ -268,7 +375,9 @@ export function Findings({
                 })}
               </SelectContent>
             </Select>
-            <div className="text-sm text-muted-foreground">{filteredFindings.length} findings</div>
+            <div className="text-sm text-muted-foreground">
+              {filteredFindings.length} findings
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -291,18 +400,32 @@ export function Findings({
               <TableRow
                 key={finding.scannerFindingId ?? finding.id}
                 className="cursor-pointer hover:bg-secondary/50 border-border"
-                onClick={() => handleFindingClick(finding)}
+                onClick={() => {
+                  setSelectedFinding(finding)
+                  setDrawerOpen(true)
+                }}
               >
                 <TableCell>
-                  <Badge variant="outline" className={severityBadgeClass(finding.severity)}>
+                  <Badge
+                    variant="outline"
+                    className={severityBadgeClass(finding.severity)}
+                  >
                     {finding.severity}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-muted-foreground">{displayCategory(finding.category)}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {displayCategory(finding.category)}
+                </TableCell>
                 <TableCell className="font-medium">{finding.title}</TableCell>
-                <TableCell className="font-mono text-sm text-muted-foreground">{finding.file}</TableCell>
-                <TableCell className="font-mono text-sm text-muted-foreground">{finding.line}</TableCell>
-                <TableCell className="text-muted-foreground">{finding.agent}</TableCell>
+                <TableCell className="font-mono text-sm text-muted-foreground">
+                  {finding.file}
+                </TableCell>
+                <TableCell className="font-mono text-sm text-muted-foreground">
+                  {finding.line}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {finding.agent}
+                </TableCell>
                 <TableCell>
                   <ChevronRight className="h-4 w-4 text-muted-foreground" />
                 </TableCell>
@@ -312,7 +435,553 @@ export function Findings({
         </Table>
       </Card>
 
-      <FindingDrawer finding={selectedFinding} open={drawerOpen} onOpenChange={setDrawerOpen} />
+      <FindingDrawer
+        finding={selectedFinding}
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+      />
+    </>
+  )
+}
+
+// ===================================================================
+// Behavioral Tests tab
+// ===================================================================
+
+interface BehavioralTestsPanelProps {
+  projectPath: string | null
+  scanReport: ScanReport | null
+}
+
+function BehavioralTestsPanel({
+  projectPath,
+  scanReport,
+}: BehavioralTestsPanelProps) {
+  const [report, setReport] = useState<BehavioralRunReport | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [statusFilter, setStatusFilter] = useState<"all" | BehavioralStatus>(
+    "all"
+  )
+  const [categoryFilter, setCategoryFilter] = useState<string>("all")
+  const abortRef = useRef<AbortController | null>(null)
+
+  const canRun = Boolean(projectPath)
+
+  const runOnce = useCallback(
+    async (opts?: { fixedSeed?: number }) => {
+      if (!projectPath) return
+      abortRef.current?.abort()
+      const ac = new AbortController()
+      abortRef.current = ac
+      setRunning(true)
+      setError(null)
+      try {
+        const r = await runBehavioralTestsApi({
+          projectPath,
+          scanReport,
+          seed: opts?.fixedSeed,
+          signal: ac.signal,
+        })
+        setReport(r)
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return
+        setError(
+          e instanceof Error ? e.message : "Behavioral test run failed."
+        )
+      } finally {
+        setRunning(false)
+      }
+    },
+    [projectPath, scanReport]
+  )
+
+  // Auto-run once on first mount of the tab so the user sees real
+  // results without a click. Subsequent runs are explicit (button).
+  useEffect(() => {
+    if (canRun && report === null && !running && error === null) {
+      void runOnce()
+    }
+    return () => {
+      abortRef.current?.abort()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canRun])
+
+  if (!canRun) {
+    return (
+      <Card className="bg-card border-border">
+        <CardContent className="py-10 text-center text-sm text-muted-foreground">
+          Behavioral tests need an open project on disk so they can read
+          the agent source files. Open a project from the sidebar.
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const filteredTests = (report?.tests ?? []).filter((t) => {
+    if (statusFilter !== "all" && t.status !== statusFilter) return false
+    if (categoryFilter !== "all" && t.category !== categoryFilter) return false
+    return true
+  })
+
+  const categoryOptions = useMemoCategories(report)
+
+  return (
+    <div className="space-y-6">
+      <BehavioralRunHeader
+        report={report}
+        running={running}
+        onRun={() => void runOnce()}
+        onReplay={(seed) => void runOnce({ fixedSeed: seed })}
+      />
+
+      {error && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="py-3 text-sm text-destructive">
+            {error}
+          </CardContent>
+        </Card>
+      )}
+
+      {report && <BehavioralTotalsCards report={report} />}
+
+      {report && <BehavioralCategoryGrid report={report} />}
+
+      {report && (
+        <Card className="bg-card border-border">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <CardTitle className="text-base">Per-test details</CardTitle>
+                <CardDescription className="text-xs">
+                  Each row is one adversarial probe. Click to expand the
+                  conversation, expected defense, and the source the
+                  detector inspected.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+                <Select
+                  value={statusFilter}
+                  onValueChange={(v) =>
+                    setStatusFilter(v as "all" | BehavioralStatus)
+                  }
+                >
+                  <SelectTrigger className="h-8 w-32 bg-secondary/50 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    <SelectItem value="fail">Failed only</SelectItem>
+                    <SelectItem value="pass">Passed only</SelectItem>
+                    <SelectItem value="skip">Skipped only</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={categoryFilter}
+                  onValueChange={setCategoryFilter}
+                >
+                  <SelectTrigger className="h-8 w-56 bg-secondary/50 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[420px]">
+                    <SelectItem value="all">All categories</SelectItem>
+                    {categoryOptions.map((c) => (
+                      <SelectItem key={c.category} value={c.category}>
+                        {c.category}{" "}
+                        <span className="text-muted-foreground text-xs">
+                          ({c.total})
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {filteredTests.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                No tests match the current filters.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {filteredTests.map((t) => (
+                  <BehavioralTestRow key={t.id} test={t} />
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+function useMemoCategories(report: BehavioralRunReport | null) {
+  return useMemo(() => report?.by_category ?? [], [report])
+}
+
+function BehavioralRunHeader({
+  report,
+  running,
+  onRun,
+  onReplay,
+}: {
+  report: BehavioralRunReport | null
+  running: boolean
+  onRun: () => void
+  onReplay: (seed: number) => void
+}) {
+  const lastRunLabel = report
+    ? new Date(report.generated_at).toLocaleString()
+    : null
+  return (
+    <Card className="bg-card border-border">
+      <CardContent className="pt-4 pb-4 flex items-center justify-between gap-4 flex-wrap">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-accent" />
+            <h2 className="text-sm font-semibold">
+              Adversarial probes against your code
+            </h2>
+          </div>
+          <p className="text-xs text-muted-foreground max-w-xl">
+            Generates a fresh batch of single-prompt and agent-to-agent
+            conversation probes for each scanner category, then statically
+            checks whether the corresponding source file contains the
+            defense each probe expects. Inputs rotate every run so you
+            see new probes on each click. No LLM calls.
+          </p>
+          {lastRunLabel && (
+            <p className="text-[11px] text-muted-foreground">
+              Last run: <span className="font-mono">{lastRunLabel}</span>
+              {report && (
+                <>
+                  {" · "}seed{" "}
+                  <button
+                    type="button"
+                    className="font-mono underline-offset-2 hover:underline"
+                    title="Click to re-run with the same seed (same inputs as this run)"
+                    onClick={() => onReplay(report.seed)}
+                  >
+                    {report.seed}
+                  </button>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+        <Button
+          onClick={onRun}
+          disabled={running}
+          className="gap-2 min-w-[180px]"
+        >
+          {running ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Generating &amp; running…
+            </>
+          ) : report ? (
+            <>
+              <RefreshCw className="h-4 w-4" />
+              Re-run with new inputs
+            </>
+          ) : (
+            <>
+              <PlayCircle className="h-4 w-4" />
+              Generate &amp; Run Tests
+            </>
+          )}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BehavioralTotalsCards({ report }: { report: BehavioralRunReport }) {
+  const t = report.totals
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <StatTile
+        label="Total tests"
+        value={t.total}
+        icon={<Sparkles className="h-3.5 w-3.5" />}
+      />
+      <StatTile
+        label="Passed"
+        value={t.passed}
+        icon={<CircleCheck className="h-3.5 w-3.5 text-emerald-400" />}
+        tone="text-emerald-400"
+      />
+      <StatTile
+        label="Failed"
+        value={t.failed}
+        icon={<CircleX className="h-3.5 w-3.5 text-red-400" />}
+        tone="text-red-400"
+      />
+      <StatTile
+        label="Skipped"
+        value={t.skipped}
+        icon={<CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />}
+        tone="text-muted-foreground"
+      />
+      <StatTile
+        label="Accuracy"
+        value={formatAccuracyPct(t.accuracy)}
+        tone={accuracyTone(t.accuracy)}
+        title="passed / (passed + failed). Skipped probes are excluded from the denominator."
+      />
+    </div>
+  )
+}
+
+function StatTile({
+  label,
+  value,
+  icon,
+  tone = "text-foreground",
+  title,
+}: {
+  label: string
+  value: number | string
+  icon?: React.ReactNode
+  tone?: string
+  title?: string
+}) {
+  return (
+    <Card className="bg-card border-border" title={title}>
+      <CardContent className="py-3">
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+          {icon}
+          {label}
+        </div>
+        <div className={`text-xl font-semibold mt-1 ${tone}`}>{value}</div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BehavioralCategoryGrid({ report }: { report: BehavioralRunReport }) {
+  return (
+    <Card className="bg-card border-border">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Accuracy by category</CardTitle>
+        <CardDescription className="text-xs">
+          One row per Scan Center category. Accuracy = passes /
+          (passes + fails). A red bar means the code did not defend
+          against the probes for that category.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {report.by_category.map((c) => {
+            const sev = severityTone(c.severity)
+            const accColor = accuracyTone(c.accuracy)
+            const pct =
+              c.accuracy === null ? 0 : Math.round(c.accuracy * 100)
+            const barColor =
+              c.accuracy === null
+                ? "bg-muted-foreground/40"
+                : c.accuracy >= 0.85
+                  ? "bg-emerald-500"
+                  : c.accuracy >= 0.6
+                    ? "bg-yellow-500"
+                    : "bg-red-500"
+            return (
+              <div
+                key={c.category}
+                className="rounded-lg border border-border bg-secondary/20 p-3 space-y-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Badge
+                      variant="outline"
+                      className={`${sev.badge} text-[10px] uppercase`}
+                    >
+                      {c.severity}
+                    </Badge>
+                    <span className="text-sm font-medium truncate">
+                      {c.category}
+                    </span>
+                  </div>
+                  <span className={`text-sm font-semibold ${accColor}`}>
+                    {formatAccuracyPct(c.accuracy)}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full bg-muted-foreground/15 rounded">
+                  <div
+                    className={`h-1.5 rounded ${barColor}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                  <span className="text-emerald-400">{c.passed} pass</span>
+                  <span className="text-red-400">{c.failed} fail</span>
+                  <span>{c.skipped} skip</span>
+                  <span className="ml-auto">{c.total} total</span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BehavioralTestRow({ test }: { test: BehavioralTestCase }) {
+  const [open, setOpen] = useState(false)
+  const sev = severityTone(test.severity)
+  const stat = statusTone(test.status)
+  return (
+    <div
+      className={`rounded-md border ${
+        test.status === "fail"
+          ? "border-red-500/30 bg-red-500/[0.03]"
+          : "border-border bg-secondary/20"
+      }`}
+    >
+      <button
+        type="button"
+        className="w-full flex items-center gap-3 px-3 py-2 text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`h-2 w-2 rounded-full shrink-0 ${stat.dot}`} />
+        <Badge
+          variant="outline"
+          className={`${stat.badge} text-[10px] uppercase`}
+        >
+          {stat.label}
+        </Badge>
+        <Badge
+          variant="outline"
+          className={`${sev.badge} text-[10px] uppercase`}
+        >
+          {test.severity}
+        </Badge>
+        <span className="text-sm font-medium truncate">{test.name}</span>
+        <span className="text-xs text-muted-foreground truncate hidden md:inline">
+          · {test.category}
+        </span>
+        {test.target_file && (
+          <span className="ml-auto text-[11px] font-mono text-muted-foreground truncate max-w-[260px]">
+            {test.target_file}
+            {test.target_line ? `:${test.target_line}` : ""}
+          </span>
+        )}
+        <ChevronDown
+          className={`h-4 w-4 text-muted-foreground transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+      {open && (
+        <div className="border-t border-border px-3 py-3 space-y-3 text-sm">
+          <DetailField
+            label="Probe input"
+            tone="border-amber-500/40 bg-amber-500/5"
+            icon={<MessageSquare className="h-3.5 w-3.5 text-amber-400" />}
+          >
+            <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">
+              {test.input}
+            </pre>
+          </DetailField>
+
+          {test.conversation.length > 1 && (
+            <DetailField
+              label={`Conversation (${test.conversation.length} turns)`}
+              tone="border-purple-500/40 bg-purple-500/5"
+              icon={<MessageSquare className="h-3.5 w-3.5 text-purple-400" />}
+            >
+              <div className="space-y-1.5">
+                {test.conversation.map((turn, i) => (
+                  <div
+                    key={i}
+                    className="flex items-start gap-2 text-xs font-mono"
+                  >
+                    <span className="text-purple-300/80 shrink-0 w-16">
+                      {turn.speaker}
+                    </span>
+                    <span className="whitespace-pre-wrap">{turn.text}</span>
+                  </div>
+                ))}
+              </div>
+            </DetailField>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <DetailField
+              label="Expected defense"
+              tone="border-emerald-500/40 bg-emerald-500/5"
+            >
+              <p className="text-xs text-foreground/90 leading-relaxed">
+                {test.expected_defense}
+              </p>
+            </DetailField>
+            <DetailField
+              label="Observed in code"
+              tone={
+                test.status === "pass"
+                  ? "border-emerald-500/40 bg-emerald-500/5"
+                  : test.status === "fail"
+                    ? "border-red-500/40 bg-red-500/5"
+                    : "border-muted-foreground/30 bg-muted-foreground/5"
+              }
+            >
+              <p className="text-xs text-foreground/90 leading-relaxed">
+                {test.observed}
+              </p>
+            </DetailField>
+          </div>
+
+          {test.evidence && (
+            <DetailField
+              label={`Evidence ${
+                test.target_file
+                  ? `· ${test.target_file}${
+                      test.target_line ? `:${test.target_line}` : ""
+                    }`
+                  : ""
+              }`}
+              tone="border-border bg-background/40"
+            >
+              <pre className="whitespace-pre overflow-x-auto font-mono text-[11px] leading-relaxed">
+                {test.evidence}
+              </pre>
+            </DetailField>
+          )}
+
+          {test.notes && (
+            <p className="text-[11px] text-muted-foreground italic">
+              {test.notes}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DetailField({
+  label,
+  tone,
+  icon,
+  children,
+}: {
+  label: string
+  tone: string
+  icon?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className={`rounded-md border ${tone} p-2.5`}>
+      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
+        {icon}
+        {label}
+      </div>
+      {children}
     </div>
   )
 }

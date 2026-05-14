@@ -623,6 +623,8 @@ export default function Home() {
             riskScore={riskScore}
             hasProject={hasProject}
             hasScan={hasScan}
+            projectPath={selectedProject?.path ?? null}
+            scanReport={scanReport}
           />
         )
       case "run-traces":
