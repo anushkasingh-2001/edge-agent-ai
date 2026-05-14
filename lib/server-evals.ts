@@ -9,6 +9,7 @@ import {
   runGit,
   type StashApplyResult,
 } from "@/lib/server-git"
+import { listUntrackedFiles } from "@/lib/server-untracked-attribution"
 
 /**
  * Phase 3 — Accuracy / runtime evaluation runner.
@@ -179,6 +180,53 @@ export function loadEvalsConfig(projectPath: string): LoadedEvalsConfig {
  * as-is rather than rejected; the UI clamps for display. We trust
  * the user knows what their numbers mean.
  */
+/**
+ * Per-test detail row inside the eval result. The contract is "all
+ * fields except `status` are optional", so a brand-new eval that
+ * just emits `[{ "status": "pass" }, ...]` works — but the more
+ * fields the user populates, the richer the drill-down panel in
+ * the Evaluations view becomes.
+ *
+ * Field semantics:
+ *   - `id`          stable identifier (used as React key + filter
+ *                   target). Falls back to the row index when missing.
+ *   - `name`        human label shown in the row header.
+ *   - `status`      pass / fail / skip / error. Drives row colour.
+ *                   `error` is for "the test couldn't even run"
+ *                   (timeout, exception in setup) vs `fail`
+ *                   ("test ran, assertion didn't hold"). UI-wise
+ *                   they look similar but the distinction matters
+ *                   when the user is debugging "is my eval broken
+ *                   or is my agent broken?".
+ *   - `runtime_ms`  per-test wall-clock. Lets the UI show a tail-
+ *                   latency breakdown without trusting the
+ *                   aggregate percentiles.
+ *   - `input`       what the agent was asked. Free-form text.
+ *   - `expected`    the ground truth the eval compared against.
+ *   - `actual`      what the agent returned.
+ *   - `error`       traceback / assertion message when status !==
+ *                   "pass". Rendered as monospace.
+ *   - `tags`        optional category labels ("translation:fr",
+ *                   "tool:retrieve") so the UI can group and the
+ *                   user can filter beyond just pass/fail.
+ *
+ * We deliberately don't constrain the shape of `input` / `expected`
+ * / `actual` further — different eval types (transcription,
+ * translation, QA) will want very different blobs. The UI renders
+ * whatever the script provides, monospace, with overflow-scroll.
+ */
+const EvalTestCaseSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+  status: z.enum(["pass", "fail", "skip", "error"]),
+  runtime_ms: z.number().nonnegative().optional(),
+  input: z.string().optional(),
+  expected: z.string().optional(),
+  actual: z.string().optional(),
+  error: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+})
+
 export const EvalResultSchema = z.object({
   agent: z.string().min(1),
   /** 0..1 fraction of evals that passed end-to-end. */
@@ -202,9 +250,16 @@ export const EvalResultSchema = z.object({
   tests_passed: z.number().int().nonnegative().optional(),
   /** Free-form notes the eval wants to surface. */
   notes: z.string().optional(),
+  /** Optional per-test detail rows. When non-empty, the Evaluations
+   *  view shows an expand button on the agent card revealing each
+   *  test's name / status / runtime / input / expected / actual.
+   *  Capped at 1000 entries by the parser to protect the UI from
+   *  a runaway eval that emits a row per token. */
+  tests: z.array(EvalTestCaseSchema).max(1000).optional(),
 })
 
 export type EvalResult = z.infer<typeof EvalResultSchema>
+export type EvalTestCase = z.infer<typeof EvalTestCaseSchema>
 
 /* -------------------------------------------------------------------------- */
 /* Runner                                                                     */
@@ -212,7 +267,26 @@ export type EvalResult = z.infer<typeof EvalResultSchema>
 
 export type AgentRunReport = {
   agent: string
-  status: "ok" | "non_zero_exit" | "spawn_failed" | "timeout" | "bad_json" | "bad_shape"
+  status:
+    | "ok"
+    | "non_zero_exit"
+    | "spawn_failed"
+    | "timeout"
+    | "bad_json"
+    | "bad_shape"
+    /** Pre-flight: the agent's `command:` references a script
+     *  (e.g. `python evals/foo.py`) that doesn't exist in HEAD,
+     *  the user's working tree, or any applied stash. We catch
+     *  this BEFORE spawning so the user gets a structured error
+     *  with concrete next steps instead of a Python `[Errno 2]`. */
+    | "script_not_found"
+    /** Post-spawn: shell exited 127 OR stderr matches a "command
+     *  not found" / "No such file or directory: <bin>" pattern
+     *  for the FIRST token of the command. Almost always means the
+     *  user is missing a runtime (vitest, pnpm, python3) — the
+     *  fix is "install X" or "swap to a different runner", which
+     *  is what this status's error message says verbatim. */
+    | "binary_not_found"
   /** Exit code from the spawned process. `null` when we never got
    *  to the spawn / process state (e.g. spawn_failed). */
   exitCode: number | null
@@ -271,6 +345,48 @@ function runOneAgent(
       error: `cwd '${cfg.cwd ?? "."}' does not exist inside worktree`,
     }
   }
+
+  // Pre-flight: catch the very common "evals.yaml references a
+  // script that hasn't been written yet" failure BEFORE spawning,
+  // so the user gets a structured error pointing them at the right
+  // file to create instead of a Python `[Errno 2] No such file or
+  // directory` traceback in `stderrTail`.
+  //
+  // Heuristic — match the cases that catch the 95% without
+  // false-positives on hand-rolled commands:
+  //   1. Tokenise on whitespace (good enough for the shell forms
+  //      eval scripts actually use; we deliberately don't try to
+  //      parse pipes/redirects/env-prefixes — those produce
+  //      multiple script tokens that we just check independently).
+  //   2. Keep tokens that contain '/' AND end in a script
+  //      extension (.py / .sh / .ts / .js / etc.). Pure-binary
+  //      tokens like `python`, `node`, `pnpm` are excluded
+  //      automatically (no slash, no script ext). Data files like
+  //      `evals/data/foo.jsonl` are also excluded (wrong ext) —
+  //      missing data files are the script's problem to surface.
+  //   3. Strip surrounding quotes and a leading `./`.
+  //   4. Resolve each token relative to the agent's cwd. If it's
+  //      absolute, leave it alone.
+  //   5. ALL such paths must exist; the first that doesn't blocks
+  //      the run.
+  const missing = findMissingScriptPaths(cfg.command, cwd)
+  if (missing.length > 0) {
+    const first = missing[0]
+    const more =
+      missing.length > 1
+        ? ` (also missing: ${missing.slice(1).join(", ")})`
+        : ""
+    return {
+      agent: name,
+      status: "script_not_found",
+      exitCode: null,
+      durationMs: 0,
+      stderrTail: "",
+      result: null,
+      error: `Script '${first}' doesn't exist in HEAD, your working tree, or any applied stash on this branch${more}. Create the file or remove '${name}' from .edgeagent/evals.yaml.`,
+    }
+  }
+
   const env = {
     ...process.env,
     ...(cfg.env ?? {}),
@@ -326,6 +442,31 @@ function runOneAgent(
   }
 
   if (proc.status !== 0) {
+    // Distinguish "missing binary" from "binary ran and exited
+    // non-zero" — the fix is wildly different (install the runtime
+    // vs. debug your script) and surfacing it as a typed status
+    // saves the user from chasing a misleading exit code.
+    //
+    // Heuristic — be conservative because evals legitimately exit
+    // 127 sometimes:
+    //   - exit 127 (POSIX "command not found") AND
+    //   - stderr mentions "command not found" or "not found" or
+    //     "No such file or directory" AND
+    //   - the missing binary is the FIRST shell token of the
+    //     user's command (or a binary that appears as a token —
+    //     covers pipelines like `pnpm exec vitest | python ...`)
+    const missingBin = detectMissingBinary(cfg.command, stderrTail, proc.status)
+    if (missingBin) {
+      return {
+        agent: name,
+        status: "binary_not_found",
+        exitCode: proc.status ?? null,
+        durationMs,
+        stderrTail,
+        result: null,
+        error: `'${missingBin}' isn't on PATH inside the eval worktree. Install it (e.g. \`pip install ${missingBin}\`, \`npm i -g ${missingBin}\`, or activate the right venv) or change '${name}'.command in .edgeagent/evals.yaml to use a binary you have.`,
+      }
+    }
     return {
       agent: name,
       status: "non_zero_exit",
@@ -405,6 +546,286 @@ function runOneAgent(
 }
 
 /**
+ * Script extensions we treat as "this is the executable the user is
+ * invoking". Matching is purely lexical — we don't actually run
+ * `file(1)` against the path. Order doesn't matter, but `.py`
+ * comes first because it's by far the most common eval shape.
+ *
+ * Deliberately excludes data extensions like `.json`, `.jsonl`,
+ * `.yaml`, `.csv`, `.parquet`. A missing dataset is the script's
+ * problem to surface — false-positiving on `--dataset evals/data/
+ * foo.jsonl` would block runs the user explicitly wired up.
+ */
+const SCRIPT_EXTENSIONS = [
+  ".py",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".rb",
+  ".pl",
+  ".lua",
+] as const
+
+/**
+ * Best-effort extraction of script paths from a shell command, used
+ * by `runOneAgent`'s pre-flight check. Returns the relative paths
+ * (as written by the user) of every script-looking token whose
+ * resolved path doesn't exist on disk.
+ *
+ * What counts as a "script-looking token":
+ *   - contains a `/` (relative or absolute path; a bare `foo.py`
+ *     could be a positional arg to something like `pytest`, so we
+ *     skip it to avoid false positives)
+ *   - ends in one of `SCRIPT_EXTENSIONS`
+ *   - isn't a flag (doesn't start with `-`)
+ *   - the token, after stripping surrounding quotes and a leading
+ *     `./`, resolves to a path that doesn't exist relative to
+ *     `cwd` (or, if it's absolute, doesn't exist at all)
+ *
+ * Tokenisation is whitespace-only — we don't try to be a real
+ * shell parser. Pipes and redirects naturally split into separate
+ * tokens, so `... | python evals/foo.py` still finds `evals/foo.py`.
+ * The cost is that something cursed like `python "evals/path with
+ * spaces/foo.py"` slips through — that's an acceptable miss for
+ * 30 lines of code that catches the headline case.
+ */
+function findMissingScriptPaths(command: string, cwd: string): string[] {
+  const found = collectScriptTokens(command)
+  const missing: string[] = []
+  for (const t of found) {
+    const abs = path.isAbsolute(t) ? t : path.resolve(cwd, t)
+    if (!fs.existsSync(abs)) {
+      missing.push(t)
+    }
+  }
+  return missing
+}
+
+/**
+ * Same tokeniser as `findMissingScriptPaths` but factored out so the
+ * config-time linter (which doesn't want to do disk I/O per agent
+ * twice — once for path-doubling detection, once for existence) can
+ * consume the token list once and decide what to check itself.
+ */
+function collectScriptTokens(command: string): string[] {
+  const tokens = command.split(/\s+/).filter(Boolean)
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of tokens) {
+    if (raw.startsWith("-")) continue
+    let t = raw
+    if (
+      (t.startsWith('"') && t.endsWith('"') && t.length >= 2) ||
+      (t.startsWith("'") && t.endsWith("'") && t.length >= 2)
+    ) {
+      t = t.slice(1, -1)
+    }
+    if (t.startsWith("./")) t = t.slice(2)
+    if (!t.includes("/")) continue
+    const lower = t.toLowerCase()
+    if (!SCRIPT_EXTENSIONS.some((ext) => lower.endsWith(ext))) continue
+    if (seen.has(t)) continue
+    seen.add(t)
+    out.push(t)
+  }
+  return out
+}
+
+/* -------------------------------------------------------------------------- */
+/* Config linter                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One actionable issue with a single agent's config. Rendered in the
+ * Evaluations view as a yellow exclamation badge on the agent card,
+ * with the `message` shown on hover/expand. `severity` lets the UI
+ * prioritise: errors block "Run" UX-wise (we still let the runner
+ * decide for real), warnings just hint.
+ *
+ * The shape is wire-friendly (plain JSON, no Date objects, no
+ * regexes), so we can route it straight through /api/evals/config to
+ * the client.
+ */
+export type AgentLintIssue = {
+  /** Stable string ID so the UI can dedupe and pick icons. */
+  code:
+    | "script_not_found"
+    | "cwd_not_found"
+    | "path_doubling"
+  severity: "error" | "warning"
+  message: string
+  /** The specific token / path the issue is about, if any. Lets the
+   *  UI render it in monospace inline with the message. */
+  ref?: string
+}
+
+/**
+ * Walk every agent in `config` and flag the issues that the runner
+ * would otherwise discover the hard way. Pure file-system checks
+ * against the live working tree under `projectPath` — no git, no
+ * spawning. Cheap enough to run on every config GET.
+ *
+ * Detected issues:
+ *
+ *   - `script_not_found` (error) — same logic as the runtime
+ *     pre-flight, but reported to the UI BEFORE the user clicks
+ *     Run so they see "this agent will fail" up front.
+ *   - `cwd_not_found` (error) — `cwd:` points at a directory that
+ *     doesn't exist relative to the project. Spawn would fail with
+ *     "spawn_failed: cwd '...' does not exist".
+ *   - `path_doubling` (warning) — `cwd: "evals"` plus a command
+ *     containing a token that starts with `evals/` is almost
+ *     always a copy-paste bug (resolves to `evals/evals/...`). We
+ *     warn rather than error because there's a tiny chance the
+ *     user genuinely wants the deeper path.
+ */
+export function lintEvalsConfig(
+  projectPath: string,
+  config: EvalsConfig
+): Record<string, AgentLintIssue[]> {
+  const result: Record<string, AgentLintIssue[]> = {}
+  for (const [name, cfg] of Object.entries(config.agents)) {
+    const issues: AgentLintIssue[] = []
+    const cwd = cfg.cwd
+      ? path.resolve(projectPath, cfg.cwd)
+      : projectPath
+
+    /* cwd_not_found ------------------------------------------------ */
+    if (
+      cfg.cwd &&
+      (!fs.existsSync(cwd) ||
+        (() => {
+          try {
+            return !fs.statSync(cwd).isDirectory()
+          } catch {
+            return true
+          }
+        })())
+    ) {
+      issues.push({
+        code: "cwd_not_found",
+        severity: "error",
+        message: `cwd '${cfg.cwd}' doesn't exist or isn't a directory in your project`,
+        ref: cfg.cwd,
+      })
+    }
+
+    /* path_doubling (cwd-vs-command prefix overlap) ---------------- */
+    // Only meaningful when cwd exists; if cwd is missing we already
+    // surfaced that and re-flagging the doubling would just be noise.
+    if (cfg.cwd && fs.existsSync(cwd)) {
+      const cwdNorm = cfg.cwd.replace(/^\.\//, "").replace(/\/$/, "")
+      if (cwdNorm && cwdNorm !== ".") {
+        const prefix = cwdNorm + "/"
+        for (const token of collectScriptTokens(cfg.command)) {
+          if (token.startsWith(prefix)) {
+            issues.push({
+              code: "path_doubling",
+              severity: "warning",
+              message: `Command path '${token}' starts with the cwd '${cwdNorm}/' — that resolves to '${cwdNorm}/${token}'. Did you mean '${token.slice(prefix.length)}'?`,
+              ref: token,
+            })
+          }
+        }
+      }
+    }
+
+    /* script_not_found -------------------------------------------- */
+    // Skip if cwd_not_found already fired — paths can't resolve
+    // against a missing cwd, so the doubling/existence check would
+    // produce false positives.
+    if (!issues.some((i) => i.code === "cwd_not_found")) {
+      for (const missing of findMissingScriptPaths(cfg.command, cwd)) {
+        issues.push({
+          code: "script_not_found",
+          severity: "error",
+          message: `Script '${missing}' doesn't exist on disk. Create the file or remove '${name}' from .edgeagent/evals.yaml.`,
+          ref: missing,
+        })
+      }
+    }
+
+    if (issues.length > 0) result[name] = issues
+  }
+  return result
+}
+
+/**
+ * Best-effort "did the shell fail because a binary the user invoked
+ * doesn't exist?" detector for `runOneAgent`. Returns the offending
+ * binary name on a hit, or `null` on no-hit.
+ *
+ * Conditions (all must hold to avoid false positives — non-zero
+ * exit codes are common in evals that legitimately fail tests):
+ *
+ *   1. `exitCode === 127` (POSIX "command not found"). bash/zsh/sh
+ *      use this consistently. We don't try to handle 126 (found but
+ *      not executable) — that one's rare and the error message
+ *      would still be misleading.
+ *   2. stderr mentions one of three canonical phrasings:
+ *        - `command not found`            (bash, zsh)
+ *        - `: not found`                  (POSIX sh / dash)
+ *        - `No such file or directory`    (busybox, some shells)
+ *      AND the offending binary token appears in stderr next to
+ *      the phrasing.
+ *   3. The detected binary token also appears as a non-flag,
+ *      slash-free token in the user's `command:` string. This rules
+ *      out cases where a SCRIPT (e.g. `python evals/foo.py`) goes
+ *      missing AND prints a "no such file or directory" inside its
+ *      own logic — those should still surface as `non_zero_exit`
+ *      because the binary itself ran fine.
+ */
+function detectMissingBinary(
+  command: string,
+  stderrTail: string,
+  exitCode: number | null
+): string | null {
+  if (exitCode !== 127) return null
+  if (!stderrTail) return null
+
+  const commandTokens = new Set(
+    command
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((t) => {
+        // strip surrounding quotes
+        let s = t
+        if (
+          (s.startsWith('"') && s.endsWith('"') && s.length >= 2) ||
+          (s.startsWith("'") && s.endsWith("'") && s.length >= 2)
+        ) {
+          s = s.slice(1, -1)
+        }
+        return s
+      })
+      .filter((t) => !t.startsWith("-") && !t.includes("/"))
+  )
+  if (commandTokens.size === 0) return null
+
+  // bash:  "<bin>: command not found"
+  // zsh:   "zsh: command not found: <bin>"
+  // dash:  "sh: 1: <bin>: not found"
+  // also catches: "/bin/sh: <bin>: command not found"
+  const patterns: RegExp[] = [
+    /(?:^|[\s:])([\w.+-]+):\s*command not found/i,
+    /command not found:\s*([\w.+-]+)/i,
+    /(?:^|[\s:])([\w.+-]+):\s*not found/i,
+  ]
+  for (const re of patterns) {
+    const m = stderrTail.match(re)
+    if (m && m[1] && commandTokens.has(m[1])) {
+      return m[1]
+    }
+  }
+  return null
+}
+
+/**
  * Walk back from the END of a string to find the last balanced
  * `{...}` object. Tolerates a stdout like:
  *
@@ -452,16 +873,42 @@ function extractJsonObject(stdout: string): string | null {
 
 /**
  * Create a detached `git worktree` at `sha` inside the OS temp
- * directory and (optionally) layer every stash attributed to
- * `branch` on top of it. The returned `dir` is the absolute path
- * the caller hands to `runAgentEvals`; `cleanup` MUST be called
- * after the eval run (use try/finally).
+ * directory and optionally layer extra material on top:
+ *
+ *   - When `includeWorkingTree: true` (default) — mirror every
+ *     tracked-modified file and every untracked file from the
+ *     user's REAL working tree into the worktree. This is what
+ *     the user almost always wants when iterating on an eval
+ *     script that's not yet committed: "run THIS code in front
+ *     of me", not "run a snapshot of HEAD that doesn't include
+ *     my new file". Matches the same pattern `/api/scan` uses
+ *     for virtual checkouts.
+ *
+ *   - When `includeStashes: true` — apply every `git stash`
+ *     attributed to `branch` on top of the worktree (oldest →
+ *     newest, latest wins on per-file conflicts). Same model as
+ *     Branch Compare.
+ *
+ * Both flags can be combined. The order of operations is HEAD
+ * → working-tree mirror → stashes, so a stash for a file the
+ * user has also modified locally will WIN, mirroring what the
+ * user would see if they ran `git stash pop` themselves.
+ *
+ * The returned `dir` is the absolute path the caller hands to
+ * `runAgentEvals`; `cleanup` MUST be called after the eval run
+ * (use try/finally).
  */
 export type EvalWorktreeSetup = {
   dir: string
   branch: string
   sha: string
   stashApply: StashApplyResult
+  /** Files mirrored in from the user's working tree (relative
+   *  paths). Empty when `includeWorkingTree: false` or when the
+   *  working tree was already clean. The route surfaces this list
+   *  so the UI can show "ran with N uncommitted files mirrored
+   *  in". */
+  mirroredFiles: string[]
   cleanup: () => void
 }
 
@@ -470,8 +917,20 @@ export function setupEvalWorktree(args: {
   branch: string
   sha: string
   includeStashes: boolean
+  /** Default: true. When true, copies tracked-modified +
+   *  untracked files from the user's real working tree into the
+   *  eval worktree before running. When false, scans pristine
+   *  HEAD only — useful for "what would my accuracy be if I
+   *  merged the PR right now?". */
+  includeWorkingTree?: boolean
 }): EvalWorktreeSetup {
-  const { repo, branch, sha, includeStashes } = args
+  const {
+    repo,
+    branch,
+    sha,
+    includeStashes,
+    includeWorkingTree = true,
+  } = args
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const dir = path.join(os.tmpdir(), `edge-eval-${stamp}`)
   const wt = runGit(repo, ["worktree", "add", "--detach", dir, sha], {
@@ -482,10 +941,65 @@ export function setupEvalWorktree(args: {
       `git worktree add failed: ${(wt.stderr ?? "").slice(0, 1000).trim()}`
     )
   }
+
+  /* ---- Mirror the user's working tree ---------------------- */
+  // Both tracked-modified AND untracked, because "run my eval
+  // script" is the headline use case. Paths come back relative
+  // to the repo root so we can join them onto the worktree dir
+  // 1:1. Best-effort copy — a file we can't read just gets
+  // skipped rather than failing the whole run.
+  const mirroredFiles: string[] = []
+  if (includeWorkingTree) {
+    const seen = new Set<string>()
+    // Tracked-modified files: `git diff --name-only HEAD` lists
+    // anything in the working tree that differs from HEAD,
+    // including staged changes. `-z` for safe \0-delimited paths.
+    const modProc = runGit(
+      repo,
+      ["diff", "--name-only", "--no-renames", "-z", "HEAD"],
+      { timeoutMs: 15_000 }
+    )
+    if (modProc.status === 0) {
+      for (const rel of (modProc.stdout ?? "").split("\0")) {
+        const r = rel.trim()
+        if (r && !seen.has(r)) seen.add(r)
+      }
+    }
+    // Untracked files (respecting .gitignore via
+    // --exclude-standard, plus our own internal-paths filter
+    // baked into listUntrackedFiles).
+    for (const rel of listUntrackedFiles(repo)) {
+      if (!seen.has(rel)) seen.add(rel)
+    }
+
+    for (const rel of seen) {
+      const src = path.join(repo, rel)
+      const dst = path.join(dir, rel)
+      try {
+        if (!fs.existsSync(src)) continue
+        const st = fs.statSync(src)
+        if (!st.isFile()) continue
+        fs.mkdirSync(path.dirname(dst), { recursive: true })
+        fs.copyFileSync(src, dst)
+        mirroredFiles.push(rel)
+      } catch {
+        /* swallow — best-effort. A single unreadable file
+           shouldn't sink the whole eval run. */
+      }
+    }
+    mirroredFiles.sort()
+  }
+
+  /* ---- Layer stashes ON TOP of the mirrored working tree --- */
+  // Apply order matters: HEAD → working-tree mirror → stashes,
+  // so a stash containing a newer version of the same file the
+  // user just edited locally wins. Mirrors what `git stash pop`
+  // would do.
   let stashApply: StashApplyResult = { applied: [], skipped: [] }
   if (includeStashes) {
     stashApply = applyBranchStashesInWorktree(repo, dir, branch)
   }
+
   const cleanup = () => {
     try {
       spawnSync("git", ["--no-pager", "worktree", "remove", "--force", dir], {
@@ -511,7 +1025,7 @@ export function setupEvalWorktree(args: {
       /* ignore */
     }
   }
-  return { dir, branch, sha, stashApply, cleanup }
+  return { dir, branch, sha, stashApply, mirroredFiles, cleanup }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -537,6 +1051,17 @@ export type PersistedEvalRun = {
   sha: string
   /** True iff stashes were layered onto the worktree. */
   includeStashes: boolean
+  /** True iff the user's tracked-modified + untracked files were
+   *  mirrored into the worktree before running. Defaults to true
+   *  for new runs; absent on legacy entries (treat as `true` for
+   *  display since pre-mirror runs effectively scanned HEAD only
+   *  but the field didn't exist yet). */
+  includeWorkingTree?: boolean
+  /** Files (relative to repo root) copied from the user's real
+   *  working tree into the eval worktree. Empty when the working
+   *  tree was clean OR when `includeWorkingTree: false`. Absent
+   *  on legacy entries. */
+  mirroredFiles?: string[]
   /** Refs that ended up applied (oldest → newest). */
   appliedStashes: { ref: string; subject: string }[]
   /** Refs we tried but couldn't (apply conflict against earlier

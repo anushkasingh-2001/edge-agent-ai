@@ -20,10 +20,12 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   AlertCircle,
+  AlertTriangle,
   Archive,
   CheckCircle2,
   ChevronRight,
   Clock,
+  FilePlus2,
   Gauge,
   GitBranch,
   Loader2,
@@ -39,9 +41,12 @@ import {
   fetchEvalsConfig,
   fetchEvalsHistory,
   runEvals,
+  type AgentLintIssue,
   type AgentRunReport,
   type EvalConfigEntry,
   type EvalRunResponse,
+  type EvalResultJson,
+  type EvalTestCase,
   type EvalsConfigResponse,
   type PersistedEvalRun,
 } from "@/lib/evals-client"
@@ -52,10 +57,20 @@ import {
  * Reads `.edgeagent/evals.yaml` from the open project, lists each
  * configured agent, and lets the user run them against:
  *
- *   - Commits only         — the branch's pristine HEAD.
- *   - Commits + N stashes  — HEAD with every `git stash` attributed
- *                            to that branch layered on top, oldest →
- *                            newest. Same model as Branch Compare.
+ *   - Working tree            — HEAD with the user's tracked-
+ *                               modified + untracked files mirrored
+ *                               on top. This is the headline mode:
+ *                               the user is iterating on an eval
+ *                               script that almost certainly isn't
+ *                               committed yet, and they want THAT
+ *                               script to run — not a snapshot of
+ *                               HEAD that doesn't include it.
+ *   - Working tree + N stashes — same, but with every `git stash`
+ *                               attributed to that branch layered
+ *                               on top of the mirrored working tree
+ *                               (oldest → newest, latest wins on
+ *                               per-file conflicts). Same model as
+ *                               Branch Compare.
  *
  * Per-agent results are persisted to `.edgeagent/eval-history.jsonl`
  * so the bottom of the page can render a trend (last vs previous).
@@ -98,8 +113,11 @@ export function Evaluations({
   const [historyError, setHistoryError] = useState<string | null>(null)
 
   // Per-side scope toggle, same pattern as Branch Compare. Default
-  // is "commits" — running with stashes layered changes the
-  // effective tree, so we don't want to silently include them.
+  // is "working" (HEAD + mirrored working tree) — running with
+  // stashes layered changes the effective tree, so we don't want
+  // to silently include them. Internally we keep the legacy values
+  // ("commits" / "commits+stashes") so older history rows compare
+  // cleanly; the LABELS are the only thing the user sees.
   type Scope = "commits" | "commits+stashes"
   const [scope, setScope] = useState<Scope>("commits")
   const [runBranch, setRunBranch] = useState<string>("HEAD")
@@ -386,13 +404,15 @@ export function Evaluations({
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            <span className="font-medium">Commits</span> runs the eval against the
-            pristine branch HEAD.{" "}
-            <span className="font-medium">Commits + stashes</span> layers every
-            stash attributed to that branch onto the worktree (oldest → newest;
-            latest version of each file wins) before running — useful for
-            answering &quot;what would my accuracy look like if I committed the
-            stashed WIP right now?&quot;
+            <span className="font-medium">Working tree</span> runs the eval
+            against the branch HEAD with your tracked-modified and untracked
+            files mirrored on top — so an as-yet-uncommitted{" "}
+            <span className="font-mono">evals/run_*.py</span> actually runs.{" "}
+            <span className="font-medium">Working tree + stashes</span> also
+            layers every stash attributed to that branch (oldest → newest;
+            latest version of each file wins) — useful for answering
+            &quot;what would my accuracy look like if I committed the stashed
+            WIP right now?&quot;
           </p>
         </CardContent>
       </Card>
@@ -477,14 +497,15 @@ function ScopeToggle({
         role="radio"
         aria-checked={value === "commits"}
         onClick={() => onChange("commits")}
-        className={`px-3 py-1 rounded-sm transition-colors ${
+        className={`px-3 py-1 rounded-sm transition-colors inline-flex items-center gap-1 ${
           value === "commits"
             ? "bg-foreground/10 text-foreground"
             : "text-muted-foreground hover:text-foreground"
         }`}
-        title={`Pristine HEAD of '${branchName}' — committed code only`}
+        title={`HEAD of '${branchName}' with your tracked-modified + untracked files mirrored on top. The default — picks up uncommitted eval scripts.`}
       >
-        Commits
+        <FilePlus2 className="h-3 w-3" />
+        Working tree
       </button>
       <button
         type="button"
@@ -499,10 +520,14 @@ function ScopeToggle({
               ? "text-muted-foreground hover:text-foreground"
               : "text-muted-foreground/40 cursor-not-allowed"
         }`}
-        title={titleStashes}
+        title={
+          stashesAvailable
+            ? `Working tree + every stash attributed to '${branchName}' (${stashLabel}, oldest → newest, latest wins on per-file conflicts)`
+            : titleStashes
+        }
       >
         <Archive className="h-3 w-3" />
-        Commits + {stashLabel}
+        Working tree + {stashLabel}
       </button>
     </div>
   )
@@ -723,12 +748,58 @@ function AgentCard({
           </Button>
         </div>
       </CardHeader>
+      {(agent.lint?.length ?? 0) > 0 && (
+        <CardContent className="pt-0 pb-3">
+          <LintBanner issues={agent.lint} />
+        </CardContent>
+      )}
       {last && (
         <CardContent className="pt-0">
           <RunReportRow report={last} />
         </CardContent>
       )}
     </Card>
+  )
+}
+
+/**
+ * Inline warning panel rendered on each AgentCard when the
+ * /api/evals/config response carried lint findings for this agent.
+ * Errors get a red border, warnings yellow; both stay non-blocking
+ * (the user can still hit Run — the runner does its own checks
+ * and will produce a structured failure if the issue is real).
+ */
+function LintBanner({ issues }: { issues: AgentLintIssue[] }) {
+  const hasError = issues.some((i) => i.severity === "error")
+  const wrap = hasError
+    ? "border-red-500/30 bg-red-500/5 text-red-200"
+    : "border-amber-500/30 bg-amber-500/5 text-amber-200"
+  const Icon = hasError ? AlertCircle : AlertTriangle
+  return (
+    <div
+      className={`rounded-md border ${wrap} px-3 py-2 text-xs space-y-1.5`}
+    >
+      <div className="flex items-center gap-2 font-medium">
+        <Icon className="h-3.5 w-3.5" />
+        <span>
+          {hasError
+            ? "This agent will fail until the issue below is fixed"
+            : "Heads up — possible config issue"}
+        </span>
+      </div>
+      <ul className="space-y-1 pl-5 list-disc">
+        {issues.map((iss, idx) => (
+          <li key={idx}>
+            <span className="opacity-90">{iss.message}</span>
+            {iss.ref && (
+              <span className="ml-1 font-mono text-[10px] opacity-70">
+                ({iss.ref})
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -791,6 +862,269 @@ function RunReportRow({ report }: { report: AgentRunReport }) {
       {r.notes && (
         <p className="text-xs text-muted-foreground italic">{r.notes}</p>
       )}
+      <TestDetailsPanel result={r} />
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Per-test drill-down                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Collapsible "View N test details" panel rendered under the metrics
+ * grid whenever the eval result includes a non-empty `tests:` array.
+ *
+ * Behaviour:
+ *   - Hidden entirely when the eval didn't emit `tests` (back-compat
+ *     with old aggregate-only stubs).
+ *   - When `tests_total` is set but `tests` is empty, shows a hint
+ *     telling the user how to populate the array — most users don't
+ *     know they CAN until they see the affordance.
+ *   - "All / Failed only" filter; default is "All" so the user sees
+ *     the full distribution. Switches to "Failed only" automatically
+ *     when the user toggles, and persists per-mount via local state.
+ *   - Each row is its own `<details>` so opening one doesn't push
+ *     siblings around. Top-level chevron is also `<details>` so
+ *     keyboard nav (space/enter) works for free.
+ */
+function TestDetailsPanel({ result }: { result: EvalResultJson }) {
+  const tests = result.tests ?? []
+  const total = tests.length
+  if (total === 0) {
+    // Tell the user how to opt in if they reported aggregates but
+    // no per-test rows. Easy to miss in the schema docs.
+    if (result.tests_total && result.tests_total > 0) {
+      return (
+        <div className="text-[11px] text-muted-foreground italic">
+          Tip: emit a <span className="font-mono">{`"tests": [...]`}</span> array
+          in this agent&apos;s JSON output to see per-test pass/fail and
+          input/expected/actual here.
+        </div>
+      )
+    }
+    return null
+  }
+  return <TestDetailsPanelInner tests={tests} />
+}
+
+type TestFilter = "all" | "failed"
+
+function TestDetailsPanelInner({ tests }: { tests: EvalTestCase[] }) {
+  const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState<TestFilter>("all")
+  const counts = useMemo(() => {
+    let pass = 0
+    let fail = 0
+    let skip = 0
+    let err = 0
+    for (const t of tests) {
+      if (t.status === "pass") pass++
+      else if (t.status === "fail") fail++
+      else if (t.status === "skip") skip++
+      else err++
+    }
+    return { pass, fail, skip, err }
+  }, [tests])
+  const visible = useMemo(() => {
+    if (filter === "all") return tests
+    return tests.filter(
+      (t) => t.status === "fail" || t.status === "error"
+    )
+  }, [tests, filter])
+
+  return (
+    <div className="rounded-md border border-border/60 bg-secondary/10">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-secondary/20"
+        aria-expanded={open}
+      >
+        <span className="inline-flex items-center gap-2">
+          <ChevronRight
+            className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${
+              open ? "rotate-90" : ""
+            }`}
+          />
+          <span className="font-medium text-foreground">
+            {open ? "Hide" : "View"} {tests.length} test
+            {tests.length === 1 ? "" : "s"} detail
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="text-green-300">{counts.pass} pass</span>
+          {counts.fail > 0 && (
+            <span className="text-red-300">· {counts.fail} fail</span>
+          )}
+          {counts.err > 0 && (
+            <span className="text-red-400">· {counts.err} error</span>
+          )}
+          {counts.skip > 0 && (
+            <span className="text-muted-foreground">· {counts.skip} skip</span>
+          )}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border/60 p-2 space-y-1.5">
+          {/* Filter toggle. Disabled when there are no failures so
+            * the button can't trick the user into an empty list. */}
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
+            <div
+              role="radiogroup"
+              aria-label="Test filter"
+              className="inline-flex items-center rounded-md border border-border/60 bg-secondary/30 p-0.5"
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={filter === "all"}
+                onClick={() => setFilter("all")}
+                className={`px-2 py-0.5 rounded-sm transition-colors ${
+                  filter === "all"
+                    ? "bg-foreground/10 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                All ({tests.length})
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={filter === "failed"}
+                onClick={() =>
+                  (counts.fail + counts.err > 0) && setFilter("failed")
+                }
+                disabled={counts.fail + counts.err === 0}
+                className={`px-2 py-0.5 rounded-sm transition-colors ${
+                  filter === "failed"
+                    ? "bg-red-500/15 text-red-300"
+                    : counts.fail + counts.err > 0
+                      ? "text-muted-foreground hover:text-foreground"
+                      : "text-muted-foreground/40 cursor-not-allowed"
+                }`}
+              >
+                Failed only ({counts.fail + counts.err})
+              </button>
+            </div>
+            <span>{visible.length} shown</span>
+          </div>
+          {visible.length === 0 ? (
+            <p className="px-2 py-2 text-[11px] text-muted-foreground italic">
+              No tests match the current filter.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {visible.map((t, idx) => (
+                <TestRow key={t.id ?? `${idx}`} test={t} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TestRow({ test }: { test: EvalTestCase }) {
+  const dot =
+    test.status === "pass"
+      ? "bg-green-400"
+      : test.status === "fail" || test.status === "error"
+        ? "bg-red-400"
+        : "bg-muted-foreground/40"
+  const statusLabel =
+    test.status === "pass"
+      ? "pass"
+      : test.status === "fail"
+        ? "fail"
+        : test.status === "error"
+          ? "error"
+          : "skip"
+  // Show the expand chevron when there's something to drill into.
+  // Aggregates-only rows (just status + name) collapse to a one-liner.
+  const hasDetail = Boolean(
+    test.input || test.expected || test.actual || test.error
+  )
+  return (
+    <details
+      className="group rounded border border-border/40 bg-card/40 open:bg-secondary/15"
+    >
+      <summary
+        className={`flex items-center gap-2 px-2 py-1.5 text-[11px] ${
+          hasDetail
+            ? "cursor-pointer select-none hover:bg-secondary/20"
+            : "cursor-default list-none [&::-webkit-details-marker]:hidden"
+        }`}
+      >
+        {hasDetail && (
+          <ChevronRight className="h-3 w-3 text-muted-foreground transition-transform group-open:rotate-90 shrink-0" />
+        )}
+        {!hasDetail && <span className="w-3 shrink-0" aria-hidden />}
+        <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} />
+        <span className="font-medium text-foreground truncate flex-1 min-w-0">
+          {test.name ?? test.id ?? "(unnamed test)"}
+        </span>
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground shrink-0">
+          {statusLabel}
+        </span>
+        {typeof test.runtime_ms === "number" && test.runtime_ms > 0 && (
+          <span className="text-[10px] text-muted-foreground shrink-0 inline-flex items-center gap-0.5">
+            <Clock className="h-2.5 w-2.5" />
+            {test.runtime_ms}ms
+          </span>
+        )}
+        {test.tags && test.tags.length > 0 && (
+          <span className="hidden md:inline text-[9px] font-mono text-muted-foreground shrink-0 truncate max-w-[40%]">
+            {test.tags.join(" · ")}
+          </span>
+        )}
+      </summary>
+      {hasDetail && (
+        <div className="border-t border-border/40 px-2 py-2 space-y-1.5 text-[11px]">
+          {test.input && <Field label="Input" value={test.input} />}
+          {test.expected && <Field label="Expected" value={test.expected} />}
+          {test.actual && (
+            <Field
+              label="Actual"
+              value={test.actual}
+              tone={test.status === "pass" ? "ok" : "bad"}
+            />
+          )}
+          {test.error && (
+            <Field label="Error" value={test.error} tone="bad" />
+          )}
+        </div>
+      )}
+    </details>
+  )
+}
+
+function Field({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string
+  value: string
+  tone?: "ok" | "bad" | "neutral"
+}) {
+  const wrap =
+    tone === "bad"
+      ? "border-red-500/30 bg-red-500/5 text-red-200"
+      : tone === "ok"
+        ? "border-green-500/30 bg-green-500/5 text-green-200"
+        : "border-border/40 bg-secondary/20 text-foreground"
+  return (
+    <div>
+      <div className="text-[9px] uppercase tracking-wide text-muted-foreground mb-0.5">
+        {label}
+      </div>
+      <pre
+        className={`rounded border px-2 py-1 font-mono text-[11px] whitespace-pre-wrap break-words max-h-48 overflow-auto ${wrap}`}
+      >
+        {value}
+      </pre>
     </div>
   )
 }
@@ -820,6 +1154,10 @@ function statusLabel(s: AgentRunReport["status"]): string {
       return "Could not parse JSON output"
     case "bad_shape":
       return "Output JSON didn't match the expected shape"
+    case "script_not_found":
+      return "Eval script not found"
+    case "binary_not_found":
+      return "Eval binary not found on PATH"
     default:
       return s
   }
@@ -921,20 +1259,30 @@ function HistorySection({
 
 /**
  * Find the first OLDER run (higher index, since `history` is
- * newest-first) that targeted the same branch with the same
- * `includeStashes` flag. Used as the baseline for delta arrows so
- * "main commits" is never compared against "main commits+stashes".
+ * newest-first) that targeted the same branch with the same scope
+ * flags. Used as the baseline for delta arrows so a "main / working
+ * tree" run is never compared against a "main / pristine HEAD" run
+ * (and likewise for stash inclusion).
+ *
+ * Legacy entries written before `includeWorkingTree` existed are
+ * normalised to `true` — pre-mirror runs technically scored
+ * pristine HEAD, but those rows are months stale by now and forcing
+ * a baseline mismatch on every modern run would silently kill all
+ * delta arrows.
  */
 function previousMatchingRun(
   history: PersistedEvalRun[],
   idx: number
 ): PersistedEvalRun | null {
   const cur = history[idx]
+  const curMirror = cur.includeWorkingTree !== false
   for (let i = idx + 1; i < history.length; i++) {
     const prev = history[i]
+    const prevMirror = prev.includeWorkingTree !== false
     if (
       prev.branch === cur.branch &&
-      prev.includeStashes === cur.includeStashes
+      prev.includeStashes === cur.includeStashes &&
+      prevMirror === curMirror
     ) {
       return prev
     }
@@ -953,6 +1301,14 @@ function RunCard({
   const okCount = run.reports.filter((r) => r.status === "ok").length
   const errCount = run.reports.length - okCount
   const ranAt = new Date(run.ranAt)
+  // Legacy entries (pre-mirror) won't carry these fields — treat
+  // them as "no mirror" so the badge doesn't appear out of nothing.
+  const mirroredFiles = run.mirroredFiles ?? []
+  const mirroredCount = mirroredFiles.length
+  // `includeWorkingTree` is optional on the wire; explicit `false`
+  // means the user opted into "pristine HEAD only", which is rare
+  // enough that we want to surface it as its own badge.
+  const pristineMode = run.includeWorkingTree === false
   return (
     <div className="rounded-lg border border-border bg-secondary/10">
       <button
@@ -974,6 +1330,33 @@ function RunCard({
                 </span>
               )}
             </Badge>
+            {pristineMode ? (
+              <Badge
+                variant="outline"
+                className="border-border/60 text-muted-foreground text-[10px]"
+                title="This run scored pristine HEAD only — the user's working tree was NOT mirrored in"
+              >
+                pristine HEAD
+              </Badge>
+            ) : (
+              mirroredCount > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/40 text-amber-300 text-[10px]"
+                  title={`${mirroredCount} file${
+                    mirroredCount === 1 ? "" : "s"
+                  } mirrored from your working tree:\n${mirroredFiles
+                    .slice(0, 30)
+                    .join("\n")}${
+                    mirroredFiles.length > 30
+                      ? `\n…and ${mirroredFiles.length - 30} more`
+                      : ""
+                  }`}
+                >
+                  <FilePlus2 className="h-2.5 w-2.5 mr-1" />+{mirroredCount} working tree
+                </Badge>
+              )
+            )}
             {run.includeStashes && (
               <Badge
                 variant="outline"
@@ -1016,6 +1399,25 @@ function RunCard({
       </button>
       {open && (
         <div className="border-t border-border/60 p-3 space-y-3">
+          {mirroredCount > 0 && (
+            <details className="text-[11px] text-amber-300">
+              <summary className="cursor-pointer select-none">
+                <FilePlus2 className="inline h-3 w-3 mr-1" />
+                {mirroredCount} file{mirroredCount === 1 ? "" : "s"} mirrored
+                from your working tree
+              </summary>
+              <ul className="list-disc pl-4 space-y-0.5 font-mono mt-1 max-h-40 overflow-auto">
+                {mirroredFiles.slice(0, 200).map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+                {mirroredFiles.length > 200 && (
+                  <li className="text-muted-foreground italic">
+                    …and {mirroredFiles.length - 200} more
+                  </li>
+                )}
+              </ul>
+            </details>
+          )}
           {run.skippedStashes.length > 0 && (
             <div className="text-[11px] text-red-300">
               <div className="font-medium mb-1">

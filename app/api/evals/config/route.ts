@@ -5,6 +5,7 @@ import {
 } from "@/lib/server-git"
 import {
   EVALS_CONFIG_REL_PATH,
+  lintEvalsConfig,
   loadEvalsConfig,
 } from "@/lib/server-evals"
 
@@ -33,6 +34,14 @@ export async function GET(request: Request) {
   try {
     const { resolved } = resolveProjectPath(projectPath)
     const loaded = loadEvalsConfig(resolved)
+    // Lint up front so the UI can render per-agent warnings BEFORE
+    // the user clicks Run. Skipped when YAML didn't even parse —
+    // there's no agent map to walk in that case and the parse
+    // errors are the user's first thing to fix.
+    const lintByAgent =
+      loaded.exists && loaded.errors.length === 0
+        ? lintEvalsConfig(resolved, loaded.config)
+        : {}
     return NextResponse.json({
       exists: loaded.exists,
       configPath: loaded.configPath,
@@ -50,6 +59,9 @@ export async function GET(request: Request) {
         // leaking secrets through the config response.
         metrics: cfg.metrics ?? null,
         envKeys: cfg.env ? Object.keys(cfg.env) : [],
+        // Per-agent lint findings (script_not_found, cwd_not_found,
+        // path_doubling). Empty array == clean.
+        lint: lintByAgent[name] ?? [],
       })),
       errors: loaded.errors,
     })

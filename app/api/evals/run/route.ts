@@ -23,13 +23,21 @@ import {
  *   branch?: string,             // default: HEAD
  *   agents?: string[],           // default: every agent in the config
  *   includeStashes?: boolean,    // default: false
+ *   includeWorkingTree?: boolean // default: true — mirror the
+ *                                //   user's tracked-modified +
+ *                                //   untracked files into the
+ *                                //   eval worktree. Set to false
+ *                                //   to evaluate pristine HEAD only.
  * }
  *
- * Materialises a temp `git worktree` at `branch`'s HEAD (with every
- * `git stash` attributed to that branch layered on top, oldest →
- * newest, when `includeStashes: true`), runs each agent's command
- * from `.edgeagent/evals.yaml` inside it, and persists the results
- * to `.edgeagent/eval-history.jsonl` for the History view.
+ * Materialises a temp `git worktree` at `branch`'s HEAD with the
+ * user's working tree mirrored on top (so an as-yet-uncommitted
+ * `evals/run_my_eval.py` actually runs), and — if
+ * `includeStashes: true` — every `git stash` attributed to that
+ * branch layered on top of THAT (oldest → newest, latest wins).
+ * Then runs each agent's command from `.edgeagent/evals.yaml`
+ * inside the worktree and persists results to
+ * `.edgeagent/eval-history.jsonl` for the History view.
  *
  * Errors at the per-agent level (timeout, non-zero exit, malformed
  * JSON) are returned as `AgentRunReport` entries with `status !==
@@ -44,6 +52,7 @@ export async function POST(request: Request) {
       branch?: string
       agents?: string[]
       includeStashes?: boolean
+      includeWorkingTree?: boolean
     }
     const { resolved } = resolveProjectPath(body.projectPath)
     assertGitRepo(resolved)
@@ -102,6 +111,10 @@ export async function POST(request: Request) {
 
     const branchInput = (body.branch ?? "HEAD").trim() || "HEAD"
     const includeStashes = body.includeStashes === true
+    // Default ON: 99% of the time the user is iterating on an
+    // eval script that isn't committed yet. Honour an explicit
+    // `false` for callers who want to score pristine HEAD.
+    const includeWorkingTree = body.includeWorkingTree !== false
 
     // Resolve the branch to a concrete SHA up front. We feed the
     // SHA (not the branch name) to `worktree add --detach` so a
@@ -127,13 +140,15 @@ export async function POST(request: Request) {
       )
     }
 
-    // Build the worktree (and apply stashes if asked). Wrap in
-    // try/finally so cleanup runs even if the run throws.
+    // Build the worktree (mirror working tree + apply stashes if
+    // asked). Wrap in try/finally so cleanup runs even if the
+    // run throws.
     const setup = setupEvalWorktree({
       repo: resolved,
       branch: branchName,
       sha: branchSha,
       includeStashes,
+      includeWorkingTree,
     })
     cleanup = setup.cleanup
 
@@ -149,6 +164,8 @@ export async function POST(request: Request) {
       branch: branchName,
       sha: branchSha,
       includeStashes,
+      includeWorkingTree,
+      mirroredFiles: setup.mirroredFiles,
       appliedStashes: setup.stashApply.applied.map((s) => ({
         ref: s.ref,
         subject: s.subject,
