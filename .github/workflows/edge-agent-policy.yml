@@ -1,0 +1,124 @@
+# Edge Agent AI — Policy Gate (CI)
+#
+# Runs the same scanner + policy evaluation the desktop app uses, on
+# every pull request and every push to a long-lived branch. The
+# decision is enforced as a required status check once you wire this
+# job into Branch Protection (see docs/POLICY-GATE.md).
+#
+# What this gate does on each run:
+#   1. Checks out the PR head with full history (we need the base ref
+#      to be reachable so we can scan it for delta rules).
+#   2. Installs the Python scanner from `scanner/` and the Node deps.
+#   3. Runs `scripts/policy-gate.ts`, which:
+#         • scans the target (current checkout)
+#         • scans the base commit (PR base branch) via a temp worktree
+#         • loads `.edgeagent/policy.yaml` (or the safe default)
+#         • emits a Markdown summary + JSON result
+#   4. Uploads the Markdown report + JSON as an artifact.
+#   5. On pull_request events, posts a sticky comment with the
+#      Markdown summary (requires `gh` and `GITHUB_TOKEN`).
+#
+# Exit-code policy (mirrors the in-IDE gate):
+#   • policy.mode = block  →  BLOCK decision exits 1 (fails the check)
+#   • policy.mode = warn   →  always exits 0, annotates instead
+#   • PASS / WARN          →  always exits 0
+
+name: Edge Agent Policy Gate
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+  push:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+# One run at a time per ref — if you push three commits in a row,
+# only the latest one's policy gate runs, saving runner minutes.
+concurrency:
+  group: edge-agent-policy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Needed so the sticky-comment step can post on the PR. If you
+  # don't want PR comments, drop this back to `none` — the gate
+  # still works, it just won't comment.
+  pull-requests: write
+
+jobs:
+  policy-gate:
+    name: Run policy gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout (with history for delta rules)
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 makes `origin/<base>` resolvable so the
+          # CLI can scan the base commit for delta-rule comparison.
+          # Without it, delta rules become inapplicable.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Edge Agent scanner
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./scanner
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run policy gate
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm policy-gate
+
+      - name: Upload policy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-agent-policy-report
+          path: |
+            edge-agent-output/policy-report.md
+            edge-agent-output/policy-result.json
+            edge-agent-output/report-target.json
+            edge-agent-output/report-base.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Surface decision in job name
+        if: always()
+        run: |
+          echo "Policy decision: ${{ steps.gate.outputs.decision }}"
+          echo "Risk score: ${{ steps.gate.outputs.risk_score }}"
+          echo "Failed conditions: ${{ steps.gate.outputs.failed_count }}"

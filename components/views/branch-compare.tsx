@@ -22,8 +22,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  GitBranch,
+import { 
+  GitBranch, 
   ArrowRight,
   ChevronRight,
   Loader2,
@@ -476,8 +476,8 @@ export function BranchCompare({
   // Empty / disabled states ---------------------------------------------------
 
   if (!projectPath) {
-    return (
-      <div className="p-6 space-y-6">
+  return (
+    <div className="p-6 space-y-6">
         <Header />
         <Card className="bg-card border-border">
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
@@ -527,7 +527,7 @@ export function BranchCompare({
               title="Re-fetch branches and widen the remote refspec for shallow clones"
             >
               Refresh branches
-            </Button>
+        </Button>
           )}
           <Button
             onClick={runComparison}
@@ -776,8 +776,8 @@ export function BranchCompare({
         <>
           <ImpactSummary result={result} />
 
-        <Card className="bg-card border-border">
-          <CardHeader>
+          <Card className="bg-card border-border">
+            <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div>
                 <CardTitle className="text-base">Changes Detected</CardTitle>
@@ -833,8 +833,8 @@ export function BranchCompare({
                   </button>
                 ))}
             </div>
-          </CardHeader>
-          <CardContent>
+            </CardHeader>
+            <CardContent>
             {result.files.length === 0 ? (
               <div className="py-6 text-center text-sm text-muted-foreground">
                 No file differences between these branches.
@@ -853,8 +853,8 @@ export function BranchCompare({
                       key={`${change.path}-${change.status}`}
                       onClick={() => openDetail(change)}
                       className="w-full text-left p-3 rounded-lg bg-secondary/20 border border-border hover:bg-secondary/30 transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-4">
+                  >
+                    <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
                             <Badge
@@ -867,13 +867,13 @@ export function BranchCompare({
                             <span className="font-mono text-sm text-muted-foreground truncate">
                               {change.path}
                             </span>
-                          </div>
+                        </div>
                           {change.oldPath && change.oldPath !== change.path && (
                             <p className="text-xs text-muted-foreground font-mono">
                               renamed from {change.oldPath}
                             </p>
                           )}
-                        </div>
+                      </div>
                         <ChevronRight className="h-4 w-4 text-muted-foreground mt-1 shrink-0" />
                       </div>
                     </button>
@@ -888,15 +888,15 @@ export function BranchCompare({
                       <div className="text-xs text-muted-foreground text-center pt-2">
                         Showing first 200 of {filtered.length} files — narrow
                         with category filter above to see more.
-                      </div>
+              </div>
                     )
                   }
                   return null
                 })()}
               </div>
             )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
         </>
       ) : !loading && !tooFewBranches ? (
         <Card className="bg-card border-border">
@@ -925,7 +925,7 @@ export function BranchCompare({
             {detailLoading && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading diff…
-              </div>
+        </div>
             )}
 
             {detailError && (
@@ -1009,7 +1009,7 @@ function ImpactSummary({ result }: { result: GitCompareResponse }) {
   if (total === 0) return null
 
   return (
-    <Card className="bg-card border-border">
+          <Card className="bg-card border-border">
       <CardHeader className="pb-3">
         <CardTitle className="text-base">File Change Impact</CardTitle>
         <CardDescription>
@@ -1017,8 +1017,8 @@ function ImpactSummary({ result }: { result: GitCompareResponse }) {
           moved between branches. The deep security comparison above shows
           the actual findings delta.
         </CardDescription>
-      </CardHeader>
-      <CardContent>
+            </CardHeader>
+            <CardContent>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Totals + status breakdown */}
           <div className="space-y-2">
@@ -1084,12 +1084,12 @@ function ImpactSummary({ result }: { result: GitCompareResponse }) {
                           </Badge>
                           <span className="text-muted-foreground">
                             {CATEGORY_HINT[cat]}
-                          </span>
-                        </span>
+                            </span>
+                            </span>
                         <span className="font-mono text-muted-foreground shrink-0">
                           {n.toLocaleString()}
                         </span>
-                      </div>
+                        </div>
                       <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
                         <div
                           className={`h-full ${
@@ -1114,9 +1114,9 @@ function ImpactSummary({ result }: { result: GitCompareResponse }) {
               </div>
             )}
           </div>
-        </div>
-      </CardContent>
-    </Card>
+              </div>
+            </CardContent>
+          </Card>
   )
 }
 
@@ -1257,13 +1257,13 @@ function ChecksComparisonPanel({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="min-w-0">
-            <CardTitle className="text-base flex items-center gap-2">
+              <CardTitle className="text-base flex items-center gap-2">
               <ShieldAlert className="h-4 w-4 text-orange-400" />
               Checks Comparison
               {scanLoading && (
                 <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
               )}
-            </CardTitle>
+              </CardTitle>
             <CardDescription className="mt-1 truncate">
               Same checks run on{" "}
               <span className="font-mono">{base}</span> and{" "}
@@ -1272,7 +1272,7 @@ function ChecksComparisonPanel({
             </CardDescription>
           </div>
         </div>
-      </CardHeader>
+            </CardHeader>
       <CardContent className="space-y-4">
         {scanError && (
           <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
@@ -1333,13 +1333,13 @@ function ChecksComparisonPanel({
 
             {/* Per-check rows — the focus of this panel */}
             {categories.length > 0 ? (
-              <div>
+                <div>
                 <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
                   <span>By check</span>
                   <span>
                     {improvedCount} improved · {regressedCount} regressed
                   </span>
-                </div>
+                  </div>
                 <div className="rounded-lg border border-border/60 divide-y divide-border/30">
                   {categories.map((c) => (
                     <CategoryRow key={c.category} cat={c} />
@@ -1379,7 +1379,7 @@ function ChecksComparisonPanel({
                         perFile={scanResult.perFile}
                         totalDelta={totalDelta}
                       />
-                    </div>
+                  </div>
                   )}
                 </div>
               )}
@@ -1402,8 +1402,8 @@ function ChecksComparisonPanel({
             </p>
           </>
         )}
-      </CardContent>
-    </Card>
+            </CardContent>
+          </Card>
   )
 }
 
@@ -1442,7 +1442,7 @@ function InlineDelta({
         ({sign}
         {delta})
       </span>
-    </div>
+        </div>
   )
 }
 
@@ -1566,7 +1566,7 @@ function CategoryRow({ cat }: { cat: CategoryImpact }) {
               · {cat.fixedCount} fixed · {cat.introducedCount} introduced
             </span>
           )}
-        </div>
+      </div>
         {/* Per-file hints — only render the bucket that actually moved
          *  the needle. A 0-delta capped-churn category gets neither
          *  hint, since "improved by X · regressed by X" would be

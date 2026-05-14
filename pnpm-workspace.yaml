@@ -1,2 +1,10 @@
+# pnpm 11+ uses this to decide which dependencies are allowed to run
+# their postinstall / preinstall scripts. Both packages need their
+# postinstalls to fetch the right native binary for the current
+# OS/arch — without these set to `true`, `pnpm install` exits 1.
+#
+#   * esbuild — pulled in by `tsx`, used by the policy-gate CLI.
+#   * sharp   — Next.js image-optimisation native binding.
 allowBuilds:
-  sharp: false
+  esbuild: true
+  sharp: true

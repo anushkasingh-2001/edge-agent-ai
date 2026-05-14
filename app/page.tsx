@@ -964,8 +964,8 @@ export default function Home() {
         }}
       />
       <div className="flex flex-1 overflow-hidden">
-        <AppSidebar
-          currentView={currentView}
+        <AppSidebar 
+          currentView={currentView} 
           onViewChange={setCurrentView}
           findingsCount={findingsCount}
           selectedProject={selectedProject}
