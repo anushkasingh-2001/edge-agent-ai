@@ -191,11 +191,33 @@ export default function Home() {
               : {},
         }
         setGitInfo(info)
-        if (
-          info.currentBranch &&
-          (!project.branch || project.branch.trim() === "")
-        ) {
-          setCurrentBranch(info.currentBranch)
+        // Reconcile the stored project record with what git actually
+        // says HEAD is. Three cases:
+        //
+        //   1. Project record has no branch → use live HEAD. (existing)
+        //   2. Project record's branch is in the real branch list →
+        //      keep it (user might be intentionally on a feature branch).
+        //   3. Project record's branch is NOT in the real list →
+        //      it's stale (e.g. older clone code baked in `"main"` on
+        //      a repo whose default is `master`). Snap to the real
+        //      HEAD AND persist the corrected record back to
+        //      localStorage so we don't keep doing this dance.
+        const storedBranch = project.branch?.trim() ?? ""
+        const knownBranches = new Set(info.branches)
+        if (info.currentBranch) {
+          if (!storedBranch) {
+            setCurrentBranch(info.currentBranch)
+          } else if (!knownBranches.has(storedBranch)) {
+            // Stale record — heal it.
+            setCurrentBranch(info.currentBranch)
+            const healed: Project = {
+              ...project,
+              branch: info.currentBranch,
+            }
+            saveRecentProject(healed)
+            setSelectedProject(healed)
+            setRecentProjects(loadRecentProjects())
+          }
         }
       } catch {
         setGitInfo({
@@ -330,6 +352,21 @@ export default function Home() {
           // as "Scan cancelled" rather than "Scan failed".
           signal: controller.signal,
         })
+        // If the server had to fall back to a different branch because
+        // our stored `branch` was stale (e.g. `"main"` on a master-default
+        // repo), it sets these headers so we can heal the project record.
+        const correctionFrom = res.headers.get("X-Edge-Branch-Correction-From")
+        const correctionTo = res.headers.get("X-Edge-Branch-Correction-To")
+        if (correctionFrom && correctionTo && target) {
+          setCurrentBranch(correctionTo)
+          const healed: Project = {
+            ...target,
+            branch: correctionTo,
+          }
+          saveRecentProject(healed)
+          setSelectedProject(healed)
+          setRecentProjects(loadRecentProjects())
+        }
         const raw = await res.json()
         if (!res.ok) {
           const msg = typeof raw.error === "string" ? raw.error : "Scan failed"

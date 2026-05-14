@@ -10,8 +10,10 @@ import {
 } from "@/lib/server-untracked-attribution"
 import {
   GitError,
+  detectRepoDefaultBranch,
   listStashesForBranch,
   resolveRef,
+  softResolveRef,
 } from "@/lib/server-git"
 
 export async function POST(request: Request) {
@@ -88,11 +90,34 @@ export async function POST(request: Request) {
       ? body.branch.trim()
       : null
 
+  // ── Gracefully handle stale branch records ──────────────────────────
+  // The most common cause of a 400 here used to be:
+  //   "ref 'main' could not be resolved as a local branch, remote-
+  //    tracking branch, or commit"
+  // … which fired when an older clone path baked `branch: "main"`
+  // into the project's localStorage, but the repo's actual default
+  // is `master` (or `develop`, `trunk`, …). The user's intent in
+  // that case is "scan whatever I'm on" — NOT "fail with a cryptic
+  // git error". So we soft-resolve the requested branch; if it
+  // doesn't exist, fall back to current HEAD and tell the client we
+  // did, so it can heal its stored record.
+  let effectiveBranch = requestedBranch
+  let branchCorrection: { from: string; to: string | null } | null = null
+  if (requestedBranch) {
+    const resolved = softResolveRef(requested, requestedBranch)
+    if (!resolved) {
+      const fallback =
+        currentHead ?? detectRepoDefaultBranch(requested) ?? null
+      branchCorrection = { from: requestedBranch, to: fallback }
+      effectiveBranch = fallback
+    }
+  }
+
   // Virtual checkout iff the user asked for a *different* branch than
   // the one currently checked out. Same-branch requests fall through to
   // in-place scan so we still report dirty-tree state etc.
   const wantsVirtualCheckout =
-    !!requestedBranch && currentHead !== requestedBranch
+    !!effectiveBranch && currentHead !== effectiveBranch
 
   let scanTarget = requested
   let virtualCheckout: {
@@ -103,11 +128,14 @@ export async function POST(request: Request) {
 
   if (wantsVirtualCheckout) {
     try {
-      // Resolve the branch name to a concrete SHA (handles both local
-      // and remote-only refs — `gt`/`yeye` in the screenshot are
-      // remote-only). Failure is treated as a 400 since the caller
-      // explicitly asked for this branch.
-      const resolved = resolveRef(requested, requestedBranch!)
+      // Resolve the (effective) branch name to a concrete SHA.
+      // effectiveBranch is guaranteed resolvable here because the
+      // soft-resolve block above either confirmed the original ref
+      // or downgraded us to currentHead (which by definition resolves
+      // on a non-detached repo). Use the strict resolveRef so we
+      // surface a structured error if something pathological happens
+      // (e.g. someone deleted the branch between our two calls).
+      const resolved = resolveRef(requested, effectiveBranch!)
       const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const worktreeDir = path.join(
         os.tmpdir(),
@@ -115,7 +143,7 @@ export async function POST(request: Request) {
       )
       addWorktree(requested, worktreeDir, resolved.sha)
       virtualCheckout = {
-        branch: requestedBranch!,
+        branch: effectiveBranch!,
         sha: resolved.sha,
         worktreeDir,
       }
@@ -129,7 +157,7 @@ export async function POST(request: Request) {
       }
       return NextResponse.json(
         {
-          error: `Failed to materialise virtual checkout for '${requestedBranch}': ${
+          error: `Failed to materialise virtual checkout for '${effectiveBranch}': ${
             err instanceof Error ? err.message : String(err)
           }`,
         },
@@ -474,9 +502,21 @@ export async function POST(request: Request) {
     }
 
     const out = report ? JSON.stringify(report) : ""
+    // Surface "we scanned a different branch than you asked for"
+    // via response headers so the client can heal its stored
+    // project record without us breaking the JSON body shape.
+    const respHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+    }
+    if (branchCorrection) {
+      respHeaders["X-Edge-Branch-Correction-From"] = branchCorrection.from
+      if (branchCorrection.to) {
+        respHeaders["X-Edge-Branch-Correction-To"] = branchCorrection.to
+      }
+    }
     return new NextResponse(out, {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: respHeaders,
     })
   } finally {
     // Best-effort cleanup of the temp worktree(s). Failures here

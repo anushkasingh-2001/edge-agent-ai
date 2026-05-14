@@ -228,13 +228,46 @@ export async function POST(request: Request) {
     )
   }
 
+  // ── Detect the branch that was actually checked out ─────────────
+  // git clone always checks out SOMETHING — either the branch the
+  // caller asked for via --branch, or the repo's default branch
+  // (which can be `main`, `master`, `dev`, `trunk`, … depending on
+  // the repo). Hard-coding `branch ?? "main"` here used to break
+  // every later git operation against repos whose default isn't
+  // `main`: branch picker, status, scan, push, PR all asked git
+  // to resolve `main` and got
+  //   "ref 'main' could not be resolved as a local branch,
+  //    remote-tracking branch, or commit"
+  //
+  // Detection priority:
+  //   1. The branch the caller asked for (if provided).
+  //   2. Whatever HEAD is now (gitCurrentBranch — what git just
+  //      checked out).
+  //   3. The remote default branch (from origin/HEAD), as a final
+  //      fallback if HEAD is somehow detached.
+  //   4. "main" — last resort so the project record is never empty.
+  let detectedBranch = branch ?? gitCurrentBranch(resolved)
+  if (!detectedBranch) {
+    const remoteHead = spawnSync(
+      "git",
+      ["-C", resolved, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      { encoding: "utf-8", maxBuffer: 1024 * 1024 }
+    )
+    if (remoteHead.status === 0) {
+      const ref = remoteHead.stdout.trim()
+      const short = ref.replace(/^origin\//, "")
+      if (short) detectedBranch = short
+    }
+  }
+  if (!detectedBranch) detectedBranch = "main"
+
   const project = {
     id: projectIdFromPath(resolved),
     name: path.basename(resolved),
     path: resolved,
     source: "github" as const,
     githubUrl: url,
-    branch: branch ?? "main",
+    branch: detectedBranch,
     lastOpenedAt: new Date().toISOString(),
   }
 

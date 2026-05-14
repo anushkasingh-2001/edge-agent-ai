@@ -218,6 +218,55 @@ export function verifyRef(cwd: string, ref: string): string {
   return resolveRef(cwd, ref).sha
 }
 
+/**
+ * Non-throwing variant of resolveRef.
+ *
+ * Returns `null` instead of raising a GitError when the ref doesn't
+ * resolve. Use this when the caller wants to gracefully fall back to
+ * a different ref (e.g. the scan endpoint falling back to current
+ * HEAD when a stale project record sends `branch: "main"` for a repo
+ * whose actual default is `master`).
+ *
+ * Don't use this for explicit user picks (Branch Compare etc.) — there
+ * the user clearly wants to know "you asked for a branch that doesn't
+ * exist, here's why".
+ */
+export function softResolveRef(
+  cwd: string,
+  ref: string
+): { canonical: string; sha: string } | null {
+  try {
+    return resolveRef(cwd, ref)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Best-effort detection of the branch the repo would naturally check
+ * out — HEAD if attached, else the remote's default branch via
+ * `origin/HEAD`. Returns null when neither works (detached HEAD + no
+ * usable remote-tracking ref).
+ */
+export function detectRepoDefaultBranch(cwd: string): string | null {
+  const head = runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])
+  if (head.status === 0) {
+    const b = head.stdout.trim()
+    if (b && b !== "HEAD") return b
+  }
+  const remote = runGit(cwd, [
+    "symbolic-ref",
+    "--short",
+    "refs/remotes/origin/HEAD",
+  ])
+  if (remote.status === 0) {
+    const ref = remote.stdout.trim()
+    const short = ref.replace(/^origin\//, "")
+    if (short) return short
+  }
+  return null
+}
+
 /* -------------------------------------------------------------------------- */
 /* Change classification                                                      */
 /* -------------------------------------------------------------------------- */

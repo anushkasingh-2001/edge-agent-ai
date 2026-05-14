@@ -479,7 +479,74 @@ function writeBackupOnce(absPath: string, projectPath: string): string {
     fs.mkdirSync(path.dirname(bak), { recursive: true })
     fs.copyFileSync(absPath, bak)
   }
+  ensureLocalGitignoreForEdgeAgent(projectPath)
   return bak
+}
+
+/**
+ * Append our local-runtime entries to `.git/info/exclude` so backups
+ * and attribution caches never show up in `git status` (and never
+ * accidentally land in a commit / PR).
+ *
+ * Why .git/info/exclude and not the project's .gitignore:
+ *   - The project's .gitignore is a tracked file. Modifying it would
+ *     create a diff the user has to decide whether to commit, which
+ *     is surprising and some teams have strict rules about who can
+ *     touch .gitignore.
+ *   - .git/info/exclude is local-only — it lives inside .git/, never
+ *     pushed, never seen by anyone else. Perfect for a per-checkout
+ *     "hide this tool's working files" rule.
+ *
+ * Entries:
+ *   /.edge-agent/                            — fix-engine backups
+ *   /.edgeagent/head-snapshot.json           — untracked-file attribution cache
+ *   /.edgeagent/untracked-attribution.json   — untracked-file attribution cache
+ *   /.edgeagent/eval-history.jsonl           — eval-runner history (large, machine-specific)
+ *
+ * Note we DO NOT exclude `/.edgeagent/evals.yaml` — that's user
+ * config they probably want to commit.
+ *
+ * Idempotent: re-running this function on the same repo only adds
+ * lines that aren't already present.
+ *
+ * Safe on non-git roots: silently returns if `.git/info/` doesn't
+ * exist.
+ */
+const EDGE_AGENT_EXCLUDE_LINES = [
+  "/.edge-agent/",
+  "/.edgeagent/head-snapshot.json",
+  "/.edgeagent/untracked-attribution.json",
+  "/.edgeagent/eval-history.jsonl",
+] as const
+
+function ensureLocalGitignoreForEdgeAgent(projectPath: string): void {
+  try {
+    const infoDir = path.join(projectPath, ".git", "info")
+    if (!fs.existsSync(infoDir)) return
+    const excludeFile = path.join(infoDir, "exclude")
+    let current = ""
+    try {
+      current = fs.readFileSync(excludeFile, "utf-8")
+    } catch {
+      current = ""
+    }
+    const existing = new Set(
+      current.split("\n").map((l) => l.trim()).filter(Boolean)
+    )
+    const missing = EDGE_AGENT_EXCLUDE_LINES.filter((l) => !existing.has(l))
+    if (missing.length === 0) return
+    const prefix = current.endsWith("\n") || current === "" ? "" : "\n"
+    const note =
+      "# Added by Edge Agent: hide local fix backups + per-checkout caches\n"
+    fs.appendFileSync(
+      excludeFile,
+      `${prefix}${note}${missing.join("\n")}\n`
+    )
+  } catch {
+    // Best-effort. A failure here doesn't corrupt anything — at worst
+    // the user sees `.edge-agent/` (or attribution cache) as untracked
+    // in `git status`.
+  }
 }
 
 /**
