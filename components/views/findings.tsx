@@ -26,34 +26,17 @@ import {
 } from "lucide-react"
 import { FindingDrawer } from "@/components/finding-drawer"
 import type { UiFinding } from "@/lib/scan-report"
+import { SECURITY_CHECKS, displayCategoryLabel } from "@/lib/security-checks"
 
 export type Finding = UiFinding
 
 /**
- * Normalize raw scanner categories to short, user-facing labels for the
- * Findings filter + table.
- *
- * The Python rules emit a few wordy or near-duplicate strings — e.g.
- * "Dangerous tool / side effect" reads like a doc string, and
- * "MCP configuration" + "OpenAPI" are essentially one bucket. Collapsing
- * them here keeps the filter dropdown short and matches the labels used in
- * Scan Center so the same vocabulary appears everywhere.
- *
- * Anything not in the map falls through to the original string so a new
- * scanner category never disappears from the UI silently.
+ * Wrapper kept around because several call sites already use it. The
+ * actual mapping logic moved to `lib/security-checks.ts` so Scan Center
+ * and Findings now share one source of truth for the category vocabulary.
  */
-const CATEGORY_LABEL: Record<string, string> = {
-  "Dangerous tool / side effect": "Dangerous tools",
-  "Missing approval gate": "Missing approval",
-  "Weak prompt": "Weak prompts",
-  "Hardcoded secret": "Secrets",
-  "MCP configuration": "MCP / OpenAPI",
-  OpenAPI: "MCP / OpenAPI",
-  "Data flow": "Unsafe data flow",
-}
-
 function displayCategory(raw: string): string {
-  return CATEGORY_LABEL[raw] ?? raw
+  return displayCategoryLabel(raw)
 }
 
 interface FindingsProps {
@@ -75,12 +58,32 @@ export function Findings({
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
 
-  // Dropdown is keyed off the *normalized* labels so duplicates collapse
-  // (e.g. "MCP configuration" + "OpenAPI" → one "MCP / OpenAPI" entry) and
-  // the order is stable as you scan more / fewer files.
-  const categories = [
-    ...new Set(findings.map((f) => displayCategory(f.category))),
+  // Dropdown shows the full Scan Center taxonomy (14 checks) so the
+  // category vocabulary is identical across both screens. Any scanner
+  // category that's NOT yet claimed by a SECURITY_CHECKS entry is appended
+  // at the end so a new rule can't silently disappear from the UI.
+  //
+  // Counts are computed from the current `findings` array — a check with
+  // 0 findings still appears, just dimmed and labelled `(0)` so the user
+  // sees the full list and knows which buckets are empty in this scan.
+  const findingCountByLabel = (() => {
+    const m = new Map<string, number>()
+    for (const f of findings) {
+      const label = displayCategory(f.category)
+      m.set(label, (m.get(label) ?? 0) + 1)
+    }
+    return m
+  })()
+  const knownLabels = SECURITY_CHECKS.map((c) => c.label)
+  const knownLabelSet = new Set(knownLabels)
+  const orphanLabels = [
+    ...new Set(
+      findings
+        .map((f) => displayCategory(f.category))
+        .filter((label) => !knownLabelSet.has(label))
+    ),
   ].sort((a, b) => a.localeCompare(b))
+  const categories: string[] = [...knownLabels, ...orphanLabels]
 
   const filteredFindings = findings.filter((f) => {
     const matchesSearch =
@@ -234,16 +237,35 @@ export function Findings({
               </SelectContent>
             </Select>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="w-48 bg-secondary/50">
+              <SelectTrigger className="w-64 bg-secondary/50">
                 <SelectValue placeholder="Category" />
               </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
-                {categories.map((cat) => (
-                  <SelectItem key={cat} value={cat}>
-                    {cat}
-                  </SelectItem>
-                ))}
+              <SelectContent className="max-h-[420px]">
+                <SelectItem value="all">
+                  All Categories ({findings.length})
+                </SelectItem>
+                {categories.map((cat) => {
+                  const count = findingCountByLabel.get(cat) ?? 0
+                  // Dim empty buckets so the user can still see the full
+                  // 14-check taxonomy without confusing zero-count rows
+                  // with active ones.
+                  return (
+                    <SelectItem key={cat} value={cat}>
+                      <span
+                        className={
+                          count === 0
+                            ? "text-muted-foreground/70"
+                            : undefined
+                        }
+                      >
+                        {cat}{" "}
+                        <span className="text-xs text-muted-foreground">
+                          ({count})
+                        </span>
+                      </span>
+                    </SelectItem>
+                  )
+                })}
               </SelectContent>
             </Select>
             <div className="text-sm text-muted-foreground">{filteredFindings.length} findings</div>
