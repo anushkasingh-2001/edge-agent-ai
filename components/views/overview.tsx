@@ -9,6 +9,7 @@ import { loadSavedSuites, type TestSuite } from "@/lib/test-cases"
 import { SECURITY_CHECKS } from "@/lib/security-checks"
 import { SCANNER_RULE_IDS } from "@/lib/scan-report"
 import type { PolicyApiResponse } from "@/lib/policy-client"
+import type { Project } from "@/lib/projects"
 import { PolicyStatusCard } from "@/components/policy-status-card"
 import { PrGateStatusCard, CreatePrDialog } from "@/components/git-pr-dialog"
 import {
@@ -71,6 +72,9 @@ interface OverviewProps {
   /** Selected project path — required for the PR Gate card to fetch
    * GitHub PR status. Optional so old call sites still compile. */
   projectPath?: string | null
+  /** Full selected project — passed into PolicyStatusCard so the
+   *  Export Policy Report button can look up the latest result. */
+  project?: Project | null
   /** ISO timestamp of when the latest scan + policy evaluation
    * completed. Drives the "Last gate run" stat. */
   lastGateRunAt?: string | null
@@ -98,6 +102,7 @@ export function Overview({
   policyLoading = false,
   onRefreshPolicyBaseline,
   projectPath = null,
+  project = null,
   lastGateRunAt = null,
   branches = [],
 }: OverviewProps) {
@@ -207,6 +212,13 @@ export function Overview({
         loading={policyLoading}
         onRefreshBaseline={onRefreshPolicyBaseline}
         refreshing={policyLoading}
+        project={project}
+        onEditPolicy={() => {
+          if (typeof window !== "undefined") {
+            window.location.hash = "policy-rules"
+          }
+          onNavigate("settings")
+        }}
       />
 
       {/* PR Gate Status — current branch / base / PR / last gate run,

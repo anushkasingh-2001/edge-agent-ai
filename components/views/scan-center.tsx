@@ -32,6 +32,7 @@ import { ImportTestsDialog } from "@/components/test-cases/import-tests-dialog"
 import { GenerateTestsDialog } from "@/components/test-cases/generate-tests-dialog"
 import type { ScanReport } from "@/lib/scan-report"
 import type { Project } from "@/lib/projects"
+import type { PolicyApiResponse } from "@/lib/policy-client"
 import {
   formatScanTime,
   type ScanHistoryItem,
@@ -77,6 +78,9 @@ interface ScanCenterProps {
   project?: Project | null
   /** Selected branch — included in the markdown header. */
   branch?: string | null
+  /** Latest policy evaluation. When present the Export Report dropdown
+   *  grows two extra "Export policy report" options. */
+  policyResponse?: PolicyApiResponse | null
   /** Scoped to the selected project, newest-first. */
   scanHistory?: ScanHistoryItem[]
   /** Load a historical scan back into the current UI state. */
@@ -101,6 +105,7 @@ export function ScanCenter({
   scanReport = null,
   project = null,
   branch = null,
+  policyResponse = null,
   scanHistory = [],
   onLoadScan,
   activeSuite: activeSuiteProp,
@@ -521,6 +526,7 @@ export function ScanCenter({
                 report={scanReport}
                 project={project}
                 branch={branch}
+                policy={policyResponse}
                 fullWidth
               />
               <p className="text-xs text-muted-foreground text-center">

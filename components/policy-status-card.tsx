@@ -29,6 +29,7 @@ import {
   RefreshCcw,
   ShieldAlert,
   ShieldCheck,
+  SlidersHorizontal,
   XCircle,
 } from "lucide-react"
 import {
@@ -39,6 +40,8 @@ import {
   type PolicyEvaluation,
 } from "@/lib/policy"
 import type { PolicyApiResponse } from "@/lib/policy-client"
+import type { Project } from "@/lib/projects"
+import { ExportPolicyReportButton } from "@/components/export-policy-report-button"
 
 interface PolicyStatusCardProps {
   /** Full server response when available — preferred so we can show
@@ -62,6 +65,15 @@ interface PolicyStatusCardProps {
   /** True while a refresh is in flight — disables the button and
    *  shows a spinner. */
   refreshing?: boolean
+  /** When supplied AND we have a real evaluation, the card renders an
+   *  "Export Policy Report" button at the bottom. Pulls the freshest
+   *  result from localStorage; no fabricated data. */
+  project?: Project | null
+  /** Callback that opens the Policy Rules editor (Settings → Policy
+   *  Rules). When provided the card surfaces an "Edit Policy" button
+   *  right next to the export, so users can find the configurable
+   *  rules from the screen where they actually see the result. */
+  onEditPolicy?: () => void
 }
 
 function formatRelative(iso: string | null | undefined): string | null {
@@ -125,6 +137,8 @@ export function PolicyStatusCard({
   title,
   onRefreshBaseline,
   refreshing = false,
+  project = null,
+  onEditPolicy,
 }: PolicyStatusCardProps) {
   const [showWhy, setShowWhy] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
@@ -632,6 +646,42 @@ export function PolicyStatusCard({
                   <li key={i}>{e}</li>
                 ))}
               </ul>
+            )}
+          </div>
+        )}
+
+        {/* Action row — Edit Policy + Export Policy Report. We render
+            this whenever the card has a project AND either an
+            evaluation or an explicit edit callback so the user always
+            has a one-click path to the rules editor. The export
+            button uses the primary (teal) variant so it reads as a
+            real action — outline buttons on dark backgrounds were
+            getting mistaken for static text. */}
+        {project && (evaluation || onEditPolicy) && (
+          <div className="pt-2 flex flex-wrap items-center gap-2">
+            {onEditPolicy && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={onEditPolicy}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Edit Policy
+              </Button>
+            )}
+            {evaluation && (
+              <ExportPolicyReportButton
+                project={project}
+                variant="default"
+                size="sm"
+              />
+            )}
+            {onEditPolicy && (
+              <span className="text-[11px] text-muted-foreground">
+                Settings → Policy Rules to change what blocks
+              </span>
             )}
           </div>
         )}

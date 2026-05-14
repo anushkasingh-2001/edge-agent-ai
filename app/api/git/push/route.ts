@@ -67,10 +67,14 @@ export async function POST(request: Request) {
     // the user's localStorage would silently skip the gate and
     // ship a regression. Policy file is authoritative.
     const loaded = loadPolicyFor(resolved)
+    const pushPolicy = loaded.policy.push ?? {}
     const policyEnforces = loaded.policy.mode === "block"
+    const policyForcesScan = pushPolicy.run_scan_before_push !== false
     const requestedScan = !!body.runScanBeforePush
-    const runScan = policyEnforces || requestedScan
-    const scanForcedByPolicy = policyEnforces && !requestedScan
+    const runScan = policyEnforces || policyForcesScan || requestedScan
+    const scanForcedByPolicy =
+      (policyEnforces || policyForcesScan) && !requestedScan
+    const blockOnPolicyBlock = pushPolicy.block_if_policy_blocks !== false
     const warnOnCritical = !!body.warnOnCriticalFindings
 
     /* ------------------------------------------------------------------
@@ -181,7 +185,8 @@ export async function POST(request: Request) {
         scanForcedByPolicy,
       }
 
-      const policyBlocks = policyEval.decision === "block"
+      const policyBlocks =
+        policyEval.decision === "block" && blockOnPolicyBlock
       const fallbackBlocks =
         loaded.policySource === "default" &&
         warnOnCritical &&

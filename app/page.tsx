@@ -40,6 +40,7 @@ import {
 } from "@/lib/scan-history"
 import type { TestSuite } from "@/lib/test-cases"
 import { evaluatePolicyApi, type PolicyApiResponse } from "@/lib/policy-client"
+import { saveLatestPolicyResult } from "@/lib/latest-policy-result"
 
 type GitBranchesResponse = {
   isRepo: boolean
@@ -473,6 +474,44 @@ export default function Home() {
         })
         if (ctl.signal.aborted) return
         setPolicyResponse(resp)
+        // Persist the freshest real gate result so the Export Policy
+        // Report button can light up across the app — including
+        // Settings → Policy Rules and the Policy Status Card. Every
+        // gate-running path in the app routes through here, so this
+        // is the canonical persistence point. We pass `operation:
+        // "test"` because the scan-time evaluation isn't tied to any
+        // specific Git verb; commit/push/PR result modals can later
+        // overwrite with a more specific operation if desired.
+        if (resp.evaluation) {
+          try {
+            saveLatestPolicyResult({
+              projectPath: project.path,
+              projectName: project.name ?? null,
+              operation: "test",
+              generatedAt: new Date().toISOString(),
+              baseBranch: resp.baseBranch ?? null,
+              targetBranch: currentBranch || project.branch || null,
+              baseSha: resp.baseSha ?? null,
+              targetSha: null,
+              baseIncludesStashes: false,
+              targetIncludesStashes: !!(
+                report as unknown as {
+                  working_tree?: { stashes_included_count?: number }
+                }
+              )?.working_tree?.stashes_included_count,
+              actionTaken: null,
+              policy: resp,
+              targetReport: {
+                risk_score: report.risk_score,
+                summary: report.summary,
+                generated_at: report.generated_at,
+                findings: report.findings,
+              },
+            })
+          } catch {
+            /* persistence is best-effort */
+          }
+        }
       } catch {
         if (!ctl.signal.aborted) setPolicyResponse(null)
       } finally {
@@ -607,6 +646,7 @@ export default function Home() {
             policyLoading={policyLoading}
             onRefreshPolicyBaseline={refreshPolicyBaseline}
             projectPath={selectedProject?.path ?? null}
+            project={selectedProject}
             // The "policy gate" runs as a side-effect of every scan, so
             // the scan report's own generated_at is the cleanest proxy
             // for "last gate run". When we add a dedicated PR gate
@@ -634,6 +674,7 @@ export default function Home() {
             scanReport={scanReport}
             project={selectedProject}
             branch={currentBranch}
+            policyResponse={policyResponse}
             scanHistory={scanHistoryForProject(scanHistory, selectedProject?.id)}
             onLoadScan={handleLoadScan}
             activeSuite={activeSuite}
@@ -680,11 +721,18 @@ export default function Home() {
             remoteOnlyBranches={gitInfo?.remoteOnly ?? []}
             stashesByBranch={gitInfo?.stashesByBranch ?? {}}
             projectPath={selectedProject?.path}
+            project={selectedProject}
             isGitRepo={gitInfo?.isRepo ?? false}
             onRefreshBranches={(opts) =>
               refreshBranches(selectedProject, opts)
             }
             currentPolicyResponse={policyResponse}
+            onEditPolicy={() => {
+              if (typeof window !== "undefined") {
+                window.location.hash = "policy-rules"
+              }
+              setCurrentView("settings")
+            }}
           />
         )
       case "evaluations":
@@ -726,7 +774,14 @@ export default function Home() {
         )
       }
       case "settings":
-        return <Settings projectPath={selectedProject?.path ?? null} />
+        return (
+          <Settings
+            projectPath={selectedProject?.path ?? null}
+            project={selectedProject}
+            scanReport={scanReport}
+            currentBranch={currentBranch}
+          />
+        )
       default:
         return null
     }
@@ -755,6 +810,7 @@ export default function Home() {
         gitLoading={gitLoading}
         scanReport={scanReport}
         project={selectedProject}
+        policyResponse={policyResponse}
         onGitOpComplete={() => {
           // Refresh the branch list (and HEAD detection) after every
           // successful pull/commit/push so the rest of the app sees

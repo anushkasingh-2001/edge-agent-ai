@@ -1,6 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import type { Project } from "@/lib/projects"
+import { saveLatestPolicyResult } from "@/lib/latest-policy-result"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -93,6 +95,14 @@ interface BranchCompareProps {
   stashesByBranch?: Record<string, number>
   /** Selected project filesystem path — required for git operations. */
   projectPath?: string
+  /** Full selected Project — used by the Export Policy Report button
+   *  inside the embedded PolicyStatusCard. Optional so older call
+   *  sites still type-check. */
+  project?: Project | null
+  /** Called when the user clicks "Edit Policy" inside the policy
+   *  status card. Wired from the parent page to switch the view to
+   *  Settings → Policy Rules. */
+  onEditPolicy?: () => void
   /** True if the parent confirmed the project is a git repo. */
   isGitRepo?: boolean
   /** Force-refetch branches — with `expand=1` to widen the remote refspec
@@ -178,10 +188,16 @@ export function BranchCompare({
   remoteOnlyBranches = [],
   stashesByBranch = {},
   projectPath,
+  project = null,
   isGitRepo = false,
   onRefreshBranches,
   currentPolicyResponse = null,
+  onEditPolicy,
 }: BranchCompareProps) {
+  // Surface the optional `project` for the embedded PolicyStatusCard
+  // so its Export Policy Report button works. Aliased so the JSX
+  // below reads clearly.
+  const branchCompareProject = project
   // Default base = currently checked-out branch when present in the list.
   const defaultBase = branches.includes(currentBranch)
     ? currentBranch
@@ -390,6 +406,31 @@ export function BranchCompare({
             context: { branch: target },
           })
           setPolicyResult(policy)
+          // Persist the real Branch Compare gate result so the Export
+          // Policy Report button lights up across the app with rich
+          // operation context (base/target branches + SHAs).
+          if (policy.evaluation && branchCompareProject) {
+            saveLatestPolicyResult({
+              projectPath: branchCompareProject.path,
+              projectName: branchCompareProject.name ?? null,
+              operation: "branch-compare",
+              generatedAt: new Date().toISOString(),
+              baseBranch: base,
+              targetBranch: target,
+              baseSha: scanRes.value.baseSha ?? null,
+              targetSha: scanRes.value.targetSha ?? null,
+              baseIncludesStashes: baseMode === "commits+stashes",
+              targetIncludesStashes: targetMode === "commits+stashes",
+              actionTaken: null,
+              policy,
+              targetReport: {
+                risk_score: targetLite.risk_score,
+                summary: targetLite.summary,
+                generated_at: new Date().toISOString(),
+                findings: [],
+              },
+            })
+          }
         } catch {
           // Don't surface as a blocker — the scan still rendered. The
           // PolicyStatusCard's empty state is informative enough.
@@ -704,12 +745,16 @@ export function BranchCompare({
           response={policyResult}
           loading={policyLoading}
           title="Policy decision (target branch vs base)"
+          project={branchCompareProject}
+          onEditPolicy={onEditPolicy}
         />
       )}
       {!policyResult && !policyLoading && currentPolicyResponse && (
         <PolicyStatusCard
           response={currentPolicyResponse}
           title="Policy decision (current scan)"
+          project={branchCompareProject}
+          onEditPolicy={onEditPolicy}
         />
       )}
 

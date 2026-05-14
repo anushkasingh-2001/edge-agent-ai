@@ -63,9 +63,94 @@ export interface AgentPolicy {
 export interface SecurityPolicy {
   block_if_critical?: boolean
   block_if_high_increased?: boolean
+  /** Trigger when the medium-severity count grows vs the base scan. Off
+   *  by default — mediums are usually noisier than highs and shouldn't
+   *  block by default, but teams that want zero-medium hygiene can flip
+   *  it on. */
+  block_if_medium_increased?: boolean
   require_risk_score_not_increase?: boolean
   /** Optional absolute ceiling on the headline 0..100 risk score. */
   max_risk_score?: number
+  /** Absolute ceiling on `target.risk - base.risk`. 0 means "never let
+   *  risk go up at all". Inapplicable when there's no base. */
+  max_risk_score_increase?: number
+  /** Absolute ceiling on the number of critical findings. 0 = no
+   *  critical findings tolerated. Distinct from `block_if_critical`
+   *  because it lets teams allow, e.g., up to 1 critical for a
+   *  migration period. */
+  max_critical_findings?: number
+  /** Absolute ceiling on high findings. Same semantics as above. */
+  max_high_findings?: number
+  /** Block when *any* finding has `rule_id === 'secrets'`. Implies
+   *  block regardless of severity — leaked credentials are always a
+   *  P0 even if our risk scoring dampened them. */
+  block_if_secrets_found?: boolean
+  /** Block when the scan saw a dangerous tool and *no* matching
+   *  approval gate. Combines `rule_id === 'dangerous-tools'` AND the
+   *  absence of `rule_id === 'human-approval'` for the same agent. */
+  block_if_dangerous_tool_without_approval?: boolean
+  /** Block when the scan saw user input flowing into dangerous code.
+   *  Triggered by `rule_id === 'user-input-dangerous-code'` or
+   *  `prompt-injection`. */
+  block_if_user_input_to_dangerous_code?: boolean
+  /** Block when the scan found unsafe MCP configuration. Triggered by
+   *  `rule_id === 'mcp-security'`. */
+  block_if_unsafe_mcp?: boolean
+  /** Block when the scan found OpenAPI/auth/schema quality gaps.
+   *  Triggered by `rule_id === 'openapi-schema'`. */
+  block_if_schema_auth_gap?: boolean
+}
+
+/**
+ * Per-project eval rules. These are global defaults that apply to
+ * *every* agent — distinct from `policy.agents.<name>.*` which is a
+ * per-agent override. The evaluator merges: per-agent rules win,
+ * otherwise the global rule fires.
+ *
+ * Setting `enabled` on a rule to `false` short-circuits it (rule is
+ * marked inapplicable so users see "skipped — disabled" rather than
+ * "passed", which would be misleading).
+ */
+export interface EvalsPolicy {
+  /** Block when accuracy regresses vs base metrics (target < base).
+   *  When off, accuracy drops are warnings, not blocks. */
+  block_if_accuracy_drops?: boolean
+  /** Absolute floor for accuracy (0..1). Applied to every agent that
+   *  has metrics. Per-agent `agents.<name>.accuracy.min_absolute`
+   *  overrides this when present. */
+  min_accuracy?: number
+  /** Block when runtime regresses vs base metrics. */
+  block_if_runtime_increases?: boolean
+  /** Absolute ceiling for the p95 runtime in ms. Applied to every
+   *  agent that has `runtime_ms`. */
+  max_runtime_p95_ms?: number
+  /** Block when tool-selection pass rate regresses. */
+  block_if_tool_selection_drops?: boolean
+  /** Absolute floor for tool-selection pass rate (0..1). */
+  min_tool_selection_pass_rate?: number
+  /** Block when the project declares evals but no eval metrics were
+   *  supplied to the gate. Surfaces "you forgot to run evals" instead
+   *  of silently passing on missing data. */
+  block_if_required_evals_missing?: boolean
+  /** Block when behavioural / unit tests fail. The eval runner reports
+   *  test results in its `meta.testsPassed/testsFailed` payload. */
+  block_if_tests_fail?: boolean
+}
+
+/**
+ * Pre-commit gate rules. Backend honours these in /api/git/commit.
+ */
+export interface CommitPolicy {
+  block_if_policy_blocks?: boolean
+  run_scan_before_commit?: boolean
+}
+
+/**
+ * Pre-push gate rules. Backend honours these in /api/git/push.
+ */
+export interface PushPolicy {
+  block_if_policy_blocks?: boolean
+  run_scan_before_push?: boolean
 }
 
 export interface AutoMergePolicy {
@@ -86,6 +171,12 @@ export interface AutoMergePolicy {
    * don't accidentally inherit warn-as-pass semantics.
    */
   require_policy_pass?: boolean
+  /** Belt-and-braces severity guards layered on top of the broader
+   *  policy decision. Each is independent so users can pick the level
+   *  of paranoia they want. */
+  require_no_critical_or_high?: boolean
+  require_accuracy_not_drop?: boolean
+  require_runtime_not_increase?: boolean
 }
 
 /**
@@ -108,14 +199,30 @@ export interface PullRequestPolicy {
   block_if_policy_blocks?: boolean
   /** Default base branch suggested in the Create PR dialog. */
   base_branch?: string
+  /** When true, the Create-PR route insists on a fresh policy gate
+   *  before talking to GitHub. When false, the caller can skip the
+   *  pre-flight (e.g. for repos that gate elsewhere). Defaults to
+   *  true. */
+  run_policy_gate_before_pr?: boolean
+  /** Refuse to create the PR if the working tree is dirty. Prevents
+   *  the "I accidentally PR'd uncommitted edits" footgun. */
+  require_clean_worktree?: boolean
+  /** Refuse to create a PR whose *source* branch is `main` or
+   *  `master`. Catches the "I committed straight to main and then
+   *  tried to PR it" footgun. */
+  block_pr_from_main_or_master?: boolean
 }
 
 export interface Policy {
   mode: PolicyMode
   security: SecurityPolicy
+  /** Global eval rules (apply to every agent unless `agents.<name>` overrides). */
+  evals: EvalsPolicy
   agents: Record<string, AgentPolicy>
   auto_merge: AutoMergePolicy
   pull_request: PullRequestPolicy
+  commit: CommitPolicy
+  push: PushPolicy
 }
 
 /** Per-agent metrics handed in by the (future) eval runner. */
@@ -219,7 +326,27 @@ export const DEFAULT_POLICY: Policy = {
   security: {
     block_if_critical: true,
     block_if_high_increased: true,
+    block_if_medium_increased: false,
     require_risk_score_not_increase: true,
+    max_risk_score: 70,
+    max_risk_score_increase: 0,
+    max_critical_findings: 0,
+    max_high_findings: 0,
+    block_if_secrets_found: true,
+    block_if_dangerous_tool_without_approval: true,
+    block_if_user_input_to_dangerous_code: true,
+    block_if_unsafe_mcp: true,
+    block_if_schema_auth_gap: true,
+  },
+  evals: {
+    block_if_accuracy_drops: true,
+    min_accuracy: 0.85,
+    block_if_runtime_increases: true,
+    max_runtime_p95_ms: 2000,
+    block_if_tool_selection_drops: true,
+    min_tool_selection_pass_rate: 0.9,
+    block_if_required_evals_missing: false,
+    block_if_tests_fail: true,
   },
   agents: {},
   auto_merge: {
@@ -228,12 +355,26 @@ export const DEFAULT_POLICY: Policy = {
     require_clean_worktree: true,
     require_branch_not_main: true,
     require_policy_pass: true,
+    require_no_critical_or_high: true,
+    require_accuracy_not_drop: true,
+    require_runtime_not_increase: true,
   },
   pull_request: {
     create_if_policy_passes: true,
     create_draft_if_warn: true,
     block_if_policy_blocks: true,
     base_branch: "main",
+    run_policy_gate_before_pr: true,
+    require_clean_worktree: true,
+    block_pr_from_main_or_master: true,
+  },
+  commit: {
+    block_if_policy_blocks: true,
+    run_scan_before_commit: true,
+  },
+  push: {
+    block_if_policy_blocks: true,
+    run_scan_before_push: true,
   },
 }
 
@@ -247,8 +388,47 @@ const SecuritySchema = z
   .object({
     block_if_critical: z.boolean().optional(),
     block_if_high_increased: z.boolean().optional(),
+    block_if_medium_increased: z.boolean().optional(),
     require_risk_score_not_increase: z.boolean().optional(),
     max_risk_score: z.number().optional(),
+    max_risk_score_increase: z.number().optional(),
+    max_critical_findings: z.number().optional(),
+    max_high_findings: z.number().optional(),
+    block_if_secrets_found: z.boolean().optional(),
+    block_if_dangerous_tool_without_approval: z.boolean().optional(),
+    block_if_user_input_to_dangerous_code: z.boolean().optional(),
+    block_if_unsafe_mcp: z.boolean().optional(),
+    block_if_schema_auth_gap: z.boolean().optional(),
+  })
+  .partial()
+  .passthrough()
+
+const EvalsSchema = z
+  .object({
+    block_if_accuracy_drops: z.boolean().optional(),
+    min_accuracy: z.number().optional(),
+    block_if_runtime_increases: z.boolean().optional(),
+    max_runtime_p95_ms: z.number().optional(),
+    block_if_tool_selection_drops: z.boolean().optional(),
+    min_tool_selection_pass_rate: z.number().optional(),
+    block_if_required_evals_missing: z.boolean().optional(),
+    block_if_tests_fail: z.boolean().optional(),
+  })
+  .partial()
+  .passthrough()
+
+const CommitSchema = z
+  .object({
+    block_if_policy_blocks: z.boolean().optional(),
+    run_scan_before_commit: z.boolean().optional(),
+  })
+  .partial()
+  .passthrough()
+
+const PushSchema = z
+  .object({
+    block_if_policy_blocks: z.boolean().optional(),
+    run_scan_before_push: z.boolean().optional(),
   })
   .partial()
   .passthrough()
@@ -288,6 +468,9 @@ const AutoMergeSchema = z
     require_clean_worktree: z.boolean().optional(),
     require_branch_not_main: z.boolean().optional(),
     require_policy_pass: z.boolean().optional(),
+    require_no_critical_or_high: z.boolean().optional(),
+    require_accuracy_not_drop: z.boolean().optional(),
+    require_runtime_not_increase: z.boolean().optional(),
   })
   .passthrough()
 
@@ -297,6 +480,9 @@ const PullRequestSchema = z
     create_draft_if_warn: z.boolean().optional(),
     block_if_policy_blocks: z.boolean().optional(),
     base_branch: z.string().optional(),
+    run_policy_gate_before_pr: z.boolean().optional(),
+    require_clean_worktree: z.boolean().optional(),
+    block_pr_from_main_or_master: z.boolean().optional(),
   })
   .passthrough()
 
@@ -304,9 +490,12 @@ const PolicySchema = z
   .object({
     mode: ModeSchema.optional(),
     security: SecuritySchema.optional(),
+    evals: EvalsSchema.optional(),
     agents: z.record(z.string(), AgentPolicySchema).optional(),
     auto_merge: AutoMergeSchema.optional(),
     pull_request: PullRequestSchema.optional(),
+    commit: CommitSchema.optional(),
+    push: PushSchema.optional(),
   })
   .passthrough()
 
@@ -350,6 +539,10 @@ export function parsePolicyYaml(yamlText: string): ParsePolicyResult {
       ...DEFAULT_POLICY.security,
       ...(v.security ?? {}),
     },
+    evals: {
+      ...DEFAULT_POLICY.evals,
+      ...(v.evals ?? {}),
+    },
     agents: { ...(v.agents ?? {}) },
     auto_merge: {
       ...DEFAULT_POLICY.auto_merge,
@@ -359,8 +552,114 @@ export function parsePolicyYaml(yamlText: string): ParsePolicyResult {
       ...DEFAULT_POLICY.pull_request,
       ...(v.pull_request ?? {}),
     },
+    commit: {
+      ...DEFAULT_POLICY.commit,
+      ...(v.commit ?? {}),
+    },
+    push: {
+      ...DEFAULT_POLICY.push,
+      ...(v.push ?? {}),
+    },
   }
   return { policy, errors, parsed: true }
+}
+
+/* -------------------------------------------------------------------------- */
+/* YAML serialiser                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Serialise a `Policy` back to YAML. Used by `/api/policy/save` and by
+ * the Settings → Policy Rules "Save" button. We pin the key order so
+ * generated files diff nicely (top-level first, then sections in the
+ * same order as the type), and we strip undefined keys so saved files
+ * are minimal.
+ */
+export function serializePolicyToYaml(policy: Policy): string {
+  const sorted = orderPolicy(policy)
+  const header = [
+    "# Edge Agent AI policy file",
+    "# This file is consumed by .edgeagent / Edge Agent AI to gate commits,",
+    "# pushes, and PR creation. Generated by the Settings → Policy Rules UI;",
+    "# safe to hand-edit (lenient YAML parser merges over the defaults).",
+    "",
+  ].join("\n")
+  return header + YAML.stringify(sorted, { indent: 2, lineWidth: 0 })
+}
+
+function orderPolicy(p: Policy): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  out.mode = p.mode
+  out.security = orderKeys(p.security, [
+    "block_if_critical",
+    "block_if_high_increased",
+    "block_if_medium_increased",
+    "require_risk_score_not_increase",
+    "max_risk_score",
+    "max_risk_score_increase",
+    "max_critical_findings",
+    "max_high_findings",
+    "block_if_secrets_found",
+    "block_if_dangerous_tool_without_approval",
+    "block_if_user_input_to_dangerous_code",
+    "block_if_unsafe_mcp",
+    "block_if_schema_auth_gap",
+  ])
+  out.evals = orderKeys(p.evals, [
+    "block_if_accuracy_drops",
+    "min_accuracy",
+    "block_if_runtime_increases",
+    "max_runtime_p95_ms",
+    "block_if_tool_selection_drops",
+    "min_tool_selection_pass_rate",
+    "block_if_required_evals_missing",
+    "block_if_tests_fail",
+  ])
+  // Drop the `agents` block entirely when empty so the YAML stays
+  // focused on what the user actually configured.
+  if (p.agents && Object.keys(p.agents).length > 0) {
+    out.agents = p.agents
+  }
+  out.pull_request = orderKeys(p.pull_request, [
+    "create_if_policy_passes",
+    "create_draft_if_warn",
+    "block_if_policy_blocks",
+    "base_branch",
+    "run_policy_gate_before_pr",
+    "require_clean_worktree",
+    "block_pr_from_main_or_master",
+  ])
+  out.push = orderKeys(p.push, ["block_if_policy_blocks", "run_scan_before_push"])
+  out.commit = orderKeys(p.commit, [
+    "block_if_policy_blocks",
+    "run_scan_before_commit",
+  ])
+  out.auto_merge = orderKeys(p.auto_merge, [
+    "enabled",
+    "trusted_branches_only",
+    "require_clean_worktree",
+    "require_branch_not_main",
+    "require_policy_pass",
+    "require_no_critical_or_high",
+    "require_accuracy_not_drop",
+    "require_runtime_not_increase",
+  ])
+  return out
+}
+
+function orderKeys(
+  obj: object | undefined,
+  order: string[]
+): Record<string, unknown> {
+  const src = (obj ?? {}) as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const k of order) {
+    if (src[k] !== undefined) out[k] = src[k]
+  }
+  for (const k of Object.keys(src)) {
+    if (!(k in out)) out[k] = src[k]
+  }
+  return out
 }
 
 /* -------------------------------------------------------------------------- */
@@ -415,6 +714,26 @@ function matchGlob(value: string, pattern: string): boolean {
 
 const METRICS_MISSING_SENTENCE =
   "Accuracy/runtime metrics are unavailable because eval runner has not been run."
+
+/**
+ * Lite reports passed by Branch Compare don't include the findings
+ * array (the route only needs risk+summary). Detect that case so the
+ * rule-id-driven security checks can mark themselves inapplicable
+ * instead of silently passing a partial payload.
+ */
+function targetReportFindings(
+  report: ScanReport
+): { rule_id: string; agent: string }[] | null {
+  const f = (report as unknown as { findings?: unknown }).findings
+  if (!Array.isArray(f)) return null
+  // Tolerant: any entry missing rule_id is dropped.
+  return f
+    .filter(
+      (x): x is { rule_id: string; agent?: string } =>
+        x != null && typeof x === "object" && typeof (x as { rule_id?: unknown }).rule_id === "string"
+    )
+    .map((x) => ({ rule_id: x.rule_id, agent: typeof x.agent === "string" ? x.agent : "" }))
+}
 
 export function evaluatePolicy(input: EvaluatePolicyInput): PolicyEvaluation {
   const { baseReport, targetReport, baseMetrics, targetMetrics, policy, context } =
@@ -500,6 +819,158 @@ export function evaluatePolicy(input: EvaluatePolicyInput): PolicyEvaluation {
       )
     } else {
       passedConditions.push("security.max_risk_score")
+    }
+  }
+
+  // block_if_medium_increased (delta)
+  if (sec.block_if_medium_increased) {
+    if (!bSum) {
+      inapplicableConditions.push("security.block_if_medium_increased")
+    } else if (tSum.medium > bSum.medium) {
+      const sev = severityFor(policy.mode, true)
+      severity = escalate(severity, sev)
+      failedConditions.push("security.block_if_medium_increased")
+      reasons.push(
+        `${sev === "block" ? "Blocked" : "Warning"}: medium findings increased ${bSum.medium} → ${tSum.medium} (+${tSum.medium - bSum.medium}).`
+      )
+    } else {
+      passedConditions.push("security.block_if_medium_increased")
+    }
+  }
+
+  // max_risk_score_increase (delta ceiling)
+  if (typeof sec.max_risk_score_increase === "number") {
+    if (!baseReport) {
+      inapplicableConditions.push("security.max_risk_score_increase")
+    } else {
+      const delta = targetReport.risk_score - baseReport.risk_score
+      if (delta > sec.max_risk_score_increase) {
+        const sev = severityFor(policy.mode, true)
+        severity = escalate(severity, sev)
+        failedConditions.push("security.max_risk_score_increase")
+        reasons.push(
+          `${sev === "block" ? "Blocked" : "Warning"}: risk score increased by ${signed(delta)} (allowed: +${sec.max_risk_score_increase}).`
+        )
+      } else {
+        passedConditions.push("security.max_risk_score_increase")
+      }
+    }
+  }
+
+  // max_critical_findings (absolute ceiling)
+  if (typeof sec.max_critical_findings === "number") {
+    if (tSum.critical > sec.max_critical_findings) {
+      const sev = severityFor(policy.mode, true)
+      severity = escalate(severity, sev)
+      failedConditions.push("security.max_critical_findings")
+      reasons.push(
+        `${sev === "block" ? "Blocked" : "Warning"}: ${tSum.critical} critical findings exceed ceiling ${sec.max_critical_findings}.`
+      )
+    } else {
+      passedConditions.push("security.max_critical_findings")
+    }
+  }
+
+  // max_high_findings (absolute ceiling)
+  if (typeof sec.max_high_findings === "number") {
+    if (tSum.high > sec.max_high_findings) {
+      const sev = severityFor(policy.mode, true)
+      severity = escalate(severity, sev)
+      failedConditions.push("security.max_high_findings")
+      reasons.push(
+        `${sev === "block" ? "Blocked" : "Warning"}: ${tSum.high} high findings exceed ceiling ${sec.max_high_findings}.`
+      )
+    } else {
+      passedConditions.push("security.max_high_findings")
+    }
+  }
+
+  // ── Rule-id-driven security checks ──────────────────────────────
+  // These look at the actual findings array on the report. When the
+  // caller passed a lite report (no findings), every one of these is
+  // marked inapplicable rather than silently passing — otherwise a
+  // partial payload could let a real secret leak through the gate.
+  const findings = targetReportFindings(targetReport)
+  const ruleIdSet = findings == null ? null : new Set(findings.map((f) => f.rule_id))
+
+  const ruleIdRules: {
+    cond: string
+    enabled: boolean
+    triggerRuleIds: string[]
+    explain: (matches: string[]) => string
+  }[] = [
+    {
+      cond: "security.block_if_secrets_found",
+      enabled: !!sec.block_if_secrets_found,
+      triggerRuleIds: ["secrets"],
+      explain: () => "secret-like values were detected in source",
+    },
+    {
+      cond: "security.block_if_user_input_to_dangerous_code",
+      enabled: !!sec.block_if_user_input_to_dangerous_code,
+      triggerRuleIds: ["user-input-dangerous-code", "prompt-injection"],
+      explain: () => "user input can flow into dangerous code paths",
+    },
+    {
+      cond: "security.block_if_unsafe_mcp",
+      enabled: !!sec.block_if_unsafe_mcp,
+      triggerRuleIds: ["mcp-security"],
+      explain: () => "MCP configuration looks unsafe",
+    },
+    {
+      cond: "security.block_if_schema_auth_gap",
+      enabled: !!sec.block_if_schema_auth_gap,
+      triggerRuleIds: ["openapi-schema"],
+      explain: () => "OpenAPI / auth / schema quality issues were found",
+    },
+  ]
+  for (const r of ruleIdRules) {
+    if (!r.enabled) continue
+    if (ruleIdSet == null) {
+      inapplicableConditions.push(r.cond)
+      continue
+    }
+    const hits = r.triggerRuleIds.filter((id) => ruleIdSet.has(id))
+    if (hits.length > 0) {
+      const sev = severityFor(policy.mode, true)
+      severity = escalate(severity, sev)
+      failedConditions.push(r.cond)
+      reasons.push(
+        `${sev === "block" ? "Blocked" : "Warning"}: ${r.explain(hits)}.`
+      )
+    } else {
+      passedConditions.push(r.cond)
+    }
+  }
+
+  // block_if_dangerous_tool_without_approval — co-occurrence check
+  if (sec.block_if_dangerous_tool_without_approval) {
+    const cond = "security.block_if_dangerous_tool_without_approval"
+    if (findings == null) {
+      inapplicableConditions.push(cond)
+    } else {
+      // We block when ANY agent has a dangerous-tools finding AND no
+      // matching human-approval finding (i.e. no approval gate was
+      // detected for that agent). Per-agent rather than per-file to
+      // mirror how the scanner attributes findings.
+      const dangerousAgents = new Set<string>()
+      const approvedAgents = new Set<string>()
+      for (const f of findings) {
+        if (f.rule_id === "dangerous-tools") dangerousAgents.add(f.agent || "")
+        if (f.rule_id === "human-approval") approvedAgents.add(f.agent || "")
+      }
+      const unguarded = [...dangerousAgents].filter((a) => !approvedAgents.has(a))
+      if (unguarded.length > 0) {
+        const sev = severityFor(policy.mode, true)
+        severity = escalate(severity, sev)
+        failedConditions.push(cond)
+        const sample = unguarded.filter(Boolean).slice(0, 3).join(", ")
+        reasons.push(
+          `${sev === "block" ? "Blocked" : "Warning"}: dangerous tools without an approval gate${sample ? ` (agents: ${sample})` : ""}.`
+        )
+      } else {
+        passedConditions.push(cond)
+      }
     }
   }
 
@@ -643,6 +1114,166 @@ export function evaluatePolicy(input: EvaluatePolicyInput): PolicyEvaluation {
     }
   }
 
+  /* ---------------- Global eval rules ----------------
+   * These mirror the policy.evals.* keys and apply to *every* agent
+   * that has metrics. Per-agent rules above already handle bespoke
+   * overrides; the global rules are the cheap "block on any agent
+   * regressing" defaults. Agents with no metrics are skipped silently
+   * (the per-agent path already emits the missing-metrics warning).
+   */
+  const evals = policy.evals ?? {}
+  const allAgentNames = new Set<string>([
+    ...Object.keys(targetMetrics ?? {}),
+    ...Object.keys(baseMetrics ?? {}),
+  ])
+
+  const applyGlobalEvalRule = (params: {
+    cond: string
+    enabled: boolean
+    check: (agent: string, tm: AgentMetrics | null, bm: AgentMetrics | null) => string | null
+  }) => {
+    if (!params.enabled) return
+    if (allAgentNames.size === 0) {
+      inapplicableConditions.push(params.cond)
+      return
+    }
+    const fails: string[] = []
+    for (const agent of allAgentNames) {
+      const tm = targetMetrics?.[agent] ?? null
+      const bm = baseMetrics?.[agent] ?? null
+      // Per-agent overrides win — don't double-count if user
+      // explicitly configured the same dimension below `agents.*`.
+      const r = params.check(agent, tm, bm)
+      if (r) fails.push(r)
+    }
+    if (fails.length > 0) {
+      const sev = severityFor(policy.mode, true)
+      severity = escalate(severity, sev)
+      failedConditions.push(params.cond)
+      reasons.push(
+        `${sev === "block" ? "Blocked" : "Warning"}: ${fails.slice(0, 3).join("; ")}${fails.length > 3 ? `; +${fails.length - 3} more` : ""}.`
+      )
+    } else {
+      passedConditions.push(params.cond)
+    }
+  }
+
+  applyGlobalEvalRule({
+    cond: "evals.block_if_accuracy_drops",
+    enabled: !!evals.block_if_accuracy_drops,
+    check: (agent, tm, bm) => {
+      if (tm?.accuracy == null || bm?.accuracy == null) return null
+      if (tm.accuracy >= bm.accuracy) return null
+      return `${agent} accuracy ${pct(bm.accuracy)} → ${pct(tm.accuracy)}`
+    },
+  })
+
+  applyGlobalEvalRule({
+    cond: "evals.min_accuracy",
+    enabled: typeof evals.min_accuracy === "number",
+    check: (agent, tm) => {
+      if (tm?.accuracy == null) return null
+      if (tm.accuracy >= (evals.min_accuracy as number)) return null
+      return `${agent} accuracy ${pct(tm.accuracy)} below floor ${pct(evals.min_accuracy as number)}`
+    },
+  })
+
+  applyGlobalEvalRule({
+    cond: "evals.block_if_runtime_increases",
+    enabled: !!evals.block_if_runtime_increases,
+    check: (agent, tm, bm) => {
+      if (tm?.runtime_ms == null || bm?.runtime_ms == null) return null
+      if (tm.runtime_ms <= bm.runtime_ms) return null
+      return `${agent} runtime ${bm.runtime_ms}ms → ${tm.runtime_ms}ms`
+    },
+  })
+
+  applyGlobalEvalRule({
+    cond: "evals.max_runtime_p95_ms",
+    enabled: typeof evals.max_runtime_p95_ms === "number",
+    check: (agent, tm) => {
+      if (tm?.runtime_ms == null) return null
+      if (tm.runtime_ms <= (evals.max_runtime_p95_ms as number)) return null
+      return `${agent} runtime ${tm.runtime_ms}ms above ceiling ${evals.max_runtime_p95_ms}ms`
+    },
+  })
+
+  applyGlobalEvalRule({
+    cond: "evals.block_if_tool_selection_drops",
+    enabled: !!evals.block_if_tool_selection_drops,
+    check: (agent, tm, bm) => {
+      if (tm?.tool_selection_pass_rate == null || bm?.tool_selection_pass_rate == null) return null
+      if (tm.tool_selection_pass_rate >= bm.tool_selection_pass_rate) return null
+      return `${agent} tool-selection pass rate ${pct(bm.tool_selection_pass_rate)} → ${pct(tm.tool_selection_pass_rate)}`
+    },
+  })
+
+  applyGlobalEvalRule({
+    cond: "evals.min_tool_selection_pass_rate",
+    enabled: typeof evals.min_tool_selection_pass_rate === "number",
+    check: (agent, tm) => {
+      if (tm?.tool_selection_pass_rate == null) return null
+      if (tm.tool_selection_pass_rate >= (evals.min_tool_selection_pass_rate as number))
+        return null
+      return `${agent} tool-selection pass rate ${pct(tm.tool_selection_pass_rate)} below floor ${pct(evals.min_tool_selection_pass_rate as number)}`
+    },
+  })
+
+  // block_if_required_evals_missing — fires when the project declares
+  // agent policies (agents.*) but no metrics arrived from the eval
+  // runner. Surfaces "you forgot to run evals" instead of silently
+  // passing on missing data.
+  if (evals.block_if_required_evals_missing) {
+    const declared = Object.keys(policy.agents ?? {})
+    if (declared.length === 0) {
+      inapplicableConditions.push("evals.block_if_required_evals_missing")
+    } else {
+      const missing = declared.filter(
+        (a) => !targetMetrics || targetMetrics[a] == null
+      )
+      if (missing.length > 0) {
+        const sev = severityFor(policy.mode, true)
+        severity = escalate(severity, sev)
+        failedConditions.push("evals.block_if_required_evals_missing")
+        reasons.push(
+          `${sev === "block" ? "Blocked" : "Warning"}: required eval metrics missing for ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ""}.`
+        )
+      } else {
+        passedConditions.push("evals.block_if_required_evals_missing")
+      }
+    }
+  }
+
+  // block_if_tests_fail — opt-in. The eval runner stamps each agent's
+  // metrics with `tests_failed` when available; if any agent reports
+  // > 0 failures we block. Unknown counts are skipped (inapplicable).
+  if (evals.block_if_tests_fail) {
+    const cond = "evals.block_if_tests_fail"
+    type WithTests = AgentMetrics & { tests_failed?: number; tests_passed?: number }
+    const failing: string[] = []
+    let anyKnown = false
+    for (const [agent, m] of Object.entries((targetMetrics ?? {}) as Record<string, WithTests>)) {
+      if (typeof m?.tests_failed === "number") {
+        anyKnown = true
+        if (m.tests_failed > 0) {
+          failing.push(`${agent} (${m.tests_failed} failed)`)
+        }
+      }
+    }
+    if (!anyKnown) {
+      inapplicableConditions.push(cond)
+    } else if (failing.length > 0) {
+      const sev = severityFor(policy.mode, true)
+      severity = escalate(severity, sev)
+      failedConditions.push(cond)
+      reasons.push(
+        `${sev === "block" ? "Blocked" : "Warning"}: tests failed: ${failing.slice(0, 3).join("; ")}${failing.length > 3 ? `; +${failing.length - 3} more` : ""}.`
+      )
+    } else {
+      passedConditions.push(cond)
+    }
+  }
+
   /* ---------------- Auto-merge gating ----------------
    *
    * Auto-merge only escalates a `pass` to `auto_merge_allowed`. The
@@ -685,6 +1316,31 @@ export function evaluatePolicy(input: EvaluatePolicyInput): PolicyEvaluation {
       const b = (context?.branch ?? "").toLowerCase()
       if (b === "main" || b === "master") {
         gates.push(`branch '${context?.branch}' is the base/default branch`)
+      }
+    }
+    if (policy.auto_merge.require_no_critical_or_high) {
+      if (tSum.critical > 0 || tSum.high > 0) {
+        gates.push(
+          `target has ${tSum.critical} critical / ${tSum.high} high findings`
+        )
+      }
+    }
+    if (policy.auto_merge.require_accuracy_not_drop) {
+      const drops: string[] = []
+      for (const [agent, m] of Object.entries(perAgentDeltas)) {
+        if (m.accuracy !== null && m.accuracy < 0) drops.push(agent)
+      }
+      if (drops.length > 0) {
+        gates.push(`accuracy dropped for ${drops.slice(0, 3).join(", ")}`)
+      }
+    }
+    if (policy.auto_merge.require_runtime_not_increase) {
+      const ups: string[] = []
+      for (const [agent, m] of Object.entries(perAgentDeltas)) {
+        if (m.runtime_ms !== null && m.runtime_ms > 0) ups.push(agent)
+      }
+      if (ups.length > 0) {
+        gates.push(`runtime increased for ${ups.slice(0, 3).join(", ")}`)
       }
     }
     if (gates.length === 0) {

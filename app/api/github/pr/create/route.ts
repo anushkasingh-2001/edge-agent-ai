@@ -229,10 +229,58 @@ export async function POST(request: Request) {
      * Policy file is authoritative.
      * ----------------------------------------------------------------- */
     const policyForGateDecision = loadPolicyFor(resolved)
+    const prPolicy = policyForGateDecision.policy.pull_request ?? {}
     const policyEnforces = policyForGateDecision.policy.mode === "block"
+    // run_policy_gate_before_pr defaults to true — explicit
+    // `false` is the opt-out for repos that gate elsewhere.
+    const policyForcesGate = prPolicy.run_policy_gate_before_pr !== false
     const requestedGate = body.runPolicyGate !== false
-    const runPolicyGate = policyEnforces || requestedGate
-    const gateForcedByPolicy = policyEnforces && !requestedGate
+    const runPolicyGate = policyEnforces || policyForcesGate || requestedGate
+    const gateForcedByPolicy =
+      (policyEnforces || policyForcesGate) && !requestedGate
+
+    // block_pr_from_main_or_master — refuse to create a PR whose
+    // SOURCE branch is `main`/`master`. This catches the
+    // "I committed straight to main and then tried to PR it" footgun.
+    if (prPolicy.block_pr_from_main_or_master) {
+      const headLower = (head ?? "").toLowerCase()
+      if (headLower === "main" || headLower === "master") {
+        return NextResponse.json(
+          {
+            ok: false,
+            created: false,
+            blocked: true,
+            reason: "pr_from_default_branch",
+            message: `Policy refuses to create a PR with source branch '${head}'. Create a feature branch first.`,
+            policy: policyForGateDecision.policy,
+            policySource: policyForGateDecision.policySource,
+            policyErrors: policyForGateDecision.policyErrors,
+          },
+          { status: 409 }
+        )
+      }
+    }
+
+    // require_clean_worktree — refuse to PR uncommitted changes.
+    if (prPolicy.require_clean_worktree) {
+      const st = runGit(resolved, ["status", "--porcelain"])
+      if (st.status === 0 && st.stdout.trim().length > 0) {
+        return NextResponse.json(
+          {
+            ok: false,
+            created: false,
+            blocked: true,
+            reason: "dirty_worktree",
+            message:
+              "Policy requires a clean working tree before creating a PR. Commit, stash, or discard your changes first.",
+            policy: policyForGateDecision.policy,
+            policySource: policyForGateDecision.policySource,
+            policyErrors: policyForGateDecision.policyErrors,
+          },
+          { status: 409 }
+        )
+      }
+    }
     let scan: Awaited<ReturnType<typeof runScannerOn>> | null = null
     let evaluation: PolicyEvaluation | null = null
     let policyMeta:

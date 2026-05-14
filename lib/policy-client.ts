@@ -49,11 +49,29 @@ export interface PolicyApiResponse {
 }
 
 export async function loadPolicy(projectPath: string): Promise<PolicyApiResponse> {
-  const url = `/api/policy/evaluate?projectPath=${encodeURIComponent(
-    projectPath
-  )}`
+  const url = `/api/policy/load?projectPath=${encodeURIComponent(projectPath)}`
   const res = await fetch(url, { method: "GET" })
   return (await res.json()) as PolicyApiResponse
+}
+
+/**
+ * Persist a Policy to `<projectPath>/.edgeagent/policy.yaml`. Returns
+ * the freshly re-parsed policy so the caller can keep its in-memory
+ * copy in sync without a second GET.
+ */
+export async function savePolicy(args: {
+  projectPath: string
+  policy: Policy
+}): Promise<PolicyApiResponse & { saved?: boolean; bytesWritten?: number }> {
+  const res = await fetch("/api/policy/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return (await res.json()) as PolicyApiResponse & {
+    saved?: boolean
+    bytesWritten?: number
+  }
 }
 
 export async function evaluatePolicyApi(args: {

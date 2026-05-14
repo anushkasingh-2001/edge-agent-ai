@@ -59,15 +59,33 @@ import {
   type GitHubStatusResponse,
 } from "@/lib/github-client"
 import { GithubLoginDialog } from "@/components/github-login-dialog"
+import { PolicyRulesCard } from "@/components/views/policy-rules-card"
+import type { Project } from "@/lib/projects"
+import type { ScanReport } from "@/lib/scan-report"
 
 export interface SettingsProps {
   /** Currently opened project's filesystem path. Required for the
    *  "Selected project remote" + permission lookup in the GitHub
    *  Account card. Null when no project is open. */
   projectPath?: string | null
+  /** Full Project record — needed by the Policy Rules card so it can
+   *  load / save .edgeagent/policy.yaml and persist the latest
+   *  policy result to localStorage. Falling back to null when no
+   *  project is open. */
+  project?: Project | null
+  /** Latest scan report — used by "Test policy on latest scan". */
+  scanReport?: ScanReport | null
+  /** Current branch — passed into the policy test so the right
+   *  baseline is loaded. */
+  currentBranch?: string | null
 }
 
-export function Settings({ projectPath = null }: SettingsProps = {}) {
+export function Settings({
+  projectPath = null,
+  project = null,
+  scanReport = null,
+  currentBranch = null,
+}: SettingsProps = {}) {
   const { theme, setTheme } = useTheme()
   const [webhookEnabled, setWebhookEnabled] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -158,6 +176,16 @@ export function Settings({ projectPath = null }: SettingsProps = {}) {
           actually use before they run it. Settings is the canonical
           place to fix "wrong account cached" type errors. */}
       <GitHubAccountCard projectPath={projectPath} />
+
+      {/* B3. Policy Rules — authoritative editor for
+          .edgeagent/policy.yaml. Lives in Settings so users can
+          discover and edit gates from one place. Exports to backend
+          on save; backend enforcement is unchanged. */}
+      <PolicyRulesCard
+        project={project}
+        scanReport={scanReport}
+        currentBranch={currentBranch}
+      />
 
       {/* C. Scan Preferences */}
       <Card className="bg-card border-border">

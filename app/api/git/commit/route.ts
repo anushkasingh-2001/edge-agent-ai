@@ -114,10 +114,18 @@ export async function POST(request: Request) {
     // says it should block. The policy file is now authoritative —
     // not a UI checkbox.
     const loaded = loadPolicyFor(resolved)
+    // The commit section of the policy now controls whether we MUST
+    // run the scan and whether a `block` decision actually blocks. The
+    // policy file is authoritative; client toggles in the dialog are
+    // a UX hint that policy can override either way.
+    const commitPolicy = loaded.policy.commit ?? {}
     const policyEnforces = loaded.policy.mode === "block"
+    const policyForcesScan = commitPolicy.run_scan_before_commit !== false
     const requestedScan = !!body.runScanBeforeCommit
-    const runScan = policyEnforces || requestedScan
-    const scanForcedByPolicy = policyEnforces && !requestedScan
+    const runScan = policyEnforces || policyForcesScan || requestedScan
+    const scanForcedByPolicy =
+      (policyEnforces || policyForcesScan) && !requestedScan
+    const blockOnPolicyBlock = commitPolicy.block_if_policy_blocks !== false
     const warnOnCritical = !!body.warnOnCriticalFindings
 
     let scan: Awaited<ReturnType<typeof runScannerOn>> | null = null
@@ -192,7 +200,8 @@ export async function POST(request: Request) {
         scanForcedByPolicy,
       }
 
-      const policyBlocks = policyEval.decision === "block"
+      const policyBlocks =
+        policyEval.decision === "block" && blockOnPolicyBlock
       const fallbackBlocks =
         loaded.policySource === "default" &&
         warnOnCritical &&

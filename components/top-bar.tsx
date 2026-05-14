@@ -51,6 +51,7 @@ import {
   type ScanReport,
 } from "@/lib/scan-report"
 import type { Project } from "@/lib/projects"
+import type { PolicyApiResponse } from "@/lib/policy-client"
 import { fetchGitStatus, type GitStatusResponse } from "@/lib/git-client"
 import {
   CommitDialog,
@@ -103,6 +104,10 @@ interface TopBarProps {
   scanReport?: ScanReport | null
   /** Selected project — used in the export filename / markdown header. */
   project?: Project | null
+  /** Latest policy evaluation. When present the Export Report dropdown
+   *  grows two extra "Export policy report" options. Optional so the
+   *  top-bar works fine before a policy evaluation has run. */
+  policyResponse?: PolicyApiResponse | null
   /**
    * Called after a successful Pull / Commit / Push so the parent can
    * re-fetch the branch list and update headline state. Optional —
@@ -148,6 +153,7 @@ export function TopBar({
   gitLoading = false,
   scanReport = null,
   project = null,
+  policyResponse = null,
   onGitOpComplete,
 }: TopBarProps) {
   const agents = agentOptions
@@ -721,6 +727,7 @@ export function TopBar({
             report={scanReport}
             project={project}
             branch={currentBranch}
+            policy={policyResponse}
           />
         </div>
       </TooltipProvider>
