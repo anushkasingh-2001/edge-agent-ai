@@ -62,7 +62,7 @@ import {
   type BehavioralStatus,
   type BehavioralTestCase,
 } from "@/lib/behavioral-tests-client"
-import type { FixTarget } from "@/lib/finding-fixes-client"
+import type { FixTarget, RunFixesResult } from "@/lib/finding-fixes-client"
 
 export type Finding = UiFinding
 
@@ -280,14 +280,58 @@ function CodeAnalysisPanel({
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
 
+  /**
+   * Session-local set of finding ref_ids that the fix engine successfully
+   * applied. After Apply-all the user expects the "Fix all (61)" badge to
+   * shrink — but the `findings` prop is owned by the parent and only
+   * refreshes on the next scan. Tracking applied refs here lets us hide
+   * the fixed rows immediately. The set is cleared when the parent passes
+   * a brand-new findings array (re-scan), so we don't permanently hide
+   * findings that re-appear.
+   */
+  const [appliedRefIds, setAppliedRefIds] = useState<Set<string>>(new Set())
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setAppliedRefIds(new Set()), [findings])
+
+  const handleApplied = useCallback((r: RunFixesResult) => {
+    setAppliedRefIds((prev) => {
+      const next = new Set(prev)
+      for (const p of r.proposals) {
+        // Hide BOTH freshly-applied AND idempotently-skipped rows. The
+        // engine treats both as "handled" — a fix marker is in place
+        // above the offending line either way. Without this, a Fix-all
+        // re-run on a project that had been fixed in a previous
+        // session would loop forever: every row would come back as
+        // no-op-because-already-marked, and the user would see no
+        // movement in the "Fix all (N)" badge.
+        //
+        // Errors are NOT hidden — those still need manual attention.
+        if (p.applied || (p.risk === "no-op" && !p.error)) {
+          next.add(p.ref_id)
+        }
+      }
+      return next
+    })
+  }, [])
+
+  const findingsAfterFixes = useMemo(
+    () =>
+      appliedRefIds.size === 0
+        ? findings
+        : findings.filter(
+            (f) => !appliedRefIds.has(f.scannerFindingId ?? String(f.id))
+          ),
+    [findings, appliedRefIds]
+  )
+
   const findingCountByLabel = useMemo(() => {
     const m = new Map<string, number>()
-    for (const f of findings) {
+    for (const f of findingsAfterFixes) {
       const label = displayCategory(f.category)
       m.set(label, (m.get(label) ?? 0) + 1)
     }
     return m
-  }, [findings])
+  }, [findingsAfterFixes])
 
   const knownLabels = SECURITY_CHECKS.map((c) => c.label)
   const knownLabelSet = useMemo(() => new Set(knownLabels), [knownLabels])
@@ -295,16 +339,16 @@ function CodeAnalysisPanel({
     () =>
       [
         ...new Set(
-          findings
+          findingsAfterFixes
             .map((f) => displayCategory(f.category))
             .filter((label) => !knownLabelSet.has(label))
         ),
       ].sort((a, b) => a.localeCompare(b)),
-    [findings, knownLabelSet]
+    [findingsAfterFixes, knownLabelSet]
   )
   const categories: string[] = [...knownLabels, ...orphanLabels]
 
-  const filteredFindings = findings.filter((f) => {
+  const filteredFindings = findingsAfterFixes.filter((f) => {
     const matchesSearch =
       f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       f.file.toLowerCase().includes(searchQuery.toLowerCase())
@@ -334,7 +378,7 @@ function CodeAnalysisPanel({
     [filteredFindings]
   )
   const fixAllLabel =
-    filteredFindings.length === findings.length
+    filteredFindings.length === findingsAfterFixes.length
       ? `Fix all (${fixableTargets.length})`
       : `Fix filtered (${fixableTargets.length})`
 
@@ -418,6 +462,7 @@ function CodeAnalysisPanel({
               dialogTitle={fixAllLabel}
               size="sm"
               variant="default"
+              onApplied={handleApplied}
             />
           </div>
         </CardContent>
@@ -481,6 +526,7 @@ function CodeAnalysisPanel({
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         projectPath={projectPath}
+        onFixApplied={handleApplied}
       />
     </>
   )

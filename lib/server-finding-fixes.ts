@@ -51,11 +51,29 @@ export interface FixTarget {
   title?: string
 }
 
+/**
+ * "Permanent" errors are deterministic — re-running won't change the
+ * outcome (e.g. file extension has no comment syntax we can safely
+ * insert into). The dialog uses `retryable` to swap the "Retry failed"
+ * button for a non-actionable explanation instead of an infinite-loop
+ * retry the user keeps clicking.
+ */
+export type FixErrorKind =
+  | "unsupported_file_type"
+  | "missing_template"
+  | "file_unreadable"
+  | "write_failed"
+  | "path_escape"
+
 export interface FixProposal {
   ref_id: string
   rule_id: string
   file: string
   line: number
+  /** Absolute on-disk path the engine read / wrote. Surfaced in the
+   *  dialog so the user can verify "yes, that's the original file"
+   *  without having to mentally resolve a relative path. */
+  absolute_path: string
   /** Short, scannable label for the dialog ("Wrap shell call in
    *  approval gate"). */
   title: string
@@ -78,8 +96,16 @@ export interface FixProposal {
   /** Why a suggested fix could not be applied or was skipped. Always
    *  null on a successful suggestion. */
   error: string | null
-  /** Path to the `.bak` file we wrote alongside the original, when an
-   *  apply succeeded. */
+  /** Classification for `error`. `null` when there is no error. */
+  error_kind: FixErrorKind | null
+  /** True iff a retry could plausibly change the outcome. Permanent
+   *  errors (unsupported file type, missing template) set this false
+   *  so the dialog can hide the "Retry failed" button. */
+  retryable: boolean
+  /** Path to the centralized backup file we wrote, relative to the
+   *  project root. Backups now live at
+   *  `.edge-agent/backups/<relative-path>.bak` so they don't litter
+   *  the source tree next to the original. */
   backup_path: string | null
 }
 
@@ -437,26 +463,75 @@ function writeFileLinesAtomic(absPath: string, lines: string[]): void {
   fs.renameSync(tmp, absPath)
 }
 
-function writeBackupOnce(absPath: string): string {
-  const bak = `${absPath}.edge-agent.bak`
+/**
+ * Centralized backup destination. Instead of dropping `<file>.edge-agent.bak`
+ * next to every original (which clutters the source tree the user has to
+ * stare at every day), we mirror the project layout under
+ * `<project>/.edge-agent/backups/<rel-path>.bak`. The user can wipe the
+ * whole folder when they're confident, or `git diff` over `.edge-agent/`
+ * to ignore them entirely.
+ */
+function writeBackupOnce(absPath: string, projectPath: string): string {
+  const rel = path.relative(projectPath, absPath)
+  const bakRoot = path.join(projectPath, ".edge-agent", "backups")
+  const bak = path.join(bakRoot, `${rel}.bak`)
   if (!fs.existsSync(bak)) {
+    fs.mkdirSync(path.dirname(bak), { recursive: true })
     fs.copyFileSync(absPath, bak)
   }
   return bak
 }
 
-function alreadyHasFixMarker(lines: string[], ruleId: string): boolean {
-  // Scan the WHOLE file rather than a small window around the input
-  // line. After an earlier apply inserts lines above ours the line
-  // number sent by the client no longer points where the dangerous
-  // pattern was, so a windowed check produces false negatives and the
-  // dialog double-applies on re-run. Trade-off: if a single file has
-  // two distinct call sites of the same rule (e.g. two separate
-  // `subprocess.run` lines) only the first will be marked. Better to
-  // be conservative and skip than to double-fence the file.
+/**
+ * Idempotency check: is the offending line ALREADY protected by a fix
+ * marker for this rule that we inserted on a previous apply?
+ *
+ * Approach: walk UPWARD from the target line, stopping at the first
+ * line that's neither a comment nor blank. If we crossed an opening
+ * fix marker for THIS rule on the way, the finding already has its
+ * defense block above it — no-op. Otherwise (e.g. we immediately hit
+ * non-comment source), the line is unprotected and we should fix it.
+ *
+ * Why this matters: the previous implementation scanned the whole file
+ * (or a wide ±N-line window) for the marker. When the user had several
+ * distinct findings of the SAME rule in the SAME file (e.g. 5
+ * dangerous-call sites in `LLM/system_prompt.py`), the very first apply
+ * marked the file — and every remaining finding came back as no-op,
+ * which is what made "Apply all → 0 applied / N skipped" look broken.
+ *
+ * Walking upward through the contiguous comment block instead pins the
+ * marker to the EXACT line it sits above, so each call site gets its
+ * own fix.
+ */
+function isCommentLineForPrefix(trimmed: string, prefix: string): boolean {
+  if (trimmed === "") return true
+  if (prefix === "<!--") {
+    // HTML/Markdown comment block — line may not contain the closing
+    // `-->` if the comment spans multiple lines, so test loosely.
+    return trimmed.startsWith("<!--") || trimmed.endsWith("-->")
+  }
+  return trimmed.startsWith(prefix)
+}
+
+function alreadyHasFixMarker(
+  lines: string[],
+  ruleId: string,
+  aroundLine1Indexed: number,
+  prefix: string
+): boolean {
+  const idx = Math.max(0, Math.min(lines.length - 1, aroundLine1Indexed - 1))
   const needle = `[${ruleId}]`
-  for (const l of lines) {
+  // Bound the walk so a giant comment block at the top of a file can't
+  // make us scan thousands of lines.
+  const stopAt = Math.max(0, idx - 60)
+  for (let i = idx; i >= stopAt; i--) {
+    const l = lines[i] ?? ""
+    const trimmed = l.trim()
+    // Found the marker — finding is already covered.
     if (l.includes(FIX_MARKER_OPEN) && l.includes(needle)) return true
+    // Hit real code (not blank, not a comment) — finding is NOT
+    // protected by anything above it. Stop walking.
+    if (!isCommentLineForPrefix(trimmed, prefix)) return false
   }
   return false
 }
@@ -491,14 +566,18 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
     const rel = t.file
     const abs = path.resolve(opts.projectPath, rel)
     if (!isPathInsideProject(abs, opts.projectPath)) {
-      proposals.push(makeErrorProposal(t, "File path escapes project root"))
+      proposals.push(
+        makeErrorProposal(t, abs, "File path escapes project root", "path_escape", false)
+      )
       failed += 1
       continue
     }
 
     const linesOrErr = readFileLines(abs)
     if (!Array.isArray(linesOrErr)) {
-      proposals.push(makeErrorProposal(t, linesOrErr.error))
+      proposals.push(
+        makeErrorProposal(t, abs, linesOrErr.error, "file_unreadable", false)
+      )
       failed += 1
       continue
     }
@@ -509,7 +588,10 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
       proposals.push(
         makeErrorProposal(
           t,
-          `File type ${path.extname(rel) || "(none)"} has no comment syntax we can safely insert into. Apply skipped — fix this manually.`
+          abs,
+          `${path.extname(rel) || "(no extension)"} files don't have a comment syntax we can safely insert into. This finding has to be fixed by hand.`,
+          "unsupported_file_type",
+          false
         )
       )
       failed += 1
@@ -521,23 +603,29 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
     const indent = detectIndent(originalLine)
     const tpl = TEMPLATES[t.rule_id] ?? fallbackTemplate(t.rule_id)
 
-    if (alreadyHasFixMarker(lines, t.rule_id)) {
+    if (alreadyHasFixMarker(lines, t.rule_id, t.line, prefix)) {
       // Idempotent: don't re-insert. Still emit a proposal so the UI
-      // can explain why nothing happened.
+      // can explain why nothing happened — and crucially mark it
+      // SKIPPED, not FAILED, so the dialog doesn't keep offering a
+      // pointless retry.
       const before = snippetSlice(lines, t.line).body
       proposals.push({
         ref_id: t.ref_id,
         rule_id: t.rule_id,
         file: rel,
         line: t.line,
+        absolute_path: abs,
         title: tpl.title,
-        description: tpl.description,
+        description:
+          "A previous Edge Agent fix for this rule already sits above this line — skipped to keep the file idempotent.",
         risk: "no-op",
         before,
         after: before,
         diff: "",
         applied: false,
         error: null,
+        error_kind: null,
+        retryable: false,
         backup_path: null,
       })
       skipped += 1
@@ -579,6 +667,7 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
           rule_id: t.rule_id,
           file: rel,
           line: t.line,
+          absolute_path: abs,
           title: tpl.title,
           description:
             "Nothing to change on this line — it already looks like the fixed form (or the template doesn't know how to patch this exact shape). Review manually if you think a fix is still needed.",
@@ -588,6 +677,8 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
           diff: "",
           applied: false,
           error: null,
+          error_kind: null,
+          retryable: false,
           backup_path: null,
         })
         skipped += 1
@@ -608,15 +699,22 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
     let didApply = false
     let backup_path: string | null = null
     let error: string | null = null
+    let error_kind: FixErrorKind | null = null
+    let retryable = true
 
     if (opts.mode === "apply") {
       try {
-        backup_path = writeBackupOnce(abs)
+        backup_path = writeBackupOnce(abs, opts.projectPath)
         writeFileLinesAtomic(abs, newLines)
         didApply = true
         applied += 1
       } catch (e) {
         error = `Could not write file: ${(e as Error).message}`
+        error_kind = "write_failed"
+        // Write errors are usually transient (permissions, disk full)
+        // so retry stays enabled. If a follow-up turns out to also be
+        // permanent we can downgrade this on a per-message basis.
+        retryable = true
         failed += 1
       }
     }
@@ -626,6 +724,7 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
       rule_id: t.rule_id,
       file: rel,
       line: t.line,
+      absolute_path: abs,
       title: tpl.title,
       description: tpl.description,
       risk,
@@ -634,6 +733,8 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
       diff,
       applied: didApply,
       error,
+      error_kind,
+      retryable,
       backup_path: backup_path ? path.relative(opts.projectPath, backup_path) : null,
     })
   }
@@ -671,12 +772,19 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
   }
 }
 
-function makeErrorProposal(t: FixTarget, error: string): FixProposal {
+function makeErrorProposal(
+  t: FixTarget,
+  absolutePath: string,
+  error: string,
+  kind: FixErrorKind,
+  retryable: boolean
+): FixProposal {
   return {
     ref_id: t.ref_id,
     rule_id: t.rule_id,
     file: t.file,
     line: t.line,
+    absolute_path: absolutePath,
     title: t.title ?? `Fix ${t.rule_id}`,
     description: error,
     risk: "no-op",
@@ -685,6 +793,8 @@ function makeErrorProposal(t: FixTarget, error: string): FixProposal {
     diff: "",
     applied: false,
     error,
+    error_kind: kind,
+    retryable,
     backup_path: null,
   }
 }

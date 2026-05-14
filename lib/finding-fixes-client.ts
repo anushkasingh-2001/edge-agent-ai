@@ -6,6 +6,12 @@
 
 export type FixMode = "suggest" | "apply"
 export type FixRisk = "safe-insert" | "edits-line" | "no-op"
+export type FixErrorKind =
+  | "unsupported_file_type"
+  | "missing_template"
+  | "file_unreadable"
+  | "write_failed"
+  | "path_escape"
 
 export interface FixTarget {
   ref_id: string
@@ -20,6 +26,7 @@ export interface FixProposal {
   rule_id: string
   file: string
   line: number
+  absolute_path: string
   title: string
   description: string
   risk: FixRisk
@@ -28,6 +35,8 @@ export interface FixProposal {
   diff: string
   applied: boolean
   error: string | null
+  error_kind: FixErrorKind | null
+  retryable: boolean
   backup_path: string | null
 }
 
