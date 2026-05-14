@@ -49,6 +49,7 @@ import {
   MessageSquare,
 } from "lucide-react"
 import { FindingDrawer } from "@/components/finding-drawer"
+import { FindingFixButton } from "@/components/finding-fix-button"
 import type { ScanReport, UiFinding } from "@/lib/scan-report"
 import { SECURITY_CHECKS, displayCategoryLabel } from "@/lib/security-checks"
 import {
@@ -61,6 +62,7 @@ import {
   type BehavioralStatus,
   type BehavioralTestCase,
 } from "@/lib/behavioral-tests-client"
+import type { FixTarget } from "@/lib/finding-fixes-client"
 
 export type Finding = UiFinding
 
@@ -243,7 +245,10 @@ export function Findings({
         </TabsList>
 
         <TabsContent value="code" className="mt-6 space-y-6">
-          <CodeAnalysisPanel findings={findings} />
+          <CodeAnalysisPanel
+            findings={findings}
+            projectPath={projectPath}
+          />
         </TabsContent>
 
         <TabsContent value="behavioral" className="mt-6 space-y-6">
@@ -262,7 +267,13 @@ export function Findings({
 // so the Behavioral panel doesn't need to share state with it.
 // ===================================================================
 
-function CodeAnalysisPanel({ findings }: { findings: Finding[] }) {
+function CodeAnalysisPanel({
+  findings,
+  projectPath,
+}: {
+  findings: Finding[]
+  projectPath: string | null
+}) {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
@@ -304,6 +315,28 @@ function CodeAnalysisPanel({ findings }: { findings: Finding[] }) {
       displayCategory(f.category) === categoryFilter
     return matchesSearch && matchesSeverity && matchesCategory
   })
+
+  // "Fix all" targets the CURRENTLY VISIBLE rows so a filtered view fixes
+  // exactly what the user sees. Findings without a ruleId can't be fixed
+  // by the engine (no template to apply) so we drop them up front rather
+  // than letting the user trigger a no-op.
+  const fixableTargets: FixTarget[] = useMemo(
+    () =>
+      filteredFindings
+        .filter((f) => Boolean(f.ruleId))
+        .map((f) => ({
+          ref_id: f.scannerFindingId ?? String(f.id),
+          rule_id: f.ruleId as string,
+          file: f.file,
+          line: f.line,
+          title: f.title,
+        })),
+    [filteredFindings]
+  )
+  const fixAllLabel =
+    filteredFindings.length === findings.length
+      ? `Fix all (${fixableTargets.length})`
+      : `Fix filtered (${fixableTargets.length})`
 
   const severityBadgeClass = (severity: string) => {
     switch (severity) {
@@ -378,6 +411,14 @@ function CodeAnalysisPanel({ findings }: { findings: Finding[] }) {
             <div className="text-sm text-muted-foreground">
               {filteredFindings.length} findings
             </div>
+            <FindingFixButton
+              targets={fixableTargets}
+              projectPath={projectPath}
+              label={fixAllLabel}
+              dialogTitle={fixAllLabel}
+              size="sm"
+              variant="default"
+            />
           </div>
         </CardContent>
       </Card>
@@ -439,6 +480,7 @@ function CodeAnalysisPanel({ findings }: { findings: Finding[] }) {
         finding={selectedFinding}
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
+        projectPath={projectPath}
       />
     </>
   )
@@ -608,7 +650,11 @@ function BehavioralTestsPanel({
             ) : (
               <div className="space-y-2">
                 {filteredTests.map((t) => (
-                  <BehavioralTestRow key={t.id} test={t} />
+                  <BehavioralTestRow
+                    key={t.id}
+                    test={t}
+                    projectPath={projectPath}
+                  />
                 ))}
               </div>
             )}
@@ -831,10 +877,33 @@ function BehavioralCategoryGrid({ report }: { report: BehavioralRunReport }) {
   )
 }
 
-function BehavioralTestRow({ test }: { test: BehavioralTestCase }) {
+function BehavioralTestRow({
+  test,
+  projectPath,
+}: {
+  test: BehavioralTestCase
+  projectPath: string | null
+}) {
   const [open, setOpen] = useState(false)
   const sev = severityTone(test.severity)
   const stat = statusTone(test.status)
+
+  // A test is "fixable" when it has a real target file/line AND a
+  // backing scanner rule_id (the fix engine keys its templates off
+  // rule_id, not probe_id). Skipped placeholders and UI-only categories
+  // get a disabled trigger so the menu position stays consistent.
+  const fixTargets: FixTarget[] =
+    test.target_file && test.target_line && test.rule_id
+      ? [
+          {
+            ref_id: test.id,
+            rule_id: test.rule_id,
+            file: test.target_file,
+            line: test.target_line,
+            title: test.name,
+          },
+        ]
+      : []
   return (
     <div
       className={`rounded-md border ${
@@ -958,6 +1027,18 @@ function BehavioralTestRow({ test }: { test: BehavioralTestCase }) {
               {test.notes}
             </p>
           )}
+
+          <div className="flex items-center justify-end">
+            <FindingFixButton
+              targets={fixTargets}
+              projectPath={projectPath}
+              label="Fix code"
+              dialogTitle={`Fix: ${test.name}`}
+              size="sm"
+              variant={test.status === "fail" ? "default" : "outline"}
+              disabled={fixTargets.length === 0}
+            />
+          </div>
         </div>
       )}
     </div>
