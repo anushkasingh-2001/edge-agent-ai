@@ -18,6 +18,7 @@ import {
   FileCode,
   FolderOpen,
   X,
+  Pencil,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -30,6 +31,7 @@ import {
 import { ExportReportButton } from "@/components/export-report-button"
 import { ImportTestsDialog } from "@/components/test-cases/import-tests-dialog"
 import { GenerateTestsDialog } from "@/components/test-cases/generate-tests-dialog"
+import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
 import type { ScanReport } from "@/lib/scan-report"
 import type { Project } from "@/lib/projects"
 import type { PolicyApiResponse } from "@/lib/policy-client"
@@ -40,6 +42,8 @@ import {
 import {
   deriveRulesFromSuite,
   extractRelatedFindingIdsFromSuite,
+  extractRuleFileTuplesFromSuite,
+  extractRuleIdsFromSuite,
   extractTargetFilesFromSuite,
   type TestSuite,
 } from "@/lib/test-cases"
@@ -60,7 +64,19 @@ interface ScanCenterProps {
    * Scan" already covers committed code + working tree + stashed WIP. */
   onRunScan: (
     selectedCheckIds: string[],
-    narrow?: { findingIds?: string[]; files?: string[] }
+    narrow?: {
+      findingIds?: string[]
+      files?: string[]
+      ruleIds?: string[]
+      ruleFileTuples?: Array<{ ruleId: string; file: string }>
+      /** Hint to the parent: when true the user expressed intent to
+       *  run only their custom + suite tests in the Behavioral panel.
+       *  The parent flips the per-project `userOnly` flag so the
+       *  Behavioral panel's next run skips the built-in pool. The
+       *  static scan itself is unaffected — this is purely a
+       *  Behavioral-tab signal. */
+      hintUserOnlyBehavioral?: boolean
+    }
   ) => Promise<{ beforeCount: number; afterCount: number; narrowed: boolean }>
   isScanning?: boolean
   /** Cancels the in-flight scan request via an AbortController owned
@@ -90,6 +106,12 @@ interface ScanCenterProps {
    * sync. */
   activeSuite?: TestSuite | null
   onActiveSuiteChange?: (suite: TestSuite | null) => void
+  /** Wired by the parent to switch to Findings → Behavioral Tests.
+   *  The "Run user-defined + AI tests" button selects all 14 checks,
+   *  triggers a full scan, and then calls this so the Behavioral
+   *  panel (which merges AI-generated probes + user-authored ones)
+   *  is what the user sees as soon as the scan finishes. */
+  onShowUserDefinedAndAiTests?: () => void
 }
 
 export function ScanCenter({
@@ -110,6 +132,7 @@ export function ScanCenter({
   onLoadScan,
   activeSuite: activeSuiteProp,
   onActiveSuiteChange,
+  onShowUserDefinedAndAiTests,
 }: ScanCenterProps) {
   const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
@@ -122,6 +145,18 @@ export function ScanCenter({
     "saved" | "file" | "paste"
   >("saved")
   const [generateOpen, setGenerateOpen] = useState(false)
+  /** Primary builder — replaces the old "User-defined checks" dropdown
+   *  with a single repo-aware multi-row authoring flow. The dropdown
+   *  options (AI / Saved) are still reachable as compact secondary
+   *  buttons next to this one. */
+  const [defineInputsOpen, setDefineInputsOpen] = useState(false)
+  // When non-null, the `DefineUserInputsDialog` opens in *edit* mode
+  // against this suite (Save changes / Save as new / Delete suite).
+  // When null AND `defineInputsOpen` is true, the dialog is in
+  // *create* mode (the existing "Define user-defined inputs"
+  // button entry). Reset to null whenever the dialog closes so the
+  // next Create click doesn't accidentally edit the previous suite.
+  const [editingSuite, setEditingSuite] = useState<TestSuite | null>(null)
   const [lastSuiteToast, setLastSuiteToast] = useState<string | null>(null)
   // The user-defined suite chosen for the next scan. Lifted to the parent
   // so the Overview "User-Defined Tests" tile shows whatever is currently
@@ -178,18 +213,46 @@ export function ScanCenter({
   // captured at generation time (works for blank suites + agent suites
   // where individual tests don't carry locators); fall back to extracting
   // from each test's locator/notes for older suites that pre-date scope.
-  const { suiteFiles, suiteFindingIds } = useMemo(() => {
-    if (!activeSuite) return { suiteFiles: [], suiteFindingIds: [] }
+  //
+  // We also surface two precise dimensions specific to *manually*
+  // authored suites:
+  //   • `suiteRuleFileTuples`: (rule_id, file) pairs derived from each
+  //      test's `expected.rule_id_hint` + `expected.agents_file_hints`.
+  //      Lets us reduce a "1 test ⇒ 1 row" suite to exactly the
+  //      findings it cares about instead of "every finding in those
+  //      files".
+  //   • `suiteRuleIds`: rule_id-only narrowing for tests that picked a
+  //      category but no agent/file.
+  const {
+    suiteFiles,
+    suiteFindingIds,
+    suiteRuleFileTuples,
+    suiteRuleIds,
+  } = useMemo(() => {
+    if (!activeSuite) {
+      return {
+        suiteFiles: [],
+        suiteFindingIds: [],
+        suiteRuleFileTuples: [],
+        suiteRuleIds: [],
+      }
+    }
+    const tuples = extractRuleFileTuplesFromSuite(activeSuite)
+    const ruleIds = extractRuleIdsFromSuite(activeSuite)
     const scope = activeSuite.scope
     if (scope && (scope.files?.length || scope.findingIds?.length)) {
       return {
         suiteFiles: scope.files ?? [],
         suiteFindingIds: scope.findingIds ?? [],
+        suiteRuleFileTuples: tuples,
+        suiteRuleIds: ruleIds,
       }
     }
     return {
       suiteFiles: extractTargetFilesFromSuite(activeSuite),
       suiteFindingIds: extractRelatedFindingIdsFromSuite(activeSuite),
+      suiteRuleFileTuples: tuples,
+      suiteRuleIds: ruleIds,
     }
   }, [activeSuite])
 
@@ -209,10 +272,17 @@ export function ScanCenter({
    *                                rules. Lets users tighten further.
    */
   const startScan = async (
-    mode: "full" | "selected"
+    mode: "full" | "selected",
+    /** When `true`, ignore the active suite entirely: run every rule
+     *  and emit no narrowing dimensions. Used by the "Run user-defined
+     *  + AI tests" button — that flow wants AI probes + custom probes
+     *  to share a *real* full scan as their data source, otherwise the
+     *  built-in probes get pointed at zero findings and skip. */
+    opts?: { ignoreSuite?: boolean }
   ) => {
+    const ignoreSuite = opts?.ignoreSuite === true
     let ids: string[]
-    if (activeSuite && suiteRules.length > 0) {
+    if (!ignoreSuite && activeSuite && suiteRules.length > 0) {
       if (mode === "selected" && selectedChecks.length > 0) {
         ids = suiteRules.filter((r) => selectedChecks.includes(r))
         if (ids.length === 0) {
@@ -230,31 +300,81 @@ export function ScanCenter({
     } else {
       ids = mode === "full" ? [] : selectedChecks
     }
-    // Pass both narrowing dimensions up to the parent. The parent prefers
-    // findingIds (precise per-finding match) and falls back to files when
-    // findingIds don't match anything in the new scan.
-    const narrow =
-      activeSuite &&
-      (suiteFindingIds.length > 0 || suiteFiles.length > 0)
-        ? { findingIds: suiteFindingIds, files: suiteFiles }
-        : undefined
+    // Pass every narrowing dimension we have up to the parent. The
+    // parent picks the tightest one that actually matches anything in
+    // the fresh report:
+    //   findingIds → ruleFileTuples → (files ∧ ruleIds) → files →
+    //   ruleIds → no narrow.
+    // Including all four lets a single manual test ("Prompt injection
+    // on RefundAgent") survive as exactly one finding instead of
+    // dragging every prompt-injection finding back in.
+    // "Only my tests" hint for the Behavioral panel. Triggered when
+    // the user has a suite active and has unchecked every built-in
+    // category — the intent we read is "run only what I defined,
+    // not the 11 baseline probes". We attach it to the narrow object
+    // (purely a Behavioral-tab signal; the static scan ignores it).
+    // `ignoreSuite` (Run user-defined + AI tests) suppresses both
+    // the hint and the narrow so the scan is a *true* full scan and
+    // the Behavioral panel runs the merged AI + user pool.
+    const hintUserOnlyBehavioral =
+      !ignoreSuite && activeSuite != null && selectedChecks.length === 0
+    const narrow = ignoreSuite
+      ? undefined
+      : activeSuite &&
+          (suiteFindingIds.length > 0 ||
+            suiteRuleFileTuples.length > 0 ||
+            suiteRuleIds.length > 0 ||
+            suiteFiles.length > 0)
+        ? {
+            findingIds: suiteFindingIds,
+            files: suiteFiles,
+            ruleIds: suiteRuleIds,
+            ruleFileTuples: suiteRuleFileTuples,
+            hintUserOnlyBehavioral,
+          }
+        : hintUserOnlyBehavioral
+          ? { hintUserOnlyBehavioral }
+          : undefined
     setScanProgress(10)
     try {
       const result = await onRunScan(ids, narrow)
       setScanProgress(100)
-      if (activeSuite) {
+      // When `ignoreSuite` is on (Run user-defined + AI tests) we
+      // skipped narrowing entirely, so the suite-aware toast would
+      // lie about what happened. Fall through to the generic "scan
+      // completed" UI path instead.
+      if (activeSuite && !ignoreSuite) {
         const { beforeCount, afterCount, narrowed } = result
+        // Short, accurate phrase describing what the narrower used.
+        // Picks the same precedence the parent's `narrowReport()`
+        // does so the toast doesn't lie about which filter ran.
+        const dimensionPhrase =
+          suiteFindingIds.length > 0
+            ? `${suiteFindingIds.length} finding id${suiteFindingIds.length === 1 ? "" : "s"}`
+            : suiteRuleFileTuples.length > 0
+              ? `${suiteRuleFileTuples.length} (rule, file) pair${suiteRuleFileTuples.length === 1 ? "" : "s"}`
+              : suiteRuleIds.length > 0
+                ? `${suiteRuleIds.length} rule${suiteRuleIds.length === 1 ? "" : "s"}`
+                : `${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"}`
         if (!narrowed) {
           setLastSuiteToast(
             `Scan completed (${afterCount} findings). Suite "${activeSuite.name}" has no narrowable scope — regenerate via Define checks → AI from a finding/agent to enable narrowing.`
           )
+        } else if (afterCount === 0) {
+          // Empty result is correct for a tight manual suite that
+          // doesn't intersect any of this scan's findings — say so
+          // explicitly instead of leaving the user staring at an
+          // empty list.
+          setLastSuiteToast(
+            `Suite narrowing: ${beforeCount} → 0 findings. None of the scan's findings matched the suite's ${dimensionPhrase}. The static scanner found nothing in that scope — your behavioral tests still run in Findings → Behavioral Tests.`
+          )
         } else if (beforeCount === afterCount) {
           setLastSuiteToast(
-            `Scan completed but suite narrowing did not reduce the count (${afterCount} findings). Either every finding lives in the suite's ${suiteFiles.length} target file${suiteFiles.length === 1 ? "" : "s"}, or finding ids changed since the suite was generated. Try Define checks → AI from a single finding for a tighter scope.`
+            `Scan completed but suite narrowing did not reduce the count (${afterCount} findings). Every finding matched the suite's ${dimensionPhrase} — try a more specific test (single rule × single agent) for a tighter scope.`
           )
         } else {
           setLastSuiteToast(
-            `Suite narrowing: ${beforeCount} → ${afterCount} findings (-${beforeCount - afterCount}). Scan ran ${ids.length === 0 ? "all backend rules" : `${ids.length} rule${ids.length === 1 ? "" : "s"}`}, then ${suiteFindingIds.length > 0 ? `kept findings matching ${suiteFindingIds.length} ids the suite covers` : `kept findings in ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"} the suite targets`}.`
+            `Suite narrowing: ${beforeCount} → ${afterCount} findings (-${beforeCount - afterCount}). Scan ran ${ids.length === 0 ? "all backend rules" : `${ids.length} rule${ids.length === 1 ? "" : "s"}`}, then kept findings matching the suite's ${dimensionPhrase}.`
           )
         }
         setTimeout(() => setLastSuiteToast(null), 12000)
@@ -342,7 +462,7 @@ export function ScanCenter({
                 </Badge>
                 {activeSuite && (
                   <span
-                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 text-xs px-2 py-1 max-w-[260px]"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 text-xs px-2 py-1 max-w-[280px]"
                     title={`Active user-defined suite: ${activeSuite.name} (${activeSuite.tests.length} test${activeSuite.tests.length === 1 ? "" : "s"})`}
                   >
                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
@@ -352,50 +472,73 @@ export function ScanCenter({
                     </span>
                     <button
                       type="button"
+                      onClick={() => {
+                        // Open the suite editor against the active
+                        // suite. The dialog is the same one as the
+                        // "Define user-defined inputs" button, just
+                        // pre-loaded with these rows for edit mode.
+                        setEditingSuite(activeSuite)
+                        setDefineInputsOpen(true)
+                      }}
+                      className="ml-0.5 text-emerald-500/70 hover:text-emerald-200 shrink-0"
+                      title="Edit this suite — add / remove tests, save as new, or delete"
+                      aria-label="Edit user-defined suite"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setActiveSuite(null)}
                       className="ml-0.5 text-emerald-500/70 hover:text-emerald-300 shrink-0"
-                      title="Clear selected user-defined checks"
+                      title="Clear selected user-defined checks (does not delete the suite — find it under More → Use saved checks)"
                       aria-label="Clear selected user-defined checks"
                     >
                       <X className="h-3 w-3" />
                     </button>
                   </span>
                 )}
-                {/* User-defined checks live next to the built-in checks so the
-                 * "I want to add my own" workflow is co-located with the
-                 * "select built-in scanner rules" workflow. The three options
-                 * cover: re-using something I already saved, generating new
-                 * checks from the latest scan, and authoring checks by hand
-                 * via our open script format. */}
-                {/* Three explicit ways to bring user-defined checks into the
-                 * scan: write them by hand (no AI), have us draft them from
-                 * the latest scan (AI-assisted), or re-use something we
-                 * already saved. */}
+                {/* User-defined inputs live next to the built-in
+                 * checks so the "I want to add my own" workflow is
+                 * co-located with the "pick built-in scanner rules"
+                 * workflow. The primary button opens a repo-aware
+                 * builder; AI/Saved entry points stay as compact
+                 * secondary buttons so power users keep one-click
+                 * access to them. */}
+                <Button
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => {
+                    // Force *create* mode — otherwise the previous
+                    // edit target would still be set and the dialog
+                    // would open with last-edited rows.
+                    setEditingSuite(null)
+                    setDefineInputsOpen(true)
+                  }}
+                  title="Author tests row-by-row: pick category, agents, scenario, inputs, expected outputs, and accuracy"
+                >
+                  <TestTube className="h-3.5 w-3.5" />
+                  Define user-defined inputs
+                </Button>
+                {/* Compact secondary entries — same dialogs as before,
+                 * just smaller so they don't compete with the primary
+                 * builder. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm" className="gap-1">
-                      <TestTube className="h-3.5 w-3.5" />
-                      User-defined checks
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      title="More: AI draft from the latest scan, paste a script, or pick a saved suite"
+                    >
+                      More
                       <ChevronDown className="h-3 w-3" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-64">
                     <DropdownMenuLabel className="text-xs">
-                      User-defined checks
+                      Other ways to add user-defined checks
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={() => openImport("paste")}
-                      className="gap-2"
-                    >
-                      <FileCode className="h-4 w-4" />
-                      <div className="flex flex-col">
-                        <span>Define checks (no AI)</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          Author or paste a structured suite — no tokens spent
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => setGenerateOpen(true)}
                       disabled={!scanReport}
@@ -408,9 +551,21 @@ export function ScanCenter({
                     >
                       <Sparkles className="h-4 w-4" />
                       <div className="flex flex-col">
-                        <span>Define checks (AI)</span>
+                        <span>Draft with AI from latest scan</span>
                         <span className="text-[10px] text-muted-foreground">
-                          AI-assisted draft from the latest scan
+                          AI-assisted from real findings
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => openImport("paste")}
+                      className="gap-2"
+                    >
+                      <FileCode className="h-4 w-4" />
+                      <div className="flex flex-col">
+                        <span>Paste structured suite (no AI)</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          Author or paste in our open JSON format
                         </span>
                       </div>
                     </DropdownMenuItem>
@@ -422,7 +577,7 @@ export function ScanCenter({
                       <div className="flex flex-col">
                         <span>Use saved checks</span>
                         <span className="text-[10px] text-muted-foreground">
-                          Pick from your last saved checks
+                          Pick from your last saved suites
                         </span>
                       </div>
                     </DropdownMenuItem>
@@ -490,9 +645,13 @@ export function ScanCenter({
                       activeSuite
                         ? suiteFindingIds.length > 0
                           ? `Run a scan and narrow to the ${suiteFindingIds.length} finding${suiteFindingIds.length === 1 ? "" : "s"} this suite was generated from`
-                          : suiteFiles.length > 0
-                            ? `Run a scan and narrow to the ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"} this suite targets`
-                            : `Run a scan; suite has no narrowable targets — regenerate via Define checks → AI`
+                          : suiteRuleFileTuples.length > 0
+                            ? `Run a scan and narrow to the ${suiteRuleFileTuples.length} (rule, file) pair${suiteRuleFileTuples.length === 1 ? "" : "s"} this suite targets`
+                            : suiteRuleIds.length > 0
+                              ? `Run a scan and narrow to the ${suiteRuleIds.length} rule${suiteRuleIds.length === 1 ? "" : "s"} this suite targets`
+                              : suiteFiles.length > 0
+                                ? `Run a scan and narrow to the ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"} this suite targets`
+                                : `Run a scan; suite has no narrowable targets — regenerate via Define checks → AI`
                         : "Run every available scanner rule"
                     }
                   >
@@ -515,6 +674,43 @@ export function ScanCenter({
                     <TestTube className="h-4 w-4 mr-2" />
                     Run Selected Checks
                   </Button>
+                  {/* Run user-defined + AI tests
+                   * ─────────────────────────────
+                   * Ticks every check (the merged "all 14" set the
+                   * user asked for), runs a full scan so the
+                   * Behavioral runner has fresh findings to point
+                   * its probes at, and routes the user to Findings
+                   * → Behavioral Tests where AI-generated probes
+                   * AND user-authored ones are merged into one
+                   * view. */}
+                  <Button
+                    variant="secondary"
+                    className="w-full bg-accent/15 hover:bg-accent/25 border border-accent/40 text-accent-foreground"
+                    onClick={async () => {
+                      // 1) Make sure every check is ticked so the
+                      //    scan covers all 14 categories.
+                      setSelectedChecks(securityChecks.map((c) => c.id))
+                      setAllSelected(true)
+                      // 2) Kick off a *true* full scan — explicitly
+                      //    bypass suite narrowing here. Without
+                      //    `ignoreSuite: true`, an active suite would
+                      //    still trim the scan down to the suite's
+                      //    rules and the built-in probes (which point
+                      //    at scanner findings) would all skip with
+                      //    "No scanner finding in this category".
+                      await startScan("full", { ignoreSuite: true })
+                      // 3) Switch over to the Behavioral subtab. We
+                      //    do this *after* the scan resolves so the
+                      //    Behavioral runner has the new report
+                      //    available the moment the tab mounts.
+                      onShowUserDefinedAndAiTests?.()
+                    }}
+                    disabled={!onShowUserDefinedAndAiTests}
+                    title="Tick all 14 checks, run a full scan, and open Findings → Behavioral Tests (AI-generated probes + your custom tests merged)"
+                  >
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Run user-defined + AI tests
+                  </Button>
                 </>
               ) : (
                 <Button className="w-full" variant="destructive" onClick={stopScan}>
@@ -533,9 +729,13 @@ export function ScanCenter({
                 {activeSuite
                   ? suiteFindingIds.length > 0
                     ? `Suite "${activeSuite.name}" narrows to ${suiteFindingIds.length} finding${suiteFindingIds.length === 1 ? "" : "s"}`
-                    : suiteFiles.length > 0
-                      ? `Suite "${activeSuite.name}" narrows to ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"}`
-                      : `Suite "${activeSuite.name}" attached — no narrowable targets`
+                    : suiteRuleFileTuples.length > 0
+                      ? `Suite "${activeSuite.name}" narrows to ${suiteRuleFileTuples.length} (rule, file) pair${suiteRuleFileTuples.length === 1 ? "" : "s"}`
+                      : suiteRuleIds.length > 0
+                        ? `Suite "${activeSuite.name}" narrows to ${suiteRuleIds.length} rule${suiteRuleIds.length === 1 ? "" : "s"}`
+                        : suiteFiles.length > 0
+                          ? `Suite "${activeSuite.name}" narrows to ${suiteFiles.length} file${suiteFiles.length === 1 ? "" : "s"}`
+                          : `Suite "${activeSuite.name}" attached — no narrowable targets`
                   : `${selectedChecks.length} check${selectedChecks.length === 1 ? "" : "s"} selected`}
               </p>
             </CardContent>
@@ -918,6 +1118,28 @@ export function ScanCenter({
         scanReport={scanReport}
         projectId={project?.id}
         onSuiteReady={handleSuiteReady}
+      />
+      <DefineUserInputsDialog
+        open={defineInputsOpen}
+        onOpenChange={(open) => {
+          setDefineInputsOpen(open)
+          // Reset the edit target on close so the next "Define
+          // user-defined inputs" click starts from a blank row
+          // instead of editing whatever was open last time.
+          if (!open) setEditingSuite(null)
+        }}
+        scanReport={scanReport ?? null}
+        projectId={project?.id}
+        projectPath={project?.path ?? null}
+        initialSuite={editingSuite}
+        onSuiteReady={handleSuiteReady}
+        onSuiteDeleted={() => {
+          // User deleted the suite from inside the editor — drop the
+          // active reference so Scan Center stops narrowing to it
+          // and the chip disappears.
+          setActiveSuite(null)
+          setEditingSuite(null)
+        }}
       />
     </div>
   )

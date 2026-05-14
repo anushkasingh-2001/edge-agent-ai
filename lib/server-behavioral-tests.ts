@@ -496,6 +496,29 @@ function probeIdToTestId(probe_id: string, idx: number, ts: number): string {
 
 // ---- Main entrypoints -------------------------------------------------
 
+/** Serializable shape the client sends for user-authored probes. We
+ *  store regex patterns as strings (not RegExp instances) and compile
+ *  them inside the runner with a safe flag set. The shape matches
+ *  `lib/user-probes.ts::UserBehavioralProbe`. */
+export interface UserProbeInput {
+  id: string
+  rule_id: string | null
+  category: string
+  severity: BehavioralSeverity
+  name: string
+  scenario: "prompt_to_output" | "agent_to_agent" | "multi_agent_to_one"
+  inputs: string[]
+  expected_defense: string
+  /** Plain-string patterns. Invalid ones are dropped with a warning
+   *  stamped into the probe's notes — never crashes the run. */
+  defense_patterns: string[]
+  /** Project-relative path or null. */
+  target_file: string | null
+  agents: string[]
+  accuracy_target: number | null
+  failure_observed: string
+}
+
 export interface RunBehavioralOptions {
   projectPath: string
   scanReport: ScanReport | null
@@ -503,6 +526,19 @@ export interface RunBehavioralOptions {
   seed?: number
   /** Hard cap on the number of tests we run per category. Default: 3. */
   perCategoryCap?: number
+  /** Built-in probe template ids the user has hidden for this project.
+   *  Any probe whose `id` is in this set is skipped entirely — no
+   *  skipped row, no failing row, gone. Lets users curate the runner
+   *  per project without us shipping config files. */
+  disabledProbeIds?: string[]
+  /** User-authored probes to run alongside the built-ins. */
+  userProbes?: UserProbeInput[]
+  /** When true, the built-in probe pool is skipped entirely — the
+   *  returned report contains only tests derived from `userProbes`.
+   *  Used by the "Only my tests" toggle in the Behavioral panel and
+   *  by the Scan Center "Run user-defined + AI tests" flow when the
+   *  user has unchecked every built-in category. Default `false`. */
+  disableBuiltIns?: boolean
 }
 
 /**
@@ -528,6 +564,7 @@ export function runBehavioralTests(opts: RunBehavioralOptions): BehavioralRunRep
 
   const tests: BehavioralTestCase[] = []
   const findings: ScannerFinding[] = opts.scanReport?.findings ?? []
+  const disabled = new Set(opts.disabledProbeIds ?? [])
 
   // Group findings by rule_id once so we can quickly look up "what files
   // does this probe have to point at?"
@@ -539,7 +576,18 @@ export function runBehavioralTests(opts: RunBehavioralOptions): BehavioralRunRep
     findingsByRule.set(k, arr)
   }
 
-  for (const probe of PROBES) {
+  // "Only my tests" mode: skip the entire built-in pool. The user
+  // typically lands here after defining a custom suite in Scan Center
+  // and wants the Behavioral panel to reflect *only* that suite
+  // rather than mixing it with the 11-probe baseline.
+  const skipBuiltIns = opts.disableBuiltIns === true
+
+  for (const probe of (skipBuiltIns ? [] : PROBES)) {
+    // User has hidden this probe template for this project — no
+    // skipped row, no failing row, gone entirely. Showing a row would
+    // defeat the whole "remove" gesture.
+    if (disabled.has(probe.id)) continue
+
     const targets = findingsByRule.get(probe.rule_id) ?? []
     const selected = takeUpTo(targets, cap, rng)
 
@@ -560,6 +608,19 @@ export function runBehavioralTests(opts: RunBehavioralOptions): BehavioralRunRep
       const test = runProbeAgainstFinding(probe, f, opts.projectPath, input, conversation, ts, i)
       tests.push(test)
     }
+  }
+
+  // ── User-authored probes ────────────────────────────────────────
+  // Run AFTER built-ins so user probes don't push built-ins past the
+  // per-category cap. Each user probe runs once per invocation (no
+  // multiplier — users author one input pool, draw one sample). We
+  // honour the same `disabled` set so a user can hide their own
+  // probes too (though the typical gesture is "Remove", which
+  // deletes them outright from the store).
+  for (const up of opts.userProbes ?? []) {
+    if (disabled.has(up.id)) continue
+    const userTest = runUserProbe(up, opts.projectPath, findingsByRule, rng, ts)
+    if (userTest) tests.push(userTest)
   }
 
   // Stable sort: severity (critical→low) → category → name. Lets the UI
@@ -668,6 +729,233 @@ function runProbeAgainstFinding(
     evidence,
     status: "fail",
     notes: `Static finding: "${finding.title}" — probe input would land on this code path with no detected defense.`,
+  }
+}
+
+/**
+ * Compile a user-supplied pattern string into a RegExp. We deliberately
+ * fix the flag set ("i" — case-insensitive, no `g` so `.test()` doesn't
+ * keep state) so even hostile patterns can't change matcher semantics.
+ * Returns null when the pattern is empty or refuses to compile.
+ */
+function safeCompile(pattern: string): RegExp | null {
+  const trimmed = pattern.trim()
+  if (!trimmed) return null
+  try {
+    return new RegExp(trimmed, "i")
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Pick a target for a user probe in this priority order:
+ *
+ *   1. Explicit `target_file` set by the user (resolved relative to
+ *      `projectPath`, with a path-traversal guard).
+ *   2. A finding under the probe's `rule_id` (so user probes follow
+ *      the same "point at real risk" rule the built-ins do).
+ *
+ * Returns null when neither resolves — caller emits a skipped row.
+ */
+function chooseUserProbeTarget(
+  up: UserProbeInput,
+  projectPath: string,
+  findingsByRule: Map<string, ScannerFinding[]>,
+  rng: () => number
+): { file: string; line: number | null } | null {
+  if (up.target_file) {
+    const rel = up.target_file.replace(/^[\\/]+/, "")
+    const abs = path.resolve(projectPath, rel)
+    // Path-traversal guard — the user could type `../../etc/passwd`.
+    // Skip rather than read.
+    if (!abs.startsWith(path.resolve(projectPath))) return null
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      return { file: rel, line: null }
+    }
+    return null
+  }
+  if (up.rule_id) {
+    const arr = findingsByRule.get(up.rule_id) ?? []
+    if (arr.length > 0) {
+      const idx = Math.floor(rng() * arr.length)
+      const f = arr[Math.min(idx, arr.length - 1)]
+      return { file: f.file, line: f.line }
+    }
+  }
+  return null
+}
+
+function runUserProbe(
+  up: UserProbeInput,
+  projectPath: string,
+  findingsByRule: Map<string, ScannerFinding[]>,
+  rng: () => number,
+  ts: number
+): BehavioralTestCase | null {
+  const id = probeIdToTestId(up.id, 0, ts)
+  const inputs = up.inputs.filter((s) => typeof s === "string" && s.trim())
+  if (inputs.length === 0) {
+    // A probe with no inputs is unrunnable — emit a skipped row so the
+    // user sees the entry and can fix it from the dialog.
+    return {
+      id,
+      probe_id: up.id,
+      rule_id: up.rule_id,
+      category: up.category,
+      name: up.name,
+      severity: up.severity,
+      input: "",
+      conversation: [],
+      expected_defense: up.expected_defense,
+      observed: "Probe has no inputs. Add at least one adversarial input in the Define test dialog.",
+      target_file: up.target_file,
+      target_line: null,
+      evidence: null,
+      status: "skip",
+      notes: "User probe missing inputs.",
+    }
+  }
+
+  const input = pick(rng, inputs)
+  const conversation = buildUserConversation(up, input)
+  const target = chooseUserProbeTarget(up, projectPath, findingsByRule, rng)
+
+  if (!target) {
+    return {
+      id,
+      probe_id: up.id,
+      rule_id: up.rule_id,
+      category: up.category,
+      name: up.name,
+      severity: up.severity,
+      input,
+      conversation,
+      expected_defense: up.expected_defense,
+      observed:
+        "No target file. Either set `target_file` explicitly or run a Code Analysis scan that produces findings under this category, then re-run behavioral tests.",
+      target_file: up.target_file,
+      target_line: null,
+      evidence: null,
+      status: "skip",
+      notes: "User probe has nothing to point at — set target file or scan first.",
+    }
+  }
+
+  const absFile = path.resolve(projectPath, target.file)
+  const lines = readFileLinesSafe(absFile)
+  if (lines === null) {
+    return {
+      id,
+      probe_id: up.id,
+      rule_id: up.rule_id,
+      category: up.category,
+      name: up.name,
+      severity: up.severity,
+      input,
+      conversation,
+      expected_defense: up.expected_defense,
+      observed: `Could not read target file ${target.file} — it may have been deleted, is binary, or exceeds the size cap.`,
+      target_file: target.file,
+      target_line: target.line,
+      evidence: null,
+      status: "skip",
+      notes: "User probe target unreadable.",
+    }
+  }
+
+  // Compile patterns once; any pattern that fails to compile is
+  // dropped with a note so the user can fix it without crashing the
+  // whole run.
+  const compiled: RegExp[] = []
+  const dropped: string[] = []
+  for (const p of up.defense_patterns) {
+    const re = safeCompile(p)
+    if (re) compiled.push(re)
+    else if (typeof p === "string" && p.trim()) dropped.push(p)
+  }
+
+  const body = lines.join("\n")
+  const matched = compiled.find((re) => re.test(body)) ?? null
+  const evidence = snippetAround(lines, target.line ?? 1)
+
+  if (matched) {
+    return {
+      id,
+      probe_id: up.id,
+      rule_id: up.rule_id,
+      category: up.category,
+      name: up.name,
+      severity: up.severity,
+      input,
+      conversation,
+      expected_defense: up.expected_defense,
+      observed: `Matched user pattern: ${matched.source}`,
+      target_file: target.file,
+      target_line: target.line,
+      evidence,
+      status: "pass",
+      notes: dropped.length
+        ? `Defense pattern matched on ${target.file}. (Ignored ${dropped.length} invalid pattern${dropped.length === 1 ? "" : "s"}.)`
+        : `Defense pattern matched on ${target.file}.`,
+    }
+  }
+
+  return {
+    id,
+    probe_id: up.id,
+    rule_id: up.rule_id,
+    category: up.category,
+    name: up.name,
+    severity: up.severity,
+    input,
+    conversation,
+    expected_defense: up.expected_defense,
+    observed: up.failure_observed || "No user-supplied defense pattern matched the target file.",
+    target_file: target.file,
+    target_line: target.line,
+    evidence,
+    status: "fail",
+    notes:
+      compiled.length === 0
+        ? "User probe has no valid defense patterns — the run treats that as a fail by design (every input lands unguarded)."
+        : `Checked ${compiled.length} user pattern${compiled.length === 1 ? "" : "s"}; none matched.${dropped.length ? ` Ignored ${dropped.length} invalid pattern${dropped.length === 1 ? "" : "s"}.` : ""}`,
+  }
+}
+
+function buildUserConversation(up: UserProbeInput, input: string): BehavioralTurn[] {
+  // `BehavioralTurn.speaker` is intentionally a small enum
+  // (user/agent_a/agent_b/system) so the UI can render speaker
+  // badges with stable colours. Arbitrary user-supplied agent names
+  // live in the `text` field instead — accurate and type-safe.
+  switch (up.scenario) {
+    case "prompt_to_output":
+      return [{ speaker: "user", text: input }]
+    case "agent_to_agent": {
+      const [a = "agent_a", b = "agent_b"] = up.agents
+      return [
+        { speaker: "user", text: input },
+        { speaker: "agent_a", text: `${a} forwards the request to ${b}.` },
+        { speaker: "agent_b", text: `${b} produces the final output.` },
+      ]
+    }
+    case "multi_agent_to_one": {
+      const upstream = up.agents.slice(0, 4)
+      const turns: BehavioralTurn[] = [{ speaker: "user", text: input }]
+      const preview =
+        input.length > 60 ? `${input.slice(0, 60)}…` : input
+      for (const a of upstream) {
+        turns.push({
+          speaker: "agent_a",
+          text: `${a} contributes: ${preview}`,
+        })
+      }
+      turns.push({
+        speaker: "agent_b",
+        text: "Aggregator produces the final output.",
+      })
+      return turns
+    }
   }
 }
 

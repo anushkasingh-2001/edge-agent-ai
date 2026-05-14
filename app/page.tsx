@@ -38,7 +38,12 @@ import {
   scanItemFromReport,
   type ScanHistoryItem,
 } from "@/lib/scan-history"
-import type { TestSuite } from "@/lib/test-cases"
+import { loadSavedSuites, type TestSuite } from "@/lib/test-cases"
+import {
+  buildBridgedProbesFromSuite,
+  replaceSuiteProbes,
+  setUserOnly,
+} from "@/lib/user-probes"
 import { evaluatePolicyApi, type PolicyApiResponse } from "@/lib/policy-client"
 import { saveLatestPolicyResult } from "@/lib/latest-policy-result"
 
@@ -56,43 +61,97 @@ type GitBranchesResponse = {
 
 /**
  * Post-filter a fresh scan report so the UI only sees the findings the
- * active user-defined suite was generated from. Two narrowing dimensions:
+ * active user-defined suite was generated from. Narrowing dimensions
+ * (highest to lowest precision):
  *
- *  - `findingIds` (preferred) — exact match on `f.id`. One test ⇒ one
+ *  - `findingIds` — exact match on `f.id`. One AI-generated test ⇒ one
  *    finding, so a 12-test suite collapses to ~12 findings.
- *  - `files` (fallback) — match on `f.file`. Used when the suite was
- *    generated before we started stamping `related_finding`.
+ *  - `ruleFileTuples` — `(rule_id, file)` pair match. The tightest
+ *    dimension for *manually authored* suites: each tuple says
+ *    "findings under this rule AND in this file". Catches the case the
+ *    file-only fallback used to muff — five findings in `agents/x.py`
+ *    no longer survive a one-test suite about a single rule.
+ *  - `ruleIds` — rule_id-only match. Used when the suite cares about a
+ *    rule but didn't pin a file (e.g. "test prompt injection anywhere").
+ *  - `files` — legacy file-only fallback. Used when none of the above
+ *    were stamped (older suites or imported ones).
  *
- * If both are empty the report passes through unchanged. We also recompute
- * `summary` and `risk_score` so badges/donut/history reflect the narrowed
- * set instead of showing 100/100 next to a handful of findings.
+ * If every dimension is empty the report passes through unchanged. We
+ * also recompute `summary` and `risk_score` so badges/donut/history
+ * reflect the narrowed set instead of showing 100/100 next to a
+ * handful of findings.
  */
 function narrowReport(
   report: ScanReport,
-  narrow: { findingIds?: string[]; files?: string[] }
+  narrow: {
+    findingIds?: string[]
+    files?: string[]
+    ruleIds?: string[]
+    ruleFileTuples?: Array<{ ruleId: string; file: string }>
+  }
 ): ScanReport {
   const findingIds = narrow.findingIds ?? []
   const files = narrow.files ?? []
-  if (findingIds.length === 0 && files.length === 0) return report
+  const ruleIds = narrow.ruleIds ?? []
+  const tuples = narrow.ruleFileTuples ?? []
+  if (
+    findingIds.length === 0 &&
+    files.length === 0 &&
+    ruleIds.length === 0 &&
+    tuples.length === 0
+  ) {
+    return report
+  }
+
+  // Precompute the lookup sets once; we'll consult them in the
+  // precedence order described above.
+  const idAllow = new Set(findingIds)
+  const fileAllow = new Set(files)
+  const ruleAllow = new Set(ruleIds)
+  const tupleAllow = new Set(
+    tuples.map((t) => `${t.ruleId}\u0000${t.file}`)
+  )
 
   let filtered = report.findings
+
   if (findingIds.length > 0) {
-    const allow = new Set(findingIds)
-    const byId = report.findings.filter((f) => allow.has(f.id))
-    // If any IDs matched, prefer the precise filter; otherwise the suite's
-    // IDs likely came from a *previous* scan whose finding IDs no longer
-    // exist in this run, and we fall back to file-level narrowing.
+    const byId = report.findings.filter((f) => idAllow.has(f.id))
     if (byId.length > 0) {
       filtered = byId
+    } else if (tuples.length > 0) {
+      // IDs went stale (new scan, new finding ids) — fall back to
+      // tuples first since they're stricter than file-only.
+      filtered = report.findings.filter((f) =>
+        tupleAllow.has(`${f.rule_id ?? ""}\u0000${f.file}`)
+      )
     } else if (files.length > 0) {
-      const allowFiles = new Set(files)
-      filtered = report.findings.filter((f) => allowFiles.has(f.file))
+      filtered = report.findings.filter((f) => fileAllow.has(f.file))
+    } else if (ruleIds.length > 0) {
+      filtered = report.findings.filter(
+        (f) => f.rule_id != null && ruleAllow.has(f.rule_id)
+      )
     } else {
       filtered = []
     }
+  } else if (tuples.length > 0) {
+    filtered = report.findings.filter((f) =>
+      tupleAllow.has(`${f.rule_id ?? ""}\u0000${f.file}`)
+    )
+  } else if (files.length > 0 && ruleIds.length > 0) {
+    // AND the two dimensions — both signals were explicit, so a
+    // finding has to satisfy both to be considered "in scope".
+    filtered = report.findings.filter(
+      (f) =>
+        fileAllow.has(f.file) &&
+        f.rule_id != null &&
+        ruleAllow.has(f.rule_id)
+    )
   } else if (files.length > 0) {
-    const allowFiles = new Set(files)
-    filtered = report.findings.filter((f) => allowFiles.has(f.file))
+    filtered = report.findings.filter((f) => fileAllow.has(f.file))
+  } else if (ruleIds.length > 0) {
+    filtered = report.findings.filter(
+      (f) => f.rule_id != null && ruleAllow.has(f.rule_id)
+    )
   }
 
   const summary = {
@@ -117,6 +176,12 @@ export default function Home() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [recentProjects, setRecentProjects] = useState<Project[]>([])
   const [currentView, setCurrentView] = useState<ViewType>("overview")
+  /** Which inner tab Findings should land on. Reset to "code" any
+   *  time the user navigates away from Findings so a later trip
+   *  through the sidebar doesn't accidentally land them on
+   *  Behavioral. */
+  const [findingsInitialTab, setFindingsInitialTab] =
+    useState<"code" | "behavioral">("code")
   const [currentBranch, setCurrentBranch] = useState("main")
   const [selectedAgents, setSelectedAgents] = useState<string[]>(["all"])
   const [scanReport, setScanReport] = useState<ScanReport | null>(null)
@@ -131,12 +196,35 @@ export default function Home() {
   // so views beyond Scan Center (Overview) can show the *currently active*
   // user-defined tests instead of summing across every saved suite.
   const [activeSuite, setActiveSuite] = useState<TestSuite | null>(null)
+  // Monotonic counter the Behavioral Tests panel watches as a "force
+  // re-read the per-project probe store from localStorage" signal.
+  // Bumped after we mutate the store from this file (e.g. when
+  // "Run user-defined + AI tests" flips `userOnly` back to false)
+  // because neither `projectPath` nor `activeSuite.id` change in
+  // that case and the panel would otherwise keep a stale snapshot.
+  const [probeStoreVersion, setProbeStoreVersion] = useState(0)
   // Latest policy evaluation for the current scan, refreshed every time
   // a scan completes. Null when no scan has been run (or no project).
   const [policyResponse, setPolicyResponse] =
     useState<PolicyApiResponse | null>(null)
   const [policyLoading, setPolicyLoading] = useState(false)
   const policyEvalAbortRef = useRef<AbortController | null>(null)
+
+  // Mirror the currently active user-defined suite into the Behavioral
+  // Tests panel's probe store. The Define-User-Defined-Inputs dialog
+  // already bridges at save time, but this effect covers:
+  //   • suites authored before bridging existed (legacy entries on disk)
+  //   • suites loaded from the Saved Tests picker
+  //   • the user clearing the active suite (probes drop back to 0 bridged)
+  // The bridge only ever replaces probes whose id starts with
+  // `user.suite.` so stand-alone custom probes from the Behavioral
+  // panel are never touched.
+  useEffect(() => {
+    const projectPath = selectedProject?.path
+    if (!projectPath) return
+    const bridged = buildBridgedProbesFromSuite(activeSuite)
+    replaceSuiteProbes(projectPath, bridged)
+  }, [activeSuite, selectedProject?.path])
 
   useEffect(() => {
     setRecentProjects(loadRecentProjects())
@@ -308,13 +396,34 @@ export default function Home() {
       selectedCheckIds: string[],
       projectOverride?: Project,
       /** When set, post-filter the scan report so the UI only sees findings
-       * the active user-defined suite was generated from. Two dimensions:
+       * the active user-defined suite was generated from. Dimensions:
        *  - `findingIds` (preferred): exact-match on the finding `id`.
-       *  - `files` (fallback): match on `file` for older suites that
-       *    don't carry finding ids. */
-      narrow?: { findingIds?: string[]; files?: string[] }
+       *  - `ruleFileTuples`: (rule_id, file) pair match — tight for
+       *    manually authored suites where each test is "rule X on file Y".
+       *  - `ruleIds`: rule_id-only match (no file pin).
+       *  - `files` (fallback): match on `file` for legacy suites. */
+      narrow?: {
+        findingIds?: string[]
+        files?: string[]
+        ruleIds?: string[]
+        ruleFileTuples?: Array<{ ruleId: string; file: string }>
+        /** Behavioral-tab signal from Scan Center: when true the user
+         *  ran with all built-in categories unchecked, so we flip the
+         *  per-project Behavioral `userOnly` flag for them. */
+        hintUserOnlyBehavioral?: boolean
+      }
     ): Promise<{ beforeCount: number; afterCount: number; narrowed: boolean }> => {
       const target = projectOverride ?? selectedProject
+      // Apply the "only my behavioral tests" hint up-front. We do this
+      // BEFORE the scan so that any Findings → Behavioral Tests panel
+      // already mounted picks up the new userOnly flag on its next
+      // re-run (the panel's reload effect watches activeSuiteId, but
+      // the toggle itself flips through localStorage). Idempotent and
+      // cheap — no-op when the value matches what's already stored.
+      if (narrow?.hintUserOnlyBehavioral && target?.path) {
+        setUserOnly(target.path, true)
+        setProbeStoreVersion((v) => v + 1)
+      }
       if (!target) {
         setScanError(
           "Open a local project or clone from GitHub before running a scan."
@@ -386,6 +495,8 @@ export default function Home() {
             `[edge-agent-ai] Suite narrowing: ${beforeCount} → ${afterCount} findings`,
             {
               findingIds: narrow.findingIds?.length ?? 0,
+              ruleFileTuples: narrow.ruleFileTuples?.length ?? 0,
+              ruleIds: narrow.ruleIds?.length ?? 0,
               files: narrow.files?.length ?? 0,
               fileSample: narrow.files?.slice(0, 5),
             }
@@ -612,6 +723,18 @@ export default function Home() {
     setCurrentView(view as ViewType)
   }
 
+  // Reset the Findings inner tab back to "code" whenever the user
+  // leaves Findings. The deep-link path (Scan Center → behavioral)
+  // sets the tab and the view in the same tick, so we never race it.
+  // Without this reset, a user who once clicked "Run user-defined +
+  // AI tests" would keep landing on the Behavioral tab on every
+  // future Findings visit.
+  useEffect(() => {
+    if (currentView !== "findings" && findingsInitialTab !== "code") {
+      setFindingsInitialTab("code")
+    }
+  }, [currentView, findingsInitialTab])
+
   const handleRunScan = () => {
     if (!selectedProject) {
       setScanError(
@@ -679,6 +802,22 @@ export default function Home() {
             onLoadScan={handleLoadScan}
             activeSuite={activeSuite}
             onActiveSuiteChange={setActiveSuite}
+            onShowUserDefinedAndAiTests={() => {
+              // "Run user-defined + AI tests" is the explicit "merge
+              // both pools" gesture. Flip userOnly OFF so the
+              // Behavioral panel runs built-in probes alongside any
+              // suite-bridged / custom probes. Without this, a
+              // previous "Run Suite Scan with everything unticked"
+              // would leave userOnly stuck ON and the user would see
+              // only their custom tests after explicitly asking for
+              // built-ins back.
+              if (selectedProject?.path) {
+                setUserOnly(selectedProject.path, false)
+                setProbeStoreVersion((v) => v + 1)
+              }
+              setFindingsInitialTab("behavioral")
+              setCurrentView("findings")
+            }}
           />
         )
       case "detected-agents":
@@ -703,6 +842,12 @@ export default function Home() {
             hasScan={hasScan}
             projectPath={selectedProject?.path ?? null}
             scanReport={scanReport}
+            initialTab={findingsInitialTab}
+            activeSuiteId={activeSuite?.id ?? null}
+            activeSuite={activeSuite}
+            probeStoreVersion={probeStoreVersion}
+            projectId={selectedProject?.id ?? null}
+            onActiveSuiteChange={setActiveSuite}
           />
         )
       case "run-traces":

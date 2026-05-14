@@ -2,7 +2,10 @@ import path from "node:path"
 import fs from "node:fs"
 import { NextResponse } from "next/server"
 import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
-import { runBehavioralTests } from "@/lib/server-behavioral-tests"
+import {
+  runBehavioralTests,
+  type UserProbeInput,
+} from "@/lib/server-behavioral-tests"
 import { ScanReportSchema } from "@/lib/scan-report"
 
 /**
@@ -29,6 +32,9 @@ export async function POST(request: Request) {
     scanReport?: unknown
     seed?: number
     perCategoryCap?: number
+    disabledProbeIds?: unknown
+    userProbes?: unknown
+    disableBuiltIns?: unknown
   } = {}
   try {
     body = await request.json()
@@ -83,12 +89,26 @@ export async function POST(request: Request) {
       ? Math.floor(body.perCategoryCap)
       : undefined
 
+  // Sanitise user-supplied probe configuration. We never trust the
+  // wire — bad shapes get silently dropped instead of crashing the
+  // runner.
+  const disabledProbeIds = Array.isArray(body.disabledProbeIds)
+    ? (body.disabledProbeIds.filter(
+        (x): x is string => typeof x === "string" && x.length > 0
+      ) as string[]).slice(0, 200)
+    : []
+  const userProbes = sanitiseUserProbes(body.userProbes)
+  const disableBuiltIns = body.disableBuiltIns === true
+
   try {
     const report = runBehavioralTests({
       projectPath: requested,
       scanReport: parsed?.success ? parsed.data : null,
       seed,
       perCategoryCap,
+      disabledProbeIds,
+      userProbes,
+      disableBuiltIns,
     })
     return NextResponse.json(report)
   } catch (e) {
@@ -102,4 +122,88 @@ export async function POST(request: Request) {
       { status: 500 }
     )
   }
+}
+
+const ALLOWED_SEVERITIES = new Set(["critical", "high", "medium", "low"])
+const ALLOWED_SCENARIOS = new Set([
+  "prompt_to_output",
+  "agent_to_agent",
+  "multi_agent_to_one",
+])
+const MAX_USER_PROBES = 100
+const MAX_INPUTS_PER_PROBE = 50
+const MAX_PATTERNS_PER_PROBE = 25
+const MAX_STRING_LEN = 4_000
+
+function asTrimmedString(v: unknown, maxLen = MAX_STRING_LEN): string {
+  if (typeof v !== "string") return ""
+  const t = v.trim()
+  return t.length > maxLen ? t.slice(0, maxLen) : t
+}
+
+function asStringArray(v: unknown, maxCount: number): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const item of v) {
+    const s = asTrimmedString(item)
+    if (s) out.push(s)
+    if (out.length >= maxCount) break
+  }
+  return out
+}
+
+/**
+ * Coerce the wire-format `userProbes` payload into the strict
+ * `UserProbeInput[]` the runner expects. We never throw — anything
+ * malformed gets dropped so a single bad probe can't take down the
+ * whole run.
+ */
+function sanitiseUserProbes(raw: unknown): UserProbeInput[] {
+  if (!Array.isArray(raw)) return []
+  const out: UserProbeInput[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue
+    const o = item as Record<string, unknown>
+    const id = asTrimmedString(o.id, 200)
+    const name = asTrimmedString(o.name, 200)
+    const category = asTrimmedString(o.category, 200)
+    const severity = asTrimmedString(o.severity, 16)
+    const scenario = asTrimmedString(o.scenario, 32)
+    if (
+      !id.startsWith("user.") ||
+      !name ||
+      !category ||
+      !ALLOWED_SEVERITIES.has(severity) ||
+      !ALLOWED_SCENARIOS.has(scenario)
+    ) {
+      continue
+    }
+    const inputs = asStringArray(o.inputs, MAX_INPUTS_PER_PROBE)
+    if (inputs.length === 0) continue
+    const defense_patterns = asStringArray(o.defense_patterns, MAX_PATTERNS_PER_PROBE)
+    const agents = asStringArray(o.agents, 8)
+    const ruleId = asTrimmedString(o.rule_id, 64)
+    const targetFile = asTrimmedString(o.target_file, 1_000)
+    const accuracyTarget =
+      typeof o.accuracy_target === "number" && Number.isFinite(o.accuracy_target)
+        ? Math.max(0, Math.min(1, o.accuracy_target))
+        : null
+    out.push({
+      id,
+      rule_id: ruleId || null,
+      category,
+      severity: severity as UserProbeInput["severity"],
+      name,
+      scenario: scenario as UserProbeInput["scenario"],
+      inputs,
+      expected_defense: asTrimmedString(o.expected_defense, 2_000),
+      defense_patterns,
+      target_file: targetFile || null,
+      agents,
+      accuracy_target: accuracyTarget,
+      failure_observed: asTrimmedString(o.failure_observed, 2_000),
+    })
+    if (out.length >= MAX_USER_PROBES) break
+  }
+  return out
 }

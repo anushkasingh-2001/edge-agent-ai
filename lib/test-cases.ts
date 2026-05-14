@@ -715,6 +715,15 @@ export function extractTargetFilesFromSuite(
   }
   for (const t of suite.tests) {
     push(t.expected?.file_under_test as string | undefined)
+    // Hand-authored tests from the Define User-defined Inputs dialog
+    // stamp the agent's file in `agents_file_hints` instead of
+    // `file_under_test`. Treat both as target files so suite-level
+    // narrowing covers manual suites without forcing the user to
+    // edit JSON by hand.
+    const hints = t.expected?.agents_file_hints
+    if (Array.isArray(hints)) {
+      for (const h of hints) push(typeof h === "string" ? h : null)
+    }
     if (typeof t.notes === "string" && t.notes.length > 0) {
       // exec() loop because matchAll on iterables is awkward to type here.
       const re = new RegExp(NOTE_FILE_RE)
@@ -722,6 +731,79 @@ export function extractTargetFilesFromSuite(
       while ((m = re.exec(t.notes)) !== null) {
         push(m[1])
       }
+    }
+  }
+  return out
+}
+
+/**
+ * Returns the deduped list of *precise* scanner rule IDs each test in
+ * the suite explicitly targets, sourced from `expected.rule_id_hint`.
+ * Unlike `deriveRulesFromSuite()` — which expands a TestType to every
+ * rule that type could *possibly* cover — this respects the user's
+ * intent verbatim. A row authored as "Prompt injection" returns only
+ * `prompt-injection`, not the five rules `security_attack` happens to
+ * fan out to.
+ *
+ * Returns `[]` for older suites that don't stamp a hint; callers can
+ * then fall back to `deriveRulesFromSuite()` for broader narrowing.
+ */
+export function extractRuleIdsFromSuite(
+  suite: TestSuite | null
+): string[] {
+  if (!suite || suite.tests.length === 0) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const t of suite.tests) {
+    const hint = t.expected?.rule_id_hint
+    if (typeof hint === "string" && hint.length > 0 && !seen.has(hint)) {
+      seen.add(hint)
+      out.push(hint)
+    }
+  }
+  return out
+}
+
+/**
+ * Returns the deduped list of (file, rule_id) tuples the suite targets.
+ *
+ * This is the tightest narrowing dimension we have for *manually*
+ * authored suites: each tuple says "I care about findings under this
+ * scanner rule that live in this file". A scan finding survives the
+ * filter only when BOTH its `file` AND `rule_id` match a tuple in the
+ * list — so a single test for "Prompt injection on RefundAgent" no
+ * longer drags in every other prompt-injection finding (and vice
+ * versa).
+ *
+ * Returns `[]` when no test stamps both fields; callers should fall
+ * back to plain file or rule_id narrowing.
+ */
+export function extractRuleFileTuplesFromSuite(
+  suite: TestSuite | null
+): Array<{ file: string; ruleId: string }> {
+  if (!suite || suite.tests.length === 0) return []
+  const seen = new Set<string>()
+  const out: Array<{ file: string; ruleId: string }> = []
+  for (const t of suite.tests) {
+    const ruleId =
+      typeof t.expected?.rule_id_hint === "string"
+        ? (t.expected!.rule_id_hint as string)
+        : null
+    if (!ruleId) continue
+    const files: string[] = []
+    const fut = t.expected?.file_under_test
+    if (typeof fut === "string" && fut.length > 0) files.push(fut)
+    const hints = t.expected?.agents_file_hints
+    if (Array.isArray(hints)) {
+      for (const h of hints) {
+        if (typeof h === "string" && h.length > 0) files.push(h)
+      }
+    }
+    for (const file of files) {
+      const key = `${ruleId}\u0000${file}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ file, ruleId })
     }
   }
   return out

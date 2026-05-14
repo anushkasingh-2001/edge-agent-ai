@@ -63,17 +63,45 @@ export interface BehavioralRunReport {
   }
 }
 
+/** Shape the API accepts for user-authored probes. Mirrors
+ *  `lib/user-probes.ts::UserBehavioralProbe` minus the bookkeeping
+ *  timestamps, which the server ignores. */
+export interface UserBehavioralProbeWire {
+  id: string
+  rule_id: string | null
+  category: string
+  severity: BehavioralSeverity
+  name: string
+  scenario: "prompt_to_output" | "agent_to_agent" | "multi_agent_to_one"
+  inputs: string[]
+  expected_defense: string
+  defense_patterns: string[]
+  target_file: string | null
+  agents: string[]
+  accuracy_target: number | null
+  failure_observed: string
+}
+
 /**
  * Trigger a fresh behavioral test run on the server. The runner uses a
  * different seed each call by default, so successive invocations probe
  * with different adversarial inputs (matching the user's "auto-create
  * test inputs each time" requirement).
+ *
+ * `disabledProbeIds` hides built-in probe templates the user removed,
+ * and `userProbes` adds the user's own authored probes to the run.
  */
 export async function runBehavioralTestsApi(args: {
   projectPath: string
   scanReport: ScanReport | null
   seed?: number
   perCategoryCap?: number
+  disabledProbeIds?: string[]
+  userProbes?: UserBehavioralProbeWire[]
+  /** When true, the server skips the built-in probe pool entirely
+   *  and runs only `userProbes`. Lets the Behavioral panel honour
+   *  the "Only my tests" toggle without filtering on the client. */
+  disableBuiltIns?: boolean
   signal?: AbortSignal
 }): Promise<BehavioralRunReport> {
   const res = await fetch("/api/findings/behavioral", {
@@ -84,6 +112,9 @@ export async function runBehavioralTestsApi(args: {
       scanReport: args.scanReport,
       seed: args.seed,
       perCategoryCap: args.perCategoryCap,
+      disabledProbeIds: args.disabledProbeIds ?? [],
+      userProbes: args.userProbes ?? [],
+      disableBuiltIns: args.disableBuiltIns ?? false,
     }),
     signal: args.signal,
   })

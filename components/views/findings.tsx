@@ -11,6 +11,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -47,10 +48,15 @@ import {
   CircleDashed,
   FileCode,
   MessageSquare,
+  Plus,
+  Trash2,
+  RotateCcw,
 } from "lucide-react"
 import { FindingDrawer } from "@/components/finding-drawer"
 import { FindingFixButton } from "@/components/finding-fix-button"
+import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
 import type { ScanReport, UiFinding } from "@/lib/scan-report"
+import type { TestSuite } from "@/lib/test-cases"
 import { SECURITY_CHECKS, displayCategoryLabel } from "@/lib/security-checks"
 import {
   accuracyTone,
@@ -61,8 +67,17 @@ import {
   type BehavioralRunReport,
   type BehavioralStatus,
   type BehavioralTestCase,
+  type UserBehavioralProbeWire,
 } from "@/lib/behavioral-tests-client"
 import type { FixTarget, RunFixesResult } from "@/lib/finding-fixes-client"
+import {
+  disableBuiltinProbe,
+  enableBuiltinProbe,
+  loadProbeStore,
+  removeUserProbe,
+  setUserOnly,
+  type ProjectProbeStore,
+} from "@/lib/user-probes"
 
 export type Finding = UiFinding
 
@@ -85,6 +100,34 @@ interface FindingsProps {
    *  "needs a project + scan" empty state. */
   projectPath?: string | null
   scanReport?: ScanReport | null
+  /** Which inner tab to land on. Lets external callers (e.g. the
+   *  Scan Center "Run user-defined + AI tests" button) deep-link
+   *  into the Behavioral Tests subtab. Defaults to "code". */
+  initialTab?: "code" | "behavioral"
+  /** Id of the user's currently active Scan Center suite. Used as a
+   *  reload trigger for the Behavioral Tests probe store — when the
+   *  parent bridges new suite-derived probes into localStorage, we
+   *  need to re-read the store so this panel reflects them without
+   *  a full project switch. `null` is fine and means "no suite". */
+  activeSuiteId?: string | null
+  /** Monotonic counter the parent bumps when it mutates the
+   *  per-project probe store directly (e.g. forcing `userOnly` off
+   *  via the Scan Center "Run user-defined + AI tests" gesture).
+   *  The Behavioral panel uses this as an extra dep so it re-reads
+   *  localStorage even when project/suite ids are unchanged. */
+  probeStoreVersion?: number
+  /** Full active suite (when set). The Behavioral panel's
+   *  Edit suite dialog opens against this object so the user can
+   *  add / remove / replace tests inline from the Findings view. */
+  activeSuite?: TestSuite | null
+  /** Selected project id — passed through to the suite editor so
+   *  newly-saved suites stay pinned to this project. */
+  projectId?: string | null
+  /** Notified when the user saves edits or deletes the active suite
+   *  via the Edit suite dialog — lets the parent update its
+   *  `activeSuite` state so the Scan Center chip / narrowing stays
+   *  consistent across views. */
+  onActiveSuiteChange?: (suite: TestSuite | null) => void
 }
 
 /**
@@ -112,8 +155,23 @@ export function Findings({
   hasScan = false,
   projectPath = null,
   scanReport = null,
+  initialTab = "code",
+  activeSuiteId = null,
+  probeStoreVersion = 0,
+  activeSuite = null,
+  projectId = null,
+  onActiveSuiteChange,
 }: FindingsProps) {
-  const [tab, setTab] = useState<"code" | "behavioral">("code")
+  const [tab, setTab] = useState<"code" | "behavioral">(initialTab)
+
+  // Allow external callers to deep-link into a subtab between renders
+  // (e.g. the user clicks "Run user-defined + AI tests" while
+  // already on the Findings view — the parent flips `initialTab` to
+  // "behavioral" but the component is already mounted). Without this
+  // the prop only takes effect on first mount.
+  useEffect(() => {
+    setTab(initialTab)
+  }, [initialTab])
 
   const criticalCount = findings.filter((f) => f.severity === "critical").length
   const highCount = findings.filter((f) => f.severity === "high").length
@@ -255,6 +313,11 @@ export function Findings({
           <BehavioralTestsPanel
             projectPath={projectPath}
             scanReport={scanReport}
+            activeSuiteId={activeSuiteId}
+            probeStoreVersion={probeStoreVersion}
+            activeSuite={activeSuite}
+            projectId={projectId}
+            onActiveSuiteChange={onActiveSuiteChange}
           />
         </TabsContent>
       </Tabs>
@@ -539,11 +602,37 @@ function CodeAnalysisPanel({
 interface BehavioralTestsPanelProps {
   projectPath: string | null
   scanReport: ScanReport | null
+  /** Id of the active Scan Center suite, threaded through Findings. The
+   *  parent (`app/page.tsx`) bridges suite-derived probes into the
+   *  probe store whenever this changes — we use it purely as a reload
+   *  signal so the panel mirrors those writes without remounting. */
+  activeSuiteId: string | null
+  /** Force-reload signal from the parent. Bumped whenever
+   *  `app/page.tsx` writes to the probe store directly (e.g. flipping
+   *  `userOnly` from the Scan Center "Run user-defined + AI tests"
+   *  button). Without this dep the panel keeps a stale in-memory
+   *  snapshot because neither `projectPath` nor `activeSuiteId`
+   *  changes during that flow. */
+  probeStoreVersion: number
+  /** Full active suite (or null). Drives the "Edit suite" dialog so
+   *  the user can add / remove / re-shape rows from inside the
+   *  Behavioral Tests panel. */
+  activeSuite: TestSuite | null
+  /** Project id pinned onto suites saved from this dialog. */
+  projectId: string | null
+  /** Forwarded up to `app/page.tsx` so the new/edited suite becomes
+   *  the active one (and the suite-bridge useEffect there re-fires). */
+  onActiveSuiteChange?: (suite: TestSuite | null) => void
 }
 
 function BehavioralTestsPanel({
   projectPath,
   scanReport,
+  activeSuiteId,
+  probeStoreVersion,
+  activeSuite,
+  projectId,
+  onActiveSuiteChange,
 }: BehavioralTestsPanelProps) {
   const [report, setReport] = useState<BehavioralRunReport | null>(null)
   const [running, setRunning] = useState(false)
@@ -552,23 +641,94 @@ function BehavioralTestsPanel({
     "all"
   )
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
+  // Controls the suite editor dialog. Opens against `activeSuite`
+  // (edit flow) when one exists, or starts blank (create flow)
+  // when there is none. Replaces the previous one-probe-at-a-time
+  // Define-Custom-Test dialog so the Behavioral panel and Scan
+  // Center share a single authoring surface.
+  const [editSuiteOpen, setEditSuiteOpen] = useState(false)
+  const [probeStore, setProbeStore] = useState<ProjectProbeStore>({
+    disabledProbeIds: [],
+    userProbes: [],
+    userOnly: false,
+  })
   const abortRef = useRef<AbortController | null>(null)
+
+  // Pull the persisted store whenever the project changes OR the
+  // active suite changes OR the parent bumps the version counter.
+  // The version counter catches direct writes from `app/page.tsx`
+  // (e.g. forcing `userOnly` off when the user clicks "Run
+  // user-defined + AI tests") where neither project nor suite id
+  // would otherwise move.
+  useEffect(() => {
+    setProbeStore(loadProbeStore(projectPath))
+  }, [projectPath, activeSuiteId, probeStoreVersion])
+
+  // Auto-rerun when "Only my tests" flips externally (e.g. Scan
+  // Center's "Run Suite Scan" with no built-ins ticked flipped this
+  // flag from app/page.tsx). Without this the toggle becomes ON but
+  // the cached report still shows the built-in pool until the user
+  // hits "Re-run with new inputs" by hand. The toggle-from-this-panel
+  // path goes through `handleToggleUserOnly` which already re-runs,
+  // so this effect only matters for "value changed under us".
+  const prevUserOnlyRef = useRef<boolean | null>(null)
+  useEffect(() => {
+    const prev = prevUserOnlyRef.current
+    prevUserOnlyRef.current = probeStore.userOnly
+    if (prev === null) return // first observation — don't trigger
+    if (prev === probeStore.userOnly) return
+    if (!projectPath) return
+    void runOnce({ overrideStore: probeStore })
+    // runOnce is intentionally NOT in deps — we only want this to
+    // fire when the flag flips, not when the callback identity
+    // changes due to scanReport updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probeStore.userOnly, projectPath])
 
   const canRun = Boolean(projectPath)
 
   const runOnce = useCallback(
-    async (opts?: { fixedSeed?: number }) => {
+    async (opts?: {
+      fixedSeed?: number
+      overrideStore?: ProjectProbeStore
+    }) => {
       if (!projectPath) return
       abortRef.current?.abort()
       const ac = new AbortController()
       abortRef.current = ac
       setRunning(true)
       setError(null)
+      // When the caller passes a freshly-updated store (e.g. right
+      // after a Remove click) we use it directly — otherwise we'd
+      // race the React state update and re-run with the old set.
+      const storeForRun = opts?.overrideStore ?? probeStore
+      const probesForRun: UserBehavioralProbeWire[] = (
+        opts?.overrideStore
+          ? opts.overrideStore.userProbes
+          : probeStore.userProbes
+      ).map((p) => ({
+        id: p.id,
+        rule_id: p.rule_id,
+        category: p.category,
+        severity: p.severity,
+        name: p.name,
+        scenario: p.scenario,
+        inputs: p.inputs,
+        expected_defense: p.expected_defense,
+        defense_patterns: p.defense_patterns,
+        target_file: p.target_file,
+        agents: p.agents,
+        accuracy_target: p.accuracy_target,
+        failure_observed: p.failure_observed,
+      }))
       try {
         const r = await runBehavioralTestsApi({
           projectPath,
           scanReport,
           seed: opts?.fixedSeed,
+          disabledProbeIds: storeForRun.disabledProbeIds,
+          userProbes: probesForRun,
+          disableBuiltIns: storeForRun.userOnly,
           signal: ac.signal,
         })
         setReport(r)
@@ -581,14 +741,95 @@ function BehavioralTestsPanel({
         setRunning(false)
       }
     },
-    [projectPath, scanReport]
+    [projectPath, scanReport, probeStore]
   )
 
+  // ── Remove / Add handlers (lifted so rows can fire them) ────────
+  const handleRemoveTest = useCallback(
+    (test: BehavioralTestCase) => {
+      if (!projectPath) return
+      const isUserProbe = test.probe_id.startsWith("user.")
+      const nextStore = isUserProbe
+        ? removeUserProbe(projectPath, test.probe_id)
+        : disableBuiltinProbe(projectPath, test.probe_id)
+      setProbeStore(nextStore)
+      // Optimistic UI: hide every row sharing this probe_id without
+      // waiting for the network round-trip. The re-run will replace
+      // the report shortly.
+      setReport((prev) =>
+        prev
+          ? {
+              ...prev,
+              tests: prev.tests.filter((t) => t.probe_id !== test.probe_id),
+            }
+          : prev
+      )
+      void runOnce({ overrideStore: nextStore })
+    },
+    [projectPath, runOnce]
+  )
+
+  const handleRestoreBuiltins = useCallback(() => {
+    if (!projectPath) return
+    let next = probeStore
+    for (const id of probeStore.disabledProbeIds) {
+      next = enableBuiltinProbe(projectPath, id)
+    }
+    setProbeStore(next)
+    void runOnce({ overrideStore: next })
+  }, [projectPath, probeStore, runOnce])
+
+  /** Toggle the "Only my tests" mode and immediately re-run so the
+   *  Behavioral panel reflects the new pool. Persists in the project
+   *  probe store so the choice survives reload. */
+  const handleToggleUserOnly = useCallback(
+    (value: boolean) => {
+      if (!projectPath) return
+      const next = setUserOnly(projectPath, value)
+      setProbeStore(next)
+      void runOnce({ overrideStore: next })
+    },
+    [projectPath, runOnce]
+  )
+
+  /** Fires after the user saves edits (or "Save as new") in the
+   *  suite editor. We refresh the in-memory probe store (the dialog
+   *  has already bridged suite rows into localStorage), notify the
+   *  parent so its `activeSuite` state matches, and trigger a fresh
+   *  Behavioral run so the panel reflects the new probe set without
+   *  needing a manual "Re-run with new inputs" click. */
+  const handleSuiteSaved = useCallback(
+    (suite: TestSuite) => {
+      onActiveSuiteChange?.(suite)
+      if (!projectPath) return
+      const next = loadProbeStore(projectPath)
+      setProbeStore(next)
+      void runOnce({ overrideStore: next })
+    },
+    [projectPath, runOnce, onActiveSuiteChange]
+  )
+
+  /** Fires after the user deletes the active suite from the editor.
+   *  Clears the parent's `activeSuite` (so Scan Center stops
+   *  narrowing to it) and refreshes the local probe store + run. */
+  const handleSuiteDeleted = useCallback(() => {
+    onActiveSuiteChange?.(null)
+    if (!projectPath) return
+    const next = loadProbeStore(projectPath)
+    setProbeStore(next)
+    void runOnce({ overrideStore: next })
+  }, [projectPath, runOnce, onActiveSuiteChange])
+
   // Auto-run once on first mount of the tab so the user sees real
-  // results without a click. Subsequent runs are explicit (button).
+  // results without a click. We pass an `overrideStore` so the first
+  // request includes any probes that were just bridged into
+  // localStorage (suite save, "Run user-defined + AI tests", etc.) —
+  // without the override, runOnce closes over the *initial* empty
+  // probeStore and drops every user/suite probe on first paint.
+  // Subsequent runs are explicit (button).
   useEffect(() => {
-    if (canRun && report === null && !running && error === null) {
-      void runOnce()
+    if (canRun && report === null && !running && error === null && projectPath) {
+      void runOnce({ overrideStore: loadProbeStore(projectPath) })
     }
     return () => {
       abortRef.current?.abort()
@@ -641,14 +882,108 @@ function BehavioralTestsPanel({
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
-                <CardTitle className="text-base">Per-test details</CardTitle>
+                <CardTitle className="text-base flex items-center gap-2 flex-wrap">
+                  Per-test details
+                  {(() => {
+                    // Distinguish suite-bridged probes (created by
+                    // "Define user-defined inputs" in Scan Center)
+                    // from stand-alone custom probes (created via
+                    // "Edit/Create suite" right here). They live in
+                    // the same store but the user thinks of them as
+                    // two different surfaces, so labelling them
+                    // separately removes the "why does my 1-row
+                    // suite show 15 tests?" confusion.
+                    const fromSuite = probeStore.userProbes.filter((p) =>
+                      p.id.startsWith("user.suite.")
+                    ).length
+                    const standalone =
+                      probeStore.userProbes.length - fromSuite
+                    const builtin = Math.max(
+                      0,
+                      (report?.totals.total ?? 0) -
+                        probeStore.userProbes.length
+                    )
+                    return (
+                      <>
+                        {builtin > 0 && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] bg-secondary/40 text-muted-foreground border-border"
+                          >
+                            {builtin} built-in
+                          </Badge>
+                        )}
+                        {fromSuite > 0 && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] bg-accent/15 text-accent-foreground border-accent/40"
+                          >
+                            {fromSuite} from suite
+                          </Badge>
+                        )}
+                        {standalone > 0 && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] bg-accent/10 text-accent-foreground border-accent/30"
+                          >
+                            {standalone} custom
+                          </Badge>
+                        )}
+                      </>
+                    )
+                  })()}
+                </CardTitle>
                 <CardDescription className="text-xs">
-                  Each row is one adversarial probe. Click to expand the
-                  conversation, expected defense, and the source the
-                  detector inspected.
+                  Each row is one adversarial probe. Built-in probes
+                  cover every Scan Center category by default; rows
+                  authored from <em>Define user-defined inputs</em>
+                  {" "}(Scan Center) and <em>Edit suite</em> (here)
+                  appear with a <strong>Custom</strong> badge. Flip{" "}
+                  <strong>Only my tests</strong> on the right to
+                  suppress the built-in pool entirely and run just
+                  the probes you defined. Use the trash icon on any
+                  row to remove that probe for this project.
                 </CardDescription>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <label
+                  className="flex items-center gap-2 text-[11px] text-muted-foreground select-none"
+                  title="When on, the runner skips the 11 built-in probes and runs ONLY tests you defined (in Scan Center or via Edit suite here)."
+                >
+                  <Switch
+                    checked={probeStore.userOnly}
+                    onCheckedChange={handleToggleUserOnly}
+                    aria-label="Only run my tests"
+                  />
+                  Only my tests
+                </label>
+                {probeStore.disabledProbeIds.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    onClick={handleRestoreBuiltins}
+                    title="Re-enable every built-in probe you've hidden in this project"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Restore {probeStore.disabledProbeIds.length} hidden
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() => setEditSuiteOpen(true)}
+                  title={
+                    activeSuite
+                      ? `Edit "${activeSuite.name}" — add / remove tests, save as new, or delete the suite`
+                      : "Create a user-defined suite — same dialog as Scan Center's Define user-defined inputs"
+                  }
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {activeSuite ? "Edit suite" : "Create suite"}
+                </Button>
                 <Filter className="h-3.5 w-3.5 text-muted-foreground" />
                 <Select
                   value={statusFilter}
@@ -690,9 +1025,37 @@ function BehavioralTestsPanel({
           </CardHeader>
           <CardContent className="pt-0">
             {filteredTests.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">
-                No tests match the current filters.
-              </p>
+              <div className="py-6 text-center text-sm text-muted-foreground space-y-2">
+                {probeStore.userOnly &&
+                probeStore.userProbes.length === 0 ? (
+                  <>
+                    <p>
+                      <strong>Only my tests</strong> is on, but you
+                      haven&apos;t defined any tests yet.
+                    </p>
+                    <p className="text-xs">
+                      Use <em>Create suite</em> here or{" "}
+                      <em>Define user-defined inputs</em> in Scan
+                      Center to add tests — or flip the switch off
+                      to run the built-in baseline.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p>No tests match the current filters.</p>
+                    {(probeStore.userProbes.length > 0 ||
+                      probeStore.disabledProbeIds.length > 0) && (
+                      <p className="text-xs">
+                        Active customisations:{" "}
+                        {probeStore.userProbes.length} custom ·{" "}
+                        {probeStore.disabledProbeIds.length} hidden
+                        built-in
+                        {probeStore.disabledProbeIds.length === 1 ? "" : "s"}.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
             ) : (
               <div className="space-y-2">
                 {filteredTests.map((t) => (
@@ -700,6 +1063,8 @@ function BehavioralTestsPanel({
                     key={t.id}
                     test={t}
                     projectPath={projectPath}
+                    onRemove={() => handleRemoveTest(t)}
+                    onDefineSimilar={() => setEditSuiteOpen(true)}
                   />
                 ))}
               </div>
@@ -707,6 +1072,17 @@ function BehavioralTestsPanel({
           </CardContent>
         </Card>
       )}
+
+      <DefineUserInputsDialog
+        open={editSuiteOpen}
+        onOpenChange={setEditSuiteOpen}
+        scanReport={scanReport}
+        projectId={projectId ?? undefined}
+        projectPath={projectPath}
+        initialSuite={activeSuite}
+        onSuiteReady={handleSuiteSaved}
+        onSuiteDeleted={handleSuiteDeleted}
+      />
     </div>
   )
 }
@@ -926,13 +1302,22 @@ function BehavioralCategoryGrid({ report }: { report: BehavioralRunReport }) {
 function BehavioralTestRow({
   test,
   projectPath,
+  onRemove,
+  onDefineSimilar,
 }: {
   test: BehavioralTestCase
   projectPath: string | null
+  /** Called when the user clicks the trash icon. Parent decides
+   *  whether this is "delete user probe" or "hide built-in probe". */
+  onRemove?: () => void
+  /** Optional helper to open the Define dialog pre-filled with this
+   *  test's category — used from inside the expanded details panel. */
+  onDefineSimilar?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const sev = severityTone(test.severity)
   const stat = statusTone(test.status)
+  const isUserProbe = test.probe_id.startsWith("user.")
 
   // A test is "fixable" when it has a real target file/line AND a
   // backing scanner rule_id (the fix engine keys its templates off
@@ -958,12 +1343,26 @@ function BehavioralTestRow({
           : "border-border bg-secondary/20"
       }`}
     >
-      <button
-        type="button"
-        className="w-full flex items-center gap-3 px-3 py-2 text-left"
-        onClick={() => setOpen((v) => !v)}
-      >
+      {/* Header is a flex row, not a single <button>, so we can host
+          the trash icon as its own clickable element without nesting
+          buttons (invalid HTML). The toggleable expand area covers
+          everything EXCEPT the trash button. */}
+      <div className="w-full flex items-center gap-3 px-3 py-2">
+        <button
+          type="button"
+          className="flex items-center gap-3 text-left flex-1 min-w-0"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
         <span className={`h-2 w-2 rounded-full shrink-0 ${stat.dot}`} />
+        {isUserProbe && (
+          <Badge
+            variant="outline"
+            className="bg-accent/15 text-accent-foreground border-accent/30 text-[10px] uppercase"
+          >
+            Custom
+          </Badge>
+        )}
         <Badge
           variant="outline"
           className={`${stat.badge} text-[10px] uppercase`}
@@ -987,11 +1386,32 @@ function BehavioralTestRow({
           </span>
         )}
         <ChevronDown
-          className={`h-4 w-4 text-muted-foreground transition-transform ${
+          className={`h-4 w-4 text-muted-foreground transition-transform shrink-0 ${
             open ? "rotate-180" : ""
           }`}
         />
-      </button>
+        </button>
+        {onRemove && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onRemove()
+            }}
+            className="shrink-0 h-7 w-7 inline-flex items-center justify-center rounded-md border border-border/60 text-muted-foreground hover:text-red-400 hover:border-red-500/40 hover:bg-red-500/10 transition-colors"
+            title={
+              isUserProbe
+                ? "Delete this custom test"
+                : "Hide this built-in probe for this project"
+            }
+            aria-label={
+              isUserProbe ? "Delete custom test" : "Hide built-in probe"
+            }
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
       {open && (
         <div className="border-t border-border px-3 py-3 space-y-3 text-sm">
           <DetailField
@@ -1074,7 +1494,20 @@ function BehavioralTestRow({
             </p>
           )}
 
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-end gap-2 flex-wrap">
+            {onDefineSimilar && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5 text-xs"
+                onClick={onDefineSimilar}
+                title="Open the suite editor — Save changes to update this suite, or Save as new for a fresh one"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Edit suite
+              </Button>
+            )}
             <FindingFixButton
               targets={fixTargets}
               projectPath={projectPath}

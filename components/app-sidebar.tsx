@@ -130,8 +130,33 @@ export function AppSidebar({
             )}
             <DropdownMenuSeparator />
 
+            {/* Action rows appear FIRST so they're reachable without
+             *  scrolling past a long Recent Projects list — the common
+             *  intent for opening this dropdown is "add a new repo",
+             *  not "switch to a known one". The icon keeps the accent
+             *  color as a visual cue; the label uses the default
+             *  foreground so it stays readable both idle and on hover.
+             *  The previous "text-accent span" caused the label to
+             *  render accent-on-accent (i.e. invisible) once the
+             *  dropdown item's focus background kicked in. */}
+            <DropdownMenuItem
+              onClick={onOpenLocalProject}
+              className="font-medium"
+            >
+              <FolderPlus className="h-4 w-4 mr-2 text-accent" />
+              <span>Open Local Project…</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={onCloneFromGithub}
+              className="font-medium"
+            >
+              <Github className="h-4 w-4 mr-2 text-accent" />
+              <span>Clone from GitHub…</span>
+            </DropdownMenuItem>
+
             {others.length > 0 ? (
               <>
+                <DropdownMenuSeparator />
                 <DropdownMenuLabel className="text-xs text-muted-foreground">
                   Recent projects
                 </DropdownMenuLabel>
@@ -150,30 +175,8 @@ export function AppSidebar({
                     </span>
                   </DropdownMenuItem>
                 ))}
-                <DropdownMenuSeparator />
               </>
             ) : null}
-
-            {/* Action rows. The icon keeps the accent color as a visual
-             *  cue; the label uses the default foreground so it stays
-             *  readable both idle and on hover. The previous "text-accent
-             *  span" caused the label to render accent-on-accent (i.e.
-             *  invisible) once the dropdown item's focus background
-             *  kicked in — which is what the user reported. */}
-            <DropdownMenuItem
-              onClick={onOpenLocalProject}
-              className="font-medium"
-            >
-              <FolderPlus className="h-4 w-4 mr-2 text-accent" />
-              <span>Open Local Project…</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={onCloneFromGithub}
-              className="font-medium"
-            >
-              <Github className="h-4 w-4 mr-2 text-accent" />
-              <span>Clone from GitHub…</span>
-            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
