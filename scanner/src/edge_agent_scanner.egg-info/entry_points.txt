@@ -1,0 +1,2 @@
+[console_scripts]
+edge-agent-scanner = edge_agent_scanner.cli:main

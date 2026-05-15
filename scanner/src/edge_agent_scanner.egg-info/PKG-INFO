@@ -5,6 +5,7 @@ Summary: Static security scanner for AI agent codebases (Edge Agent AI)
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Requires-Dist: pydantic>=2.0
+Requires-Dist: pyyaml>=6.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 

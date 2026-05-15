@@ -9,6 +9,7 @@ src/edge_agent_scanner/walker.py
 src/edge_agent_scanner.egg-info/PKG-INFO
 src/edge_agent_scanner.egg-info/SOURCES.txt
 src/edge_agent_scanner.egg-info/dependency_links.txt
+src/edge_agent_scanner.egg-info/entry_points.txt
 src/edge_agent_scanner.egg-info/requires.txt
 src/edge_agent_scanner.egg-info/top_level.txt
 src/edge_agent_scanner/rules/__init__.py

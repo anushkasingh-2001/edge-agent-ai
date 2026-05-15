@@ -1,0 +1,69 @@
+{
+  "decision": "warn",
+  "mode": "warn",
+  "failedConditions": [
+    "security.block_if_critical",
+    "security.max_risk_score",
+    "security.max_critical_findings",
+    "security.max_high_findings",
+    "security.block_if_secrets_found",
+    "security.block_if_user_input_to_dangerous_code"
+  ],
+  "passedConditions": [
+    "security.block_if_unsafe_mcp",
+    "security.block_if_schema_auth_gap",
+    "security.block_if_dangerous_tool_without_approval"
+  ],
+  "inapplicableConditions": [
+    "security.max_risk_score_increase",
+    "agents.SalesAgent.accuracy.min_absolute",
+    "agents.SalesAgent.accuracy.require_delta_gte",
+    "agents.SalesAgent.runtime_ms.max_absolute",
+    "agents.SalesAgent.runtime_ms.require_delta_lte",
+    "agents.SalesAgent.tool_selection.min_pass_rate",
+    "evals.block_if_accuracy_drops",
+    "evals.min_accuracy",
+    "evals.block_if_runtime_increases",
+    "evals.max_runtime_p95_ms",
+    "evals.block_if_tool_selection_drops",
+    "evals.min_tool_selection_pass_rate",
+    "evals.block_if_tests_fail"
+  ],
+  "reasons": [
+    "Warning: target scan has 3 critical findings.",
+    "Warning: risk score 100 exceeds policy ceiling 70.",
+    "Warning: 3 critical findings exceed ceiling 0.",
+    "Warning: 146 high findings exceed ceiling 0.",
+    "Warning: secret-like values were detected in source.",
+    "Warning: user input can flow into dangerous code paths.",
+    "Accuracy/runtime metrics are unavailable because eval runner has not been run."
+  ],
+  "deltas": {
+    "risk": null,
+    "critical": null,
+    "high": null,
+    "medium": null,
+    "low": null,
+    "perAgent": {
+      "SalesAgent": {
+        "accuracy": null,
+        "runtime_ms": null,
+        "tool_selection_pass_rate": null
+      }
+    }
+  },
+  "target": {
+    "risk_score": 100,
+    "summary": {
+      "critical": 3,
+      "high": 146,
+      "medium": 57,
+      "low": 24,
+      "total": 230
+    },
+    "generated_at": "2026-05-15T06:06:27.386273+00:00"
+  },
+  "base": null,
+  "policyPath": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-ai/.edgeagent/policy.yaml",
+  "policyErrors": []
+}

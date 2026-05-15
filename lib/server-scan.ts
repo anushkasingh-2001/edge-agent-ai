@@ -58,17 +58,58 @@ function safeUnlink(p: string): void {
   }
 }
 
+/**
+ * Resolve the directory that contains the Python scanner source tree
+ * (the parent of `src/edge_agent_scanner/`).
+ *
+ * Priority:
+ *   1. `EDGE_AGENT_SCANNER_DIR` — explicit override. Used by the desktop
+ *      launcher (Electron) where `process.cwd()` is unpredictable, and
+ *      by anyone running the standalone Next server (which `chdir`s into
+ *      `.next/standalone/` on startup — see `.next/standalone/server.js`).
+ *   2. `<process.cwd()>/scanner` — the repo layout when running
+ *      `pnpm dev` or invoking the API from the project root.
+ *
+ * Throws `ScannerError` (status 500) with a precise reason when no
+ * usable directory exists, so the caller can surface it without
+ * a generic "scanner not found".
+ */
+export function resolveScannerDir(): string {
+  const override = process.env.EDGE_AGENT_SCANNER_DIR?.trim()
+  if (override) {
+    const resolved = path.resolve(override)
+    if (!fs.existsSync(resolved)) {
+      throw new ScannerError(
+        `EDGE_AGENT_SCANNER_DIR points to a missing path: ${resolved}`,
+        500
+      )
+    }
+    const pkg = path.join(resolved, "src", "edge_agent_scanner")
+    if (!fs.existsSync(pkg)) {
+      throw new ScannerError(
+        `EDGE_AGENT_SCANNER_DIR is missing src/edge_agent_scanner: ${resolved}`,
+        500
+      )
+    }
+    return resolved
+  }
+  const fallback = path.join(process.cwd(), "scanner")
+  if (!fs.existsSync(fallback)) {
+    throw new ScannerError("scanner package not found under project root", 500)
+  }
+  return fallback
+}
+
 export function runScannerOn(
   targetPath: string,
   opts: { timeoutMs?: number; checks?: string[] } = {}
 ): Promise<ScanReportLite> {
   return new Promise((resolve, reject) => {
-    const repoRoot = process.cwd()
-    const scannerDir = path.join(repoRoot, "scanner")
-    if (!fs.existsSync(scannerDir)) {
-      reject(
-        new ScannerError("scanner package not found under project root", 500)
-      )
+    let scannerDir: string
+    try {
+      scannerDir = resolveScannerDir()
+    } catch (err) {
+      reject(err)
       return
     }
     const tmpFile = path.join(

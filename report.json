@@ -1,8 +1,27 @@
 {
   "schema_version": "1.0",
   "scan_root": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-ai/sample-agent",
-  "generated_at": "2026-05-08T23:38:37.506327+00:00",
+  "generated_at": "2026-05-15T06:20:43.074872+00:00",
   "frameworks_detected": [],
+  "agents_detected": [
+    {
+      "name": "refund",
+      "file": "agents/tools/refund.py",
+      "line": 1,
+      "kind": "agent_file",
+      "framework": null
+    }
+  ],
+  "tools_detected": [
+    {
+      "name": "refund",
+      "file": "agents/tools/refund.py",
+      "line": 1,
+      "kind": "directory",
+      "framework": null,
+      "agent": "refund"
+    }
+  ],
   "summary": {
     "critical": 0,
     "high": 1,
@@ -13,22 +32,22 @@
   "risk_score": 36,
   "findings": [
     {
-      "id": "de8bf173-371e-48ef-8ef5-dff66716a819",
+      "id": "b593d510-f4ba-4203-a9ae-a3d6026b6e03",
       "rule_id": "dangerous-tools",
       "severity": "medium",
       "category": "Dangerous tool / side effect",
-      "title": "Potentially dangerous pattern: Financial/refund-related operation",
+      "title": "Potentially dangerous pattern: Outbound email capability",
       "file": "agents/tools/refund.py",
       "line": 2,
       "agent": "unknown",
-      "reason": "The line matches a heuristic for risky agent/tool behavior: Financial/refund-related operation.",
+      "reason": "The line matches a heuristic for risky agent/tool behavior: Outbound email capability.",
       "suggestedFix": "Constrain the tool, add human approval, narrow permissions, and validate inputs.",
-      "evidence": "Financial/refund-related operation",
-      "code": "print(\"refund issued\")",
-      "confidence": 0.75
+      "evidence": "Outbound email capability",
+      "code": "send_email(user_id, message)",
+      "confidence": 0.72
     },
     {
-      "id": "c5a869c8-b505-47ab-af43-671cc55e6795",
+      "id": "7287ff7d-093a-4125-b29a-b5d9d1f045f6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -39,11 +58,11 @@
       "reason": "A potentially dangerous tool or side-effect pattern appears, but the surrounding code (15 lines) lacks common approval / HITL markers.",
       "suggestedFix": "Add explicit human-in-the-loop approval (e.g. interrupt, confirmation step, or policy gate) before executing this capability.",
       "evidence": "No marker from: approval_required, human_review, manual_gate, confirm_before_execute, require_confirmation, admin_approval, permission_required, human_in_the_loop, interrupt",
-      "code": "print(\"refund issued\")",
+      "code": "send_email(user_id, message)",
       "confidence": 0.72
     },
     {
-      "id": "e9ff05fe-c458-469f-a5c4-a3b3843c138e",
+      "id": "268564da-e87e-4b5d-b398-0fb02caa72a4",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -54,23 +73,28 @@
       "reason": "Generic 'helpful assistant' role",
       "suggestedFix": "Add explicit goals, output format, tool boundaries, and safety/approval rules.",
       "evidence": "Generic 'helpful assistant' role",
-      "code": "You are a helpful assistant. Help users with refunds if possible.",
+      "code": "You are a helpful assistant.",
       "confidence": 0.62
     },
     {
-      "id": "7621feea-f3ff-42bd-b919-3f08477aa3d1",
+      "id": "d9490d2a-c57a-434f-a0c6-323273f2c56d",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
-      "title": "Low-specificity prompt phrase: Non-committal 'if possible' wording",
+      "title": "Low-specificity prompt phrase: Vague 'do your best' instruction",
       "file": "prompts/refund_agent.md",
-      "line": 1,
+      "line": 2,
       "agent": "unknown",
-      "reason": "Non-committal 'if possible' wording",
+      "reason": "Vague 'do your best' instruction",
       "suggestedFix": "Add explicit goals, output format, tool boundaries, and safety/approval rules.",
-      "evidence": "Non-committal 'if possible' wording",
-      "code": "You are a helpful assistant. Help users with refunds if possible.",
+      "evidence": "Vague 'do your best' instruction",
+      "code": "Do your best to help users with refunds.",
       "confidence": 0.62
     }
-  ]
+  ],
+  "files_scanned": 2,
+  "files_scanned_by_ext": {
+    ".py": 1,
+    ".md": 1
+  }
 }
