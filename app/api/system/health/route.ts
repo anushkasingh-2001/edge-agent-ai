@@ -341,13 +341,23 @@ function checkScanner(): ScannerStatus {
   // for both POSIX and Windows so the health gate works on every
   // platform we ship for. Fall back to system python3 as a last
   // resort so users who installed the scanner globally still pass.
+  //
+  // The path segments are joined at runtime (Array.join) rather than as
+  // inline string literals so Next 16's Turbopack build doesn't treat
+  // `scanner/.venv` as a static DirAssetReference and try to bundle it
+  // (the venv contains a Homebrew Python symlink that points outside
+  // the project root, which makes the build fail).
   const cwdScannerDir = path.join(process.cwd(), "scanner")
+  const venvDir = [".", "venv"].join("")
+  const posixBin = ["bi", "n"].join("")
+  const winBin = ["Scrip", "ts"].join("")
+  const pyExe = ["python", ".exe"].join("")
   if (fs.existsSync(cwdScannerDir)) {
     const candidates: string[] = []
-    candidates.push(path.join(cwdScannerDir, ".venv", "bin", "python"))
-    candidates.push(path.join(cwdScannerDir, ".venv", "bin", "python3"))
+    candidates.push(path.join(cwdScannerDir, venvDir, posixBin, "python"))
+    candidates.push(path.join(cwdScannerDir, venvDir, posixBin, "python3"))
     candidates.push(
-      path.join(cwdScannerDir, ".venv", "Scripts", "python.exe")
+      path.join(cwdScannerDir, venvDir, winBin, pyExe)
     )
     // Honour EDGE_AGENT_PYTHON even when EDGE_AGENT_SCANNER_DIR is
     // missing — this is the standalone-server case where the launcher

@@ -257,10 +257,16 @@ export function buildScannerCommand(opts: {
 
   /* ---------- C. Dev fallback ---------- */
   const scannerDir = resolveScannerDir() // <cwd>/scanner (throws if missing)
-  const venvPython =
-    process.platform === "win32"
-      ? path.join(scannerDir, ".venv", "Scripts", "python.exe")
-      : path.join(scannerDir, ".venv", "bin", "python")
+  // The path segments are assembled at runtime (Array.join / concat)
+  // rather than as inline string literals so that Next 16's Turbopack
+  // build doesn't see `.venv` as a static DirAssetReference and try to
+  // bundle `scanner/.venv/` (which contains a Homebrew Python symlink
+  // pointing outside the project root, causing the build to fail).
+  const venvDir = [".", "venv"].join("")
+  const isWin = process.platform === "win32"
+  const binDir = isWin ? ["Scrip", "ts"].join("") : ["bi", "n"].join("")
+  const pyName = isWin ? ["python", ".exe"].join("") : ["py", "thon"].join("")
+  const venvPython = path.join(scannerDir, venvDir, binDir, pyName)
   const python = fs.existsSync(venvPython) ? venvPython : "python3"
   return {
     cmd: python,

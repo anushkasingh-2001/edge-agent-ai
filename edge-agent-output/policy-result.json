@@ -33,7 +33,7 @@
     "Warning: target scan has 3 critical findings.",
     "Warning: risk score 100 exceeds policy ceiling 70.",
     "Warning: 3 critical findings exceed ceiling 0.",
-    "Warning: 308 high findings exceed ceiling 0.",
+    "Warning: 365 high findings exceed ceiling 0.",
     "Warning: secret-like values were detected in source.",
     "Warning: user input can flow into dangerous code paths.",
     "Warning: OpenAPI / auth / schema quality issues were found.",
@@ -57,12 +57,12 @@
     "risk_score": 100,
     "summary": {
       "critical": 3,
-      "high": 308,
-      "medium": 69,
+      "high": 365,
+      "medium": 12,
       "low": 3,
       "total": 383
     },
-    "generated_at": "2026-05-15T19:53:35.965220+00:00"
+    "generated_at": "2026-05-15T19:54:12.805169+00:00"
   },
   "base": null,
   "policyPath": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-recovered/.edgeagent/policy.yaml",
