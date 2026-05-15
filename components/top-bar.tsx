@@ -251,10 +251,15 @@ export function TopBar({
     }
   }
 
+  // Top bar wraps to a second row at narrow widths instead of clipping.
+  // `min-h-14` keeps the original 56px height at wide widths and lets it grow
+  // when children wrap; `flex-wrap` + `gap-y-2` makes the right cluster drop
+  // under the left cluster instead of being pushed off-screen. At ≥~1450px the
+  // layout is visually identical to before.
   return (
-    <div className="h-14 border-b border-border bg-card/50 backdrop-blur-sm px-4 flex items-center justify-between">
+    <div className="min-h-14 border-b border-border bg-card/50 backdrop-blur-sm px-4 py-2 flex flex-wrap items-center justify-between gap-y-2">
       {/* Left Section: Project Name, Branch, Agents */}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4 gap-y-2">
         {/* Project Name */}
         <span className="text-sm font-medium">{projectName}</span>
 
@@ -507,7 +512,7 @@ export function TopBar({
 
       {/* Right Section: Actions in order: Run Scan, Pull, Commit, Push, Export Report */}
       <TooltipProvider>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 gap-y-2">
           {/* GitHub auth indicator. Renders "Sign in to GitHub" when
             * no token/CLI is configured, and "@user signed in" once
             * the user has authenticated. Clicking either opens the

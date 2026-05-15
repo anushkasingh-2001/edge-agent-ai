@@ -26,3 +26,6 @@ electron/resources/scanner-bin/
 scanner/build/
 scanner/dist/
 scanner/*.spec.bak
+
+# electron-builder output (.dmg / .zip / mac-arm64/Edge Agent AI.app)
+release/

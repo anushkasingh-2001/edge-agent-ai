@@ -1,10 +1,17 @@
 # pnpm 11+ uses this to decide which dependencies are allowed to run
-# their postinstall / preinstall scripts. Both packages need their
-# postinstalls to fetch the right native binary for the current
-# OS/arch — without these set to `true`, `pnpm install` exits 1.
+# their postinstall / preinstall scripts. Without an explicit entry for
+# every package that ships a build script, pnpm exits 1 with
+# [ERR_PNPM_IGNORED_BUILDS] during install / when launched from another
+# script (e.g. `pnpm package:mac`).
 #
-#   * esbuild — pulled in by `tsx`, used by the policy-gate CLI.
-#   * sharp   — Next.js image-optimisation native binding.
+#   * esbuild              — pulled in by `tsx`, used by the policy-gate CLI.
+#   * sharp                — Next.js image-optimisation native binding.
+#   * electron-winstaller  — transitive dep of `electron-builder`; only
+#                            needed for Windows .exe output. We don't build
+#                            Windows on this host, so deny it. The
+#                            explicit `false` is what stops the pre-flight
+#                            check from failing.
 allowBuilds:
+  electron-winstaller: false
   esbuild: true
   sharp: true

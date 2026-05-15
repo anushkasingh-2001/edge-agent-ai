@@ -1,0 +1,127 @@
+# electron-builder configuration for Edge Agent AI desktop packaging.
+#
+# Step 7 deliverable: turn the production-boot Electron app from Step 6 into a
+# distributable macOS bundle (.dmg and .zip). Windows/Linux are intentionally
+# deferred — they'll need their own scanner binaries (`pnpm build:scanner` on
+# each host) and additional `win`/`linux` blocks below.
+#
+# Run with:  pnpm package:mac
+# Output:    release/Edge Agent AI-<version>-arm64.dmg
+#            release/Edge Agent AI-<version>-arm64-mac.zip
+#            release/mac-arm64/Edge Agent AI.app
+#
+# Intentionally NOT configured yet:
+#   - code signing / Apple Developer ID (no `identity`; we force-disable below)
+#   - notarization
+#   - auto-update (electron-updater)
+#   - Windows .exe / Linux .AppImage outputs
+
+appId: ai.edgeagent.desktop
+productName: Edge Agent AI
+
+directories:
+  # Where the .dmg/.zip/.app artefacts land. Kept out of git via .gitignore.
+  output: release
+
+# ----------------------------------------------------------------------------
+# Files bundled into app.asar (the application archive at
+# Edge Agent AI.app/Contents/Resources/app.asar).
+#
+# We deliberately keep this list minimal — ONLY the Electron entry points
+# and package.json go into the asar. The Next.js standalone server lives
+# OUTSIDE the asar (see extraResources below) because spawning a child
+# Node process with `cwd: <inside-asar>` fails with ENOTDIR — the OS-level
+# chdir() syscall cannot traverse into app.asar (it's a single file on
+# disk, even though Electron's fs hooks make `require()` see it as a tree).
+# ----------------------------------------------------------------------------
+files:
+  # Compiled Electron entry points (main.js + preload.js + sourcemaps).
+  - electron/dist/**
+  # Top-level package.json — electron-builder needs it to identify the app
+  # and to find the `main` entry. Also lets the runtime read app.getVersion().
+  - package.json
+
+# ----------------------------------------------------------------------------
+# Asar is enabled by default for everything we DO bundle (electron/dist/**),
+# which keeps the few JS files we have compressed and tamper-evident. No
+# explicit asarUnpack rules are needed because the only native binding we
+# care about (sharp's *.node) lives inside the standalone bundle, which is
+# in extraResources (already outside asar).
+# ----------------------------------------------------------------------------
+asar: true
+
+# ----------------------------------------------------------------------------
+# Resources copied verbatim into Edge Agent AI.app/Contents/Resources/,
+# OUTSIDE the asar archive. These end up at `process.resourcesPath/...`
+# in main.ts, which is exactly where:
+#   findStandaloneServerJs() looks first for `standalone/server.js`
+#   findScannerBin()         looks first for `scanner-bin/edge-agent-scanner`
+#
+# We ship the WHOLE .next/standalone tree (server.js + the trimmed
+# node_modules Next.js traced, plus the postbuild-copied .next/static and
+# public). Putting it here lets us:
+#   • spawn the standalone server with a real cwd (no ENOTDIR)
+#   • dlopen sharp's `*.node` binding (no asar dlopen restriction)
+#   • avoid the asar overhead for the bulk of the bundle
+#
+# Scanner-bin restricted to darwin-arm64 because the binary is host-built
+# by PyInstaller and cannot be cross-compiled. When we add Windows/Linux
+# we'll override extraResources in those platforms' blocks.
+# ----------------------------------------------------------------------------
+extraResources:
+  # The standalone bundle (server.js + traced source). electron-builder
+  # hard-codes a node_modules exclusion for extraResources sources, so we
+  # MUST list node_modules as its own entry below — otherwise the packaged
+  # server.js fails with `Cannot find module 'next'` on first launch.
+  - from: .next/standalone
+    to: standalone
+  # Separate entry forces inclusion of node_modules. `pnpm-style` symlinks
+  # under .pnpm/* are dereferenced into real files by electron-builder
+  # during the copy, so we end up with a flat, lockfile-free runtime tree.
+  - from: .next/standalone/node_modules
+    to: standalone/node_modules
+  - from: electron/resources/scanner-bin/darwin-arm64/edge-agent-scanner
+    to: scanner-bin/edge-agent-scanner
+
+# ----------------------------------------------------------------------------
+# macOS target configuration.
+# ----------------------------------------------------------------------------
+mac:
+  category: public.app-category.developer-tools
+  target:
+    # .dmg — what most users will install with.
+    - target: dmg
+      arch: arm64
+    # .zip — easier to scp/copy in CI or share with internal testers; also
+    # what electron-builder's auto-update mechanism would consume later.
+    - target: zip
+      arch: arm64
+  # Disable hardened runtime — it requires entitlements and re-signing
+  # every time we touch the binary. We'll re-enable when we add Developer ID
+  # signing in a later step.
+  hardenedRuntime: false
+  # Explicitly null out the signing identity so electron-builder doesn't try
+  # to auto-discover a keychain identity and fail mid-build on contributors'
+  # machines. The packaged .app will be unsigned (see README "Unsigned build").
+  identity: null
+  # Tell macOS this app does not need to launch with the Hardened Runtime,
+  # the secure-input flags, or any entitlements file. Keeping these defaults
+  # explicit so a future contributor knows nothing was forgotten.
+  gatekeeperAssess: false
+
+# ----------------------------------------------------------------------------
+# .dmg cosmetics. Keeping the bare minimum — no custom background or icon
+# position. A tiny window is enough for "drag here to install".
+# ----------------------------------------------------------------------------
+dmg:
+  writeUpdateInfo: false
+
+# ----------------------------------------------------------------------------
+# Build-time hooks deliberately disabled. We rely on the package.json
+# `package:mac` script to run `build:standalone`, `build:scanner`, and
+# `build:electron` before invoking electron-builder, so there's nothing
+# left for electron-builder to do other than pack.
+# ----------------------------------------------------------------------------
+buildDependenciesFromSource: false
+nodeGypRebuild: false
+npmRebuild: false

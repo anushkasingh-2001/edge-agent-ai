@@ -2,6 +2,7 @@
   "name": "my-project",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/dist/main.js",
   "scripts": {
     "dev": "next dev",
     "dev:web": "next dev",
@@ -12,6 +13,7 @@
     "build:scanner": "node scripts/build-scanner.mjs",
     "dev:electron": "cross-env EDGE_AGENT_DESKTOP=1 ELECTRON_RENDERER_URL=http://localhost:3000 concurrently -k -n web,elec -c blue,green \"next dev\" \"wait-on tcp:3000 && tsc -p electron/tsconfig.json && electron electron/dist/main.js\"",
     "start:electron-prod": "cross-env ELECTRON_RUN_AS_NODE= EDGE_AGENT_DESKTOP=1 electron electron/dist/main.js",
+    "package:mac": "pnpm build:standalone && pnpm build:scanner && pnpm build:electron && electron-builder --mac -c electron-builder.yml",
     "app:build": "pnpm build && pnpm build:electron",
     "app:start": "node scripts/app-preview.mjs",
     "app:preview": "pnpm app:build && pnpm app:start",
@@ -86,6 +88,7 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^42.0.1",
+    "electron-builder": "^26.8.1",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",
     "tsx": "^4.21.0",
