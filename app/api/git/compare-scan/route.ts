@@ -13,7 +13,10 @@ import {
   validateRef,
   type StashApplyResult,
 } from "@/lib/server-git"
-import { ScannerError, resolveScannerDir } from "@/lib/server-scan"
+import {
+  ScannerError,
+  buildScannerCommand,
+} from "@/lib/server-scan"
 
 /**
  * POST /api/git/compare-scan
@@ -499,34 +502,26 @@ function safeRemoveWorktree(dest: string) {
  */
 function runScannerOnAsync(targetPath: string): Promise<ScanReportLite> {
   return new Promise((resolve, reject) => {
-    let scannerDir: string
-    try {
-      scannerDir = resolveScannerDir()
-    } catch (err) {
-      const e = err as ScannerError
-      reject(new GitError(e?.message ?? "scanner package not found under project root", e?.status ?? 500))
-      return
-    }
     const tmpFile = path.join(
       os.tmpdir(),
       `edge-cmp-scan-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
     )
-    const python = process.env.EDGE_AGENT_PYTHON || "python3"
-    const args = [
-      "-m",
-      "edge_agent_scanner.cli",
-      "scan",
-      targetPath,
-      "--out",
-      tmpFile,
-    ]
-    const env = {
-      ...process.env,
-      PYTHONPATH: path.join(scannerDir, "src"),
+    let cmd
+    try {
+      cmd = buildScannerCommand({ targetPath, outFile: tmpFile })
+    } catch (err) {
+      const e = err as ScannerError
+      reject(
+        new GitError(
+          e?.message ?? "scanner package not found under project root",
+          e?.status ?? 500
+        )
+      )
+      return
     }
-    const proc = spawn(python, args, {
-      cwd: scannerDir,
-      env,
+    const proc = spawn(cmd.cmd, cmd.args, {
+      cwd: cmd.cwd,
+      env: cmd.env,
       // Capture stderr only — stdout is just the "Wrote ..." line.
       stdio: ["ignore", "ignore", "pipe"],
     })

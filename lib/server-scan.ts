@@ -73,6 +73,10 @@ function safeUnlink(p: string): void {
  * Throws `ScannerError` (status 500) with a precise reason when no
  * usable directory exists, so the caller can surface it without
  * a generic "scanner not found".
+ *
+ * NOTE: only called on the Python branches of `buildScannerCommand`.
+ * When `EDGE_AGENT_SCANNER_BIN` is set the bundled binary is fully
+ * self-contained and we never need the source tree at all.
  */
 export function resolveScannerDir(): string {
   const override = process.env.EDGE_AGENT_SCANNER_DIR?.trim()
@@ -100,45 +104,216 @@ export function resolveScannerDir(): string {
   return fallback
 }
 
+/* -------------------------------------------------------------------------- */
+/* buildScannerCommand — single source of truth for "how do we invoke the     */
+/* scanner?". Every API route + script that runs a scan goes through here so  */
+/* the three resolution branches stay in lockstep.                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where this scanner invocation came from. Mirrors the values returned
+ * by `/api/system/health` (minus `pythonpath` which is a probe-only
+ * source; we never spawn against it directly).
+ */
+export type ScannerSource = "scanner_bin" | "python_venv" | "python_fallback"
+
+/**
+ * Spawn-ready scanner invocation. `cmd` + `args` go straight into
+ * `spawn()` / `spawnSync()`; never join into a shell string.
+ *
+ * The metadata fields (`source`, `scannerBin`, `python`, `scannerDir`)
+ * exist so the caller can attribute "scanner failed" errors back to
+ * the right thing (binary vs venv vs fallback) without re-deriving the
+ * resolution.
+ */
+export type ScannerCommand = {
+  cmd: string
+  args: string[]
+  env: NodeJS.ProcessEnv
+  cwd: string
+  source: ScannerSource
+  scannerBin: string | null
+  python: string | null
+  scannerDir: string | null
+}
+
+/**
+ * Build the `spawn` shape for one scanner invocation. Resolution order:
+ *
+ *   A. `EDGE_AGENT_SCANNER_BIN` — bundled PyInstaller binary.
+ *      - Validated to exist; on POSIX, validated executable (X_OK).
+ *      - Invoked directly as `<bin> scan <projectPath> --out <tmpReport> ...`
+ *      - PYTHONPATH is NOT injected — the binary is self-contained and
+ *        a stray PYTHONPATH from the user's shell could shadow its
+ *        bundled modules.
+ *   B. `EDGE_AGENT_PYTHON` set — explicit venv path.
+ *      - Validated to exist.
+ *      - `EDGE_AGENT_SCANNER_DIR` is honoured if set (via
+ *        `resolveScannerDir`); otherwise falls back to `<cwd>/scanner`.
+ *      - cwd = scannerDir; PYTHONPATH = `<scannerDir>/src` prepended
+ *        onto any existing PYTHONPATH so user-set imports still work.
+ *   C. Fallback — no env vars set.
+ *      - `<cwd>/scanner/.venv/bin/python` if present (matches `pnpm dev`).
+ *      - Else `python3` (the user must have the scanner installed via
+ *        their system Python).
+ *      - scannerDir = `<cwd>/scanner`; PYTHONPATH same shape as B.
+ *
+ * Throws `ScannerError` (status 500) with a precise reason when an
+ * explicit override doesn't resolve. Throwing — rather than silently
+ * falling through — is deliberate: if the user set EDGE_AGENT_SCANNER_BIN
+ * and got the path wrong, they want to know, not get a "scanner not
+ * found in /scanner" error fifty lines later.
+ */
+export function buildScannerCommand(opts: {
+  targetPath: string
+  outFile: string
+  checks?: string[]
+  excludes?: string[]
+}): ScannerCommand {
+  const buildArgs = (header: string[]): string[] => {
+    const args = [...header, opts.targetPath, "--out", opts.outFile]
+    for (const c of opts.checks ?? []) {
+      if (typeof c === "string" && c.length > 0) args.push("--check", c)
+    }
+    for (const e of opts.excludes ?? []) {
+      if (typeof e === "string" && e.length > 0) args.push("--exclude", e)
+    }
+    return args
+  }
+
+  /* ---------- A. EDGE_AGENT_SCANNER_BIN ---------- */
+  const binEnv = process.env.EDGE_AGENT_SCANNER_BIN?.trim()
+  if (binEnv) {
+    const bin = path.resolve(binEnv)
+    if (!fs.existsSync(bin)) {
+      throw new ScannerError(
+        `EDGE_AGENT_SCANNER_BIN points to a missing file: ${bin}`,
+        500
+      )
+    }
+    try {
+      if (!fs.statSync(bin).isFile()) {
+        throw new ScannerError(
+          `EDGE_AGENT_SCANNER_BIN is not a file: ${bin}`,
+          500
+        )
+      }
+    } catch (err) {
+      if (err instanceof ScannerError) throw err
+      throw new ScannerError(
+        `EDGE_AGENT_SCANNER_BIN stat failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        500
+      )
+    }
+    if (process.platform !== "win32") {
+      try {
+        fs.accessSync(bin, fs.constants.X_OK)
+      } catch {
+        throw new ScannerError(
+          `EDGE_AGENT_SCANNER_BIN is not executable: ${bin} (try: chmod +x "${bin}")`,
+          500
+        )
+      }
+    }
+    return {
+      cmd: bin,
+      args: buildArgs(["scan"]),
+      env: process.env,
+      cwd: path.dirname(bin),
+      source: "scanner_bin",
+      scannerBin: bin,
+      python: null,
+      scannerDir: null,
+    }
+  }
+
+  /* ---------- B. EDGE_AGENT_PYTHON ---------- */
+  const pyEnv = process.env.EDGE_AGENT_PYTHON?.trim()
+  if (pyEnv) {
+    const python = path.resolve(pyEnv)
+    if (!fs.existsSync(python)) {
+      throw new ScannerError(
+        `EDGE_AGENT_PYTHON points to a missing file: ${python}`,
+        500
+      )
+    }
+    // `resolveScannerDir` already prefers EDGE_AGENT_SCANNER_DIR over
+    // <cwd>/scanner — we just inherit its behaviour here so the two
+    // env-var pairs compose.
+    const scannerDir = resolveScannerDir()
+    return {
+      cmd: python,
+      args: buildArgs(["-m", "edge_agent_scanner.cli", "scan"]),
+      env: buildPythonEnv(scannerDir),
+      cwd: scannerDir,
+      source: "python_venv",
+      scannerBin: null,
+      python,
+      scannerDir,
+    }
+  }
+
+  /* ---------- C. Dev fallback ---------- */
+  const scannerDir = resolveScannerDir() // <cwd>/scanner (throws if missing)
+  const venvPython =
+    process.platform === "win32"
+      ? path.join(scannerDir, ".venv", "Scripts", "python.exe")
+      : path.join(scannerDir, ".venv", "bin", "python")
+  const python = fs.existsSync(venvPython) ? venvPython : "python3"
+  return {
+    cmd: python,
+    args: buildArgs(["-m", "edge_agent_scanner.cli", "scan"]),
+    env: buildPythonEnv(scannerDir),
+    cwd: scannerDir,
+    source: "python_fallback",
+    scannerBin: null,
+    python,
+    scannerDir,
+  }
+}
+
+/**
+ * Compose the env for the python branches: prepend `<scannerDir>/src`
+ * onto any existing PYTHONPATH so a user who's already set PYTHONPATH
+ * (eg. to develop a sibling agent library against the running app)
+ * keeps that on the search path AFTER our scanner package.
+ */
+function buildPythonEnv(scannerDir: string): NodeJS.ProcessEnv {
+  const existing = process.env.PYTHONPATH ?? ""
+  const ours = path.join(scannerDir, "src")
+  const pythonPath = existing
+    ? `${ours}${path.delimiter}${existing}`
+    : ours
+  return { ...process.env, PYTHONPATH: pythonPath }
+}
+
 export function runScannerOn(
   targetPath: string,
   opts: { timeoutMs?: number; checks?: string[] } = {}
 ): Promise<ScanReportLite> {
   return new Promise((resolve, reject) => {
-    let scannerDir: string
-    try {
-      scannerDir = resolveScannerDir()
-    } catch (err) {
-      reject(err)
-      return
-    }
     const tmpFile = path.join(
       os.tmpdir(),
       `edge-pre-op-scan-${Date.now()}-${Math.random()
         .toString(36)
         .slice(2)}.json`
     )
-    const python = process.env.EDGE_AGENT_PYTHON || "python3"
-    const args = [
-      "-m",
-      "edge_agent_scanner.cli",
-      "scan",
-      targetPath,
-      "--out",
-      tmpFile,
-    ]
-    for (const c of opts.checks ?? []) {
-      if (typeof c === "string" && c.length > 0) {
-        args.push("--check", c)
-      }
+    let cmd: ScannerCommand
+    try {
+      cmd = buildScannerCommand({
+        targetPath,
+        outFile: tmpFile,
+        checks: opts.checks,
+      })
+    } catch (err) {
+      reject(err)
+      return
     }
-    const env = {
-      ...process.env,
-      PYTHONPATH: path.join(scannerDir, "src"),
-    }
-    const proc = spawn(python, args, {
-      cwd: scannerDir,
-      env,
+    const proc = spawn(cmd.cmd, cmd.args, {
+      cwd: cmd.cwd,
+      env: cmd.env,
       // We never read stdout — the scanner just prints "Wrote ..." and the
       // real payload goes to `tmpFile`. Stderr is captured for diagnostics.
       stdio: ["ignore", "ignore", "pipe"],

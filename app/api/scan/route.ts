@@ -15,7 +15,11 @@ import {
   resolveRef,
   softResolveRef,
 } from "@/lib/server-git"
-import { ScannerError, resolveScannerDir } from "@/lib/server-scan"
+import {
+  ScannerError,
+  buildScannerCommand,
+  type ScannerCommand,
+} from "@/lib/server-scan"
 
 export async function POST(request: Request) {
   let body: {
@@ -67,20 +71,12 @@ export async function POST(request: Request) {
     )
   }
 
-  // Resolve the scanner via EDGE_AGENT_SCANNER_DIR (set by the desktop
-  // launcher / when smoke-testing the standalone server) or, in dev,
-  // fall back to <process.cwd()>/scanner. resolveScannerDir() throws
-  // ScannerError with a precise reason that we surface 1:1.
-  let scannerDir: string
-  try {
-    scannerDir = resolveScannerDir()
-  } catch (err) {
-    const e = err as ScannerError
-    return NextResponse.json(
-      { error: e?.message ?? "scanner package not found under project root" },
-      { status: e?.status ?? 500 }
-    )
-  }
+  // Scanner resolution (binary > EDGE_AGENT_PYTHON > <cwd>/scanner)
+  // happens lazily inside `buildScannerCommand` further down — once we
+  // know the actual `scanTarget` (working tree vs virtual worktree).
+  // We don't probe ahead of time here because a misconfigured
+  // EDGE_AGENT_SCANNER_BIN should fail with the binary-specific
+  // error, not a generic "scanner package not found".
 
   /* ---------------------------------------------------------------- */
   /* Decide: virtual branch checkout, or in-place scan?               */
@@ -188,22 +184,8 @@ export async function POST(request: Request) {
       os.tmpdir(),
       `edge-scan-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
     )
-    const python = process.env.EDGE_AGENT_PYTHON || "python3"
-    const args = [
-      "-m",
-      "edge_agent_scanner.cli",
-      "scan",
-      scanTarget,
-      "--out",
-      tmpFile,
-    ]
 
     const checks = Array.isArray(body.checks) ? body.checks : []
-    for (const c of checks) {
-      if (typeof c === "string" && c.length > 0) {
-        args.push("--check", c)
-      }
-    }
 
     /* ------------- Untracked-file handling ----------------------- */
     //
@@ -233,9 +215,9 @@ export async function POST(request: Request) {
     if (!virtualCheckout) {
       if (!includeUntracked) {
         untrackedExcluded = listUntrackedFiles(requested)
-        for (const rel of untrackedExcluded) {
-          args.push("--exclude", rel)
-        }
+        // Excludes are passed through `buildScannerCommand` below, not
+        // mutated onto an args array here — keeps the spawn shape
+        // centralised for the binary / venv / fallback branches.
       } else {
         // Refresh the attribution map (so the next status call sees
         // the current snapshot) but DO NOT pass --exclude args.
@@ -272,18 +254,23 @@ export async function POST(request: Request) {
       }
     }
 
-    const env = {
-      ...process.env,
-      PYTHONPATH: path.join(scannerDir, "src"),
+    let primaryCmd: ScannerCommand
+    try {
+      primaryCmd = buildScannerCommand({
+        targetPath: scanTarget,
+        outFile: tmpFile,
+        checks,
+        excludes: untrackedExcluded,
+      })
+    } catch (err) {
+      const e = err as ScannerError
+      return NextResponse.json(
+        { error: e?.message ?? "Failed to resolve scanner" },
+        { status: e?.status ?? 500 }
+      )
     }
 
-    const primary = runScanner({
-      python,
-      scannerDir,
-      args,
-      env,
-      tmpFile,
-    })
+    const primary = runScanner({ cmd: primaryCmd, tmpFile })
     if (!primary.ok) {
       return primary.errorResp
     }
@@ -368,37 +355,32 @@ export async function POST(request: Request) {
             mergedStashFiles = Array.from(seen).sort()
 
             if (mergedStashFiles.length > 0) {
-              // Re-run scanner against the merged extract dir. We
-              // rebuild args so the path swap doesn't accidentally
-              // inherit --exclude entries that referenced the user's
-              // tree.
-              const stashArgs = [
-                "-m",
-                "edge_agent_scanner.cli",
-                "scan",
-                mergedStashExtractDir,
-                "--out",
-                tmpFile,
-              ]
-              for (const c of checks) {
-                if (typeof c === "string" && c.length > 0) {
-                  stashArgs.push("--check", c)
-                }
+              // Re-run scanner against the merged extract dir. The
+              // command is rebuilt from scratch (no `--exclude`
+              // forwarded) so this second pass doesn't accidentally
+              // inherit excludes that referenced the user's working
+              // tree paths — they don't exist inside the merged
+              // stash extract dir.
+              //
+              // The second pass is best-effort: any failure here
+              // (resolution error, scanner crash) leaves
+              // `autoStashReport` null and the merge becomes a
+              // no-op. The primary scan results are still returned.
+              let stashCmd: ScannerCommand | null = null
+              try {
+                stashCmd = buildScannerCommand({
+                  targetPath: mergedStashExtractDir,
+                  outFile: tmpFile,
+                  checks,
+                })
+              } catch {
+                stashCmd = null
               }
-              const stashRun = runScanner({
-                python,
-                scannerDir,
-                args: stashArgs,
-                env,
-                tmpFile,
-              })
-              // A failed second pass is non-fatal — main results
-              // are still valuable and the user shouldn't lose
-              // them just because the stash flow tripped. Just
-              // leave autoStashReport null and the merge becomes
-              // a no-op.
-              if (stashRun.ok && stashRun.report) {
-                autoStashReport = stashRun.report
+              if (stashCmd) {
+                const stashRun = runScanner({ cmd: stashCmd, tmpFile })
+                if (stashRun.ok && stashRun.report) {
+                  autoStashReport = stashRun.report
+                }
               }
             }
           }
@@ -601,26 +583,30 @@ function addWorktree(repo: string, dest: string, sha: string): void {
 }
 
 /**
- * Spawn the Python scanner with `args` and parse its JSON output from
+ * Spawn the scanner described by `cmd` and parse its JSON output from
  * `tmpFile`. Returns `{ ok: true, report }` on success, or `{ ok:
- * false, errorResp }` with the appropriate `NextResponse` for the
- * caller to return verbatim. Centralised so the auto-stash second
- * pass and the primary scan share identical spawn semantics
- * (timeouts, error reporting, JSON parse fallback).
+ * false, errorResp }` with a NextResponse the caller returns verbatim.
+ *
+ * Error responses include enough provenance for the user to debug a
+ * failed binary OR a failed venv invocation without spelunking the
+ * server logs:
+ *   - source       — "scanner_bin" | "python_venv" | "python_fallback"
+ *   - scannerBin   — populated only on the binary branch
+ *   - command      — the full argv that ran (paths only — no secrets;
+ *                    scanner args never include credentials)
+ *   - exitCode     — proc.status
+ *   - stdout/stderr — truncated for response-size safety
  */
 function runScanner(opts: {
-  python: string
-  scannerDir: string
-  args: string[]
-  env: NodeJS.ProcessEnv
+  cmd: ScannerCommand
   tmpFile: string
 }):
   | { ok: true; report: Record<string, unknown> | null; errorResp?: undefined }
   | { ok: false; report?: undefined; errorResp: NextResponse } {
-  const { python, scannerDir, args, env, tmpFile } = opts
-  const proc = spawnSync(python, args, {
-    cwd: scannerDir,
-    env,
+  const { cmd, tmpFile } = opts
+  const proc = spawnSync(cmd.cmd, cmd.args, {
+    cwd: cmd.cwd,
+    env: cmd.env,
     encoding: "utf-8",
     maxBuffer: 50 * 1024 * 1024,
   })
@@ -629,7 +615,12 @@ function runScanner(opts: {
     return {
       ok: false,
       errorResp: NextResponse.json(
-        { error: `Failed to spawn scanner: ${proc.error.message}` },
+        {
+          error: `Failed to spawn scanner: ${proc.error.message}`,
+          source: cmd.source,
+          scannerBin: cmd.scannerBin,
+          command: [cmd.cmd, ...cmd.args],
+        },
         { status: 500 }
       ),
     }
@@ -645,6 +636,10 @@ function runScanner(opts: {
       errorResp: NextResponse.json(
         {
           error: "Scanner process failed",
+          source: cmd.source,
+          scannerBin: cmd.scannerBin,
+          command: [cmd.cmd, ...cmd.args],
+          exitCode: proc.status,
           stderr: proc.stderr?.slice(0, 8000),
           stdout: proc.stdout?.slice(0, 2000),
         },

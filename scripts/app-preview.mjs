@@ -131,21 +131,47 @@ function applyDefaults() {
   if (!process.env.PORT) process.env.PORT = "3100"
   if (!process.env.HOSTNAME) process.env.HOSTNAME = "127.0.0.1"
 
-  if (!process.env.EDGE_AGENT_PYTHON) {
-    const candidate = path.join(ROOT, "scanner", ".venv", "bin", "python")
+  // Prefer a host-matching PyInstaller binary if one's been built —
+  // exercises the same code path the packaged desktop app will use.
+  // Falls through to the Python venv branch when no binary is on disk.
+  if (!process.env.EDGE_AGENT_SCANNER_BIN) {
+    const platKey = `${process.platform}-${process.arch}`
+    const binName =
+      process.platform === "win32" ? "edge-agent-scanner.exe" : "edge-agent-scanner"
+    const candidate = path.join(
+      ROOT,
+      "electron",
+      "resources",
+      "scanner-bin",
+      platKey,
+      binName
+    )
     if (fs.existsSync(candidate)) {
-      process.env.EDGE_AGENT_PYTHON = candidate
-    } else {
-      // Final fallback so the server can at least start; scans will fail
-      // until the user creates the venv. We surface a clear warning.
-      logWarn(
-        "scanner/.venv/bin/python not found — scans will fail until you create the venv or set EDGE_AGENT_PYTHON."
-      )
+      process.env.EDGE_AGENT_SCANNER_BIN = candidate
     }
   }
 
-  if (!process.env.EDGE_AGENT_SCANNER_DIR) {
-    process.env.EDGE_AGENT_SCANNER_DIR = path.join(ROOT, "scanner")
+  // Only configure the Python branch if no binary was found above —
+  // EDGE_AGENT_SCANNER_BIN takes precedence in lib/server-scan.ts so
+  // setting both would just mean the Python vars are ignored, but
+  // skipping them keeps the diagnostics clean.
+  if (!process.env.EDGE_AGENT_SCANNER_BIN) {
+    if (!process.env.EDGE_AGENT_PYTHON) {
+      const candidate = path.join(ROOT, "scanner", ".venv", "bin", "python")
+      if (fs.existsSync(candidate)) {
+        process.env.EDGE_AGENT_PYTHON = candidate
+      } else {
+        // Final fallback so the server can at least start; scans will fail
+        // until the user creates the venv. We surface a clear warning.
+        logWarn(
+          "scanner/.venv/bin/python not found — scans will fail until you create the venv, set EDGE_AGENT_PYTHON, or run `pnpm build:scanner`."
+        )
+      }
+    }
+
+    if (!process.env.EDGE_AGENT_SCANNER_DIR) {
+      process.env.EDGE_AGENT_SCANNER_DIR = path.join(ROOT, "scanner")
+    }
   }
 
   if (!process.env.EDGE_AGENT_SCAN_ALLOWLIST) {
@@ -273,8 +299,12 @@ async function main() {
     )
   }
   logInfo(paint(ANSI_DIM, "url"), process.env.ELECTRON_RENDERER_URL)
-  logInfo(paint(ANSI_DIM, "py "), process.env.EDGE_AGENT_PYTHON ?? "(unset — scans will fail)")
-  logInfo(paint(ANSI_DIM, "dir"), process.env.EDGE_AGENT_SCANNER_DIR)
+  if (process.env.EDGE_AGENT_SCANNER_BIN) {
+    logInfo(paint(ANSI_DIM, "bin"), process.env.EDGE_AGENT_SCANNER_BIN)
+  } else {
+    logInfo(paint(ANSI_DIM, "py "), process.env.EDGE_AGENT_PYTHON ?? "(unset — scans will fail)")
+    logInfo(paint(ANSI_DIM, "dir"), process.env.EDGE_AGENT_SCANNER_DIR)
+  }
   logInfo(paint(ANSI_DIM, "ok "), process.env.EDGE_AGENT_SCAN_ALLOWLIST)
 
   const { serverEntry, electronEntry } = preflightOrExit()

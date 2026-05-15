@@ -48,6 +48,7 @@ import {
   type Policy,
   type PolicyEvaluation,
 } from "../lib/policy"
+import { buildScannerCommand } from "../lib/server-scan"
 import {
   ScanReportSchema,
   type ScanReport,
@@ -178,27 +179,34 @@ function currentBranch(repoRoot: string): string | null {
 }
 
 /**
- * Run scanner with PYTHONPATH so `edge_agent_scanner` imports without
- * `pip install -e ./scanner`. Uses EDGE_AGENT_PYTHON when set (venv).
+ * Run scanner via the central resolver in `lib/server-scan.ts`. That
+ * keeps this CI gate aligned with /api/scan:
+ *   1. EDGE_AGENT_SCANNER_BIN (bundled binary) — invoked directly.
+ *   2. EDGE_AGENT_PYTHON     — explicit venv + module.
+ *   3. <appDir>/scanner/.venv — dev fallback.
+ *
+ * The wrinkle for this script: when run from a *scanned* repo (which
+ * is not the Edge Agent AI app repo), `process.cwd()` isn't where the
+ * scanner source lives. We set EDGE_AGENT_SCANNER_DIR to `<appDir>/scanner`
+ * unless the caller already set it, so `buildScannerCommand`'s
+ * resolveScannerDir lookup picks the right tree.
  */
 function runScanner(cwd: string, outFile: string): ScanReport {
-  const py = process.env.EDGE_AGENT_PYTHON || "python3"
   const appDir = getAppDir()
-  const scannerSrc = path.join(appDir, "scanner", "src")
+  const scannerDir = path.join(appDir, "scanner")
+  const scannerSrc = path.join(scannerDir, "src")
   if (!fs.existsSync(path.join(scannerSrc, "edge_agent_scanner"))) {
     throw new Error(
       `Scanner source not found at ${scannerSrc}. Set EDGE_AGENT_APP_DIR or run from the app repo.`
     )
   }
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    PYTHONPATH: process.env.PYTHONPATH
-      ? `${scannerSrc}${path.delimiter}${process.env.PYTHONPATH}`
-      : scannerSrc,
+  // Scoped to this process — the gate is a short-lived CLI, so setting
+  // an env var here doesn't bleed into anything else.
+  if (!process.env.EDGE_AGENT_SCANNER_DIR) {
+    process.env.EDGE_AGENT_SCANNER_DIR = scannerDir
   }
-  runSh(py, ["-m", "edge_agent_scanner.cli", "scan", cwd, "--out", outFile], {
-    env,
-  })
+  const command = buildScannerCommand({ targetPath: cwd, outFile })
+  runSh(command.cmd, command.args, { env: command.env, cwd: command.cwd })
   const raw = JSON.parse(fs.readFileSync(outFile, "utf8")) as unknown
   const parsed = ScanReportSchema.safeParse(raw)
   if (!parsed.success) {

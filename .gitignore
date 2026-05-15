@@ -16,3 +16,13 @@ node_modules
 
 # Electron build output (main + preload compiled by `pnpm build:electron`)
 electron/dist/
+
+# PyInstaller scanner binaries — built per-host by `pnpm build:scanner`
+# and dropped here for the desktop launcher to spawn. Not committed:
+# each developer / CI matrix machine produces its own slot.
+electron/resources/scanner-bin/
+
+# PyInstaller intermediate artefacts inside scanner/
+scanner/build/
+scanner/dist/
+scanner/*.spec.bak
