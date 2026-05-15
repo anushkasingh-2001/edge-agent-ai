@@ -13,3 +13,6 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+
+# Electron build output (main + preload compiled by `pnpm build:electron`)
+electron/dist/

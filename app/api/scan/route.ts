@@ -15,6 +15,7 @@ import {
   resolveRef,
   softResolveRef,
 } from "@/lib/server-git"
+import { ScannerError, resolveScannerDir } from "@/lib/server-scan"
 
 export async function POST(request: Request) {
   let body: {
@@ -49,7 +50,6 @@ export async function POST(request: Request) {
     )
   }
 
-  const repoRoot = process.cwd()
   const allowRoot = getScanAllowRoot()
   const requested = path.resolve(body.projectPath.trim())
 
@@ -67,11 +67,18 @@ export async function POST(request: Request) {
     )
   }
 
-  const scannerDir = path.join(repoRoot, "scanner")
-  if (!fs.existsSync(scannerDir)) {
+  // Resolve the scanner via EDGE_AGENT_SCANNER_DIR (set by the desktop
+  // launcher / when smoke-testing the standalone server) or, in dev,
+  // fall back to <process.cwd()>/scanner. resolveScannerDir() throws
+  // ScannerError with a precise reason that we surface 1:1.
+  let scannerDir: string
+  try {
+    scannerDir = resolveScannerDir()
+  } catch (err) {
+    const e = err as ScannerError
     return NextResponse.json(
-      { error: "scanner package not found under project root" },
-      { status: 500 }
+      { error: e?.message ?? "scanner package not found under project root" },
+      { status: e?.status ?? 500 }
     )
   }
 

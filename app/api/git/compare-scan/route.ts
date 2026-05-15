@@ -13,6 +13,7 @@ import {
   validateRef,
   type StashApplyResult,
 } from "@/lib/server-git"
+import { ScannerError, resolveScannerDir } from "@/lib/server-scan"
 
 /**
  * POST /api/git/compare-scan
@@ -498,10 +499,12 @@ function safeRemoveWorktree(dest: string) {
  */
 function runScannerOnAsync(targetPath: string): Promise<ScanReportLite> {
   return new Promise((resolve, reject) => {
-    const repoRoot = process.cwd()
-    const scannerDir = path.join(repoRoot, "scanner")
-    if (!fs.existsSync(scannerDir)) {
-      reject(new GitError("scanner package not found under project root", 500))
+    let scannerDir: string
+    try {
+      scannerDir = resolveScannerDir()
+    } catch (err) {
+      const e = err as ScannerError
+      reject(new GitError(e?.message ?? "scanner package not found under project root", e?.status ?? 500))
       return
     }
     const tmpFile = path.join(
