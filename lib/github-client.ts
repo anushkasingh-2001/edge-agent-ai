@@ -162,9 +162,39 @@ export type CreatePrApiResponse = {
   head?: string
   base?: string
   draft?: boolean
+  /** True when the head branch only existed on `origin` at the start
+   *  of the request and was fetched locally to enable the push. Lets
+   *  the success card surface "fetched origin/<branch> first". */
+  fetchedFromOrigin?: boolean
   reason?: string
+  /** Which step of the pipeline failed. Useful for the UI to decide
+   *  whether to surface stderr expanded by default (push/gh failures
+   *  benefit from it, policy blocks don't). */
+  phase?: "push" | "create" | "auto_merge"
   message?: string
+  /** Actionable next steps for the user (in priority order). Populated
+   *  by the server for known failure categories like push permission
+   *  errors, non-fast-forward pushes, missing branches, etc. */
+  suggestions?: string[]
+  /** When `reason === "no_local_branch"`, the list of branches that DO
+   *  exist locally — surfaced so the dialog can render "did you mean"
+   *  hints rather than just bouncing the user. */
+  localBranches?: string[]
+  /** When `reason === "already_exists"`, the existing open PR that
+   *  blocked the create. Populated by the server (REST list-PRs
+   *  lookup after the create 422'd). Used by the dialog to render
+   *  "View PR #N" and tell the user their push already updated it. */
+  existingPr?: {
+    number: number
+    url: string
+    title: string
+    state: string
+    isDraft: boolean
+    baseRefName: string
+    headRefName: string
+  } | null
   stderr?: string
+  stdout?: string
   decision?: Decision
   prAction?: PrAction
   autoMerge?:

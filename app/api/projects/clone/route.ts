@@ -7,6 +7,8 @@ import {
   getScanAllowRoot,
   isPathInside,
 } from "@/lib/server-path-utils"
+import { syncEdgeAgentImportGitIgnores } from "@/lib/server-edge-git-ignore"
+import { installEdgeAgentGate } from "@/lib/server-install-gate"
 
 const WORKSPACE_DIR = ".edge-agent-workspace"
 
@@ -177,7 +179,26 @@ export async function POST(request: Request) {
         branch: detectedBranch,
         lastOpenedAt: new Date().toISOString(),
       }
-      return NextResponse.json({ ok: true as const, project, reused: true })
+      const importGitIgnores = syncEdgeAgentImportGitIgnores(firstChoice)
+      let policyGateInstall
+      try {
+        policyGateInstall = installEdgeAgentGate(firstChoice)
+      } catch (e) {
+        policyGateInstall = {
+          installed: false,
+          reason: e instanceof Error ? e.message : "unknown",
+          projectPath: firstChoice,
+          wrapperPath: "",
+          defaultPolicyPath: "",
+        }
+      }
+      return NextResponse.json({
+        ok: true as const,
+        project,
+        reused: true,
+        importGitIgnores,
+        policyGateInstall,
+      })
     }
   }
 
@@ -271,5 +292,23 @@ export async function POST(request: Request) {
     lastOpenedAt: new Date().toISOString(),
   }
 
-  return NextResponse.json({ ok: true as const, project })
+  const importGitIgnores = syncEdgeAgentImportGitIgnores(resolved)
+  let policyGateInstall
+  try {
+    policyGateInstall = installEdgeAgentGate(resolved)
+  } catch (e) {
+    policyGateInstall = {
+      installed: false,
+      reason: e instanceof Error ? e.message : "unknown",
+      projectPath: resolved,
+      wrapperPath: "",
+      defaultPolicyPath: "",
+    }
+  }
+  return NextResponse.json({
+    ok: true as const,
+    project,
+    importGitIgnores,
+    policyGateInstall,
+  })
 }

@@ -776,6 +776,7 @@ export default function Home() {
             // runner this will switch to its own timestamp.
             lastGateRunAt={scanReport?.generated_at ?? null}
             branches={gitInfo?.branches ?? []}
+            remoteOnlyBranches={gitInfo?.remoteOnly ?? []}
           />
         )
       case "scan-center":

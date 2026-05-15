@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -e
+if [ "${EDGE_AGENT_SKIP:-0}" = "1" ]; then
+  echo "edge-agent: pre-commit skipped (EDGE_AGENT_SKIP=1)"
+  exit 0
+fi
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 0
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "edge-agent: pnpm not on PATH — skipping pre-commit in edge-agent-ai repo" >&2
+  exit 0
+fi
+if [ ! -d node_modules/tsx ]; then
+  echo "edge-agent: run pnpm install first — skipping pre-commit" >&2
+  exit 0
+fi
+echo "edge-agent: pre-commit gate (edge-agent-ai repo)…"
+exec pnpm --silent policy-gate --target HEAD --repo "$ROOT"

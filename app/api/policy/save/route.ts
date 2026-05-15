@@ -24,6 +24,7 @@ import {
   DEFAULT_POLICY,
   parsePolicyYaml,
   serializePolicyToYaml,
+  TOGGLABLE_NUMERIC_KEYS,
   type Policy,
 } from "@/lib/policy"
 import { loadPolicyFor, POLICY_REL_PATH } from "@/lib/server-policy"
@@ -100,13 +101,21 @@ export async function POST(request: Request) {
  * Merge a client-supplied object into `DEFAULT_POLICY`. Tolerant of
  * missing sub-objects (so callers can PATCH just `security` without
  * sending the whole policy) and of unknown keys (dropped).
+ *
+ * Important: togglable numeric thresholds (see TOGGLABLE_NUMERIC_KEYS)
+ * use `null` on the wire to mean "user explicitly disabled this rule".
+ * For those keys we MUST NOT fall back to DEFAULT_POLICY — otherwise
+ * toggling a threshold off in the UI silently reappears as ON after
+ * save, because JSON.stringify already drops `undefined` and our merge
+ * would re-apply the default. We strip `null` so the rest of the code
+ * (which uses `undefined` for "off") stays unchanged, but `serialize`
+ * will re-emit it as `null` on disk to make the choice durable.
  */
 function mergeWithDefaults(raw: unknown): Policy {
   if (!raw || typeof raw !== "object") {
     return DEFAULT_POLICY
   }
   const r = raw as Record<string, unknown>
-  // Mode is plain text and validated by the round-trip parse below.
   const mode = typeof r.mode === "string" ? r.mode : DEFAULT_POLICY.mode
   const get = <K extends keyof Policy>(k: K): Record<string, unknown> => {
     const v = r[k as string]
@@ -114,17 +123,41 @@ function mergeWithDefaults(raw: unknown): Policy {
       ? (v as Record<string, unknown>)
       : {}
   }
+  const mergeSection = <T extends object>(
+    defaults: T,
+    incoming: Record<string, unknown>,
+    togglableKeys: readonly string[] = []
+  ): T => {
+    const merged = { ...(defaults as Record<string, unknown>) }
+    const togglable = new Set(togglableKeys)
+    for (const [k, v] of Object.entries(incoming)) {
+      if (v === null && togglable.has(k)) {
+        delete merged[k]
+      } else if (v !== undefined) {
+        merged[k] = v
+      }
+    }
+    return merged as T
+  }
   return {
     mode: mode as Policy["mode"],
-    security: { ...DEFAULT_POLICY.security, ...get("security") },
-    evals: { ...DEFAULT_POLICY.evals, ...get("evals") },
+    security: mergeSection<Policy["security"]>(
+      DEFAULT_POLICY.security,
+      get("security"),
+      TOGGLABLE_NUMERIC_KEYS.security
+    ),
+    evals: mergeSection<Policy["evals"]>(
+      DEFAULT_POLICY.evals,
+      get("evals"),
+      TOGGLABLE_NUMERIC_KEYS.evals
+    ),
     agents:
       r.agents && typeof r.agents === "object" && !Array.isArray(r.agents)
         ? (r.agents as Policy["agents"])
         : {},
-    auto_merge: { ...DEFAULT_POLICY.auto_merge, ...get("auto_merge") },
-    pull_request: { ...DEFAULT_POLICY.pull_request, ...get("pull_request") },
-    commit: { ...DEFAULT_POLICY.commit, ...get("commit") },
-    push: { ...DEFAULT_POLICY.push, ...get("push") },
+    auto_merge: mergeSection(DEFAULT_POLICY.auto_merge, get("auto_merge")),
+    pull_request: mergeSection(DEFAULT_POLICY.pull_request, get("pull_request")),
+    commit: mergeSection(DEFAULT_POLICY.commit, get("commit")),
+    push: mergeSection(DEFAULT_POLICY.push, get("push")),
   }
 }

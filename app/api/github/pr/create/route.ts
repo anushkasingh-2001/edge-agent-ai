@@ -64,10 +64,10 @@ import {
 import type { ScanReport } from "@/lib/scan-report"
 import {
   checkGitHubStatus,
+  classifyGitPushFailure,
   createPullRequest,
   enableAutoMerge,
   fetchRepoPermissions,
-  isGitHubPermissionError,
   readGitHubRemote,
 } from "@/lib/server-github"
 import { getStoredAuth, gitHubAuthArgs } from "@/lib/server-github-auth"
@@ -161,6 +161,119 @@ export async function POST(request: Request) {
         },
         { status: 400 }
       )
+    }
+
+    /* ------------------------------------------------------------------
+     * Pre-check: ensure the head ref exists locally.
+     *
+     * Two cases:
+     *   (a) Local already has it → nothing to do, continue.
+     *   (b) Only origin has it   → auto-fetch `origin/<head>` into
+     *       `refs/heads/<head>` so the rest of the route (scan +
+     *       `git push -u origin <head>` + `gh pr create --head <head>`)
+     *       sees a normal local branch. This is the "PR from a remote
+     *       branch" path that the dialog now exposes. The fetch uses
+     *       `<head>:<head>` so it does NOT touch the user's working
+     *       tree — only the ref database changes.
+     *   (c) Neither has it       → 400 with a clear list of available
+     *       branches.
+     *
+     * Doing this before scan/auth/permission keeps the failure path
+     * fast and lets us swap the "no_local_branch" error for an
+     * informational `fetchedFromOrigin` field on success so the UI can
+     * say "Fetched origin/foo locally before pushing."
+     * ----------------------------------------------------------------- */
+    let fetchedFromOrigin = false
+    const headExists = runGit(resolved, [
+      "show-ref",
+      "--verify",
+      "--quiet",
+      `refs/heads/${head}`,
+    ])
+    if (headExists.status !== 0) {
+      // Is the branch on origin? Use `refs/remotes/origin/<head>`
+      // directly so we never match a tag or a local stash by accident.
+      const remoteHas = runGit(resolved, [
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/remotes/origin/${head}`,
+      ])
+      if (remoteHas.status === 0) {
+        // Fetch the branch as a new local ref. Inject GitHub auth in
+        // case the remote is private — same helper the push step uses.
+        const storedForFetch = getStoredAuth()
+        const fetch = runGit(
+          resolved,
+          [
+            ...gitHubAuthArgs(storedForFetch?.token),
+            "fetch",
+            "origin",
+            `${head}:${head}`,
+          ],
+          { timeoutMs: 60_000 }
+        )
+        if (fetch.status !== 0) {
+          // The fetch could fail (network, auth, refspec collision).
+          // Surface it as a structured push-phase error so the dialog
+          // reuses the existing "what to do" UI.
+          return NextResponse.json(
+            {
+              ok: false,
+              phase: "push",
+              reason: "fetch_failed",
+              message: `Failed to fetch 'origin/${head}' locally before opening the PR.`,
+              suggestions: [
+                `Run \`git fetch origin ${head}\` in your terminal to see the underlying error.`,
+                "Check your network connection and GitHub auth in Settings, then try again.",
+              ],
+              stderr: fetch.stderr.slice(0, 4000),
+              stdout: fetch.stdout.slice(0, 2000),
+            },
+            { status: 502 }
+          )
+        }
+        fetchedFromOrigin = true
+      } else {
+        // Neither local nor origin has it — definitively missing.
+        const localList = runGit(resolved, [
+          "for-each-ref",
+          "--format=%(refname:short)",
+          "refs/heads/",
+        ])
+        const localBranches =
+          localList.status === 0
+            ? localList.stdout
+                .split("\n")
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : []
+        const suggestions: string[] = []
+        if (localBranches.length > 0) {
+          suggestions.push(
+            `Available local branches: ${localBranches.slice(0, 8).join(", ")}${
+              localBranches.length > 8
+                ? ` (+${localBranches.length - 8} more)`
+                : ""
+            }.`
+          )
+        }
+        suggestions.push(
+          `Run \`git fetch origin\` to refresh remote-tracking refs — '${head}' may have been deleted or renamed.`,
+          "Or pick a different head branch from the dropdown."
+        )
+        return NextResponse.json(
+          {
+            ok: false,
+            phase: "push",
+            reason: "no_local_branch",
+            message: `Branch '${head}' does not exist locally or on origin — there's nothing to push.`,
+            suggestions,
+            localBranches,
+          },
+          { status: 400 }
+        )
+      }
     }
 
     /* ------------------------------------------------------------------
@@ -402,18 +515,32 @@ export async function POST(request: Request) {
     ]
     const push = runGit(resolved, pushArgs, { timeoutMs: 90_000 })
     if (push.status !== 0) {
-      const isPermErr = isGitHubPermissionError(push.stderr)
+      // Translate git's free-form stderr into a structured diagnosis so
+      // the dialog can show "what happened + what to do" instead of
+      // just "git push failed". The categorisation is shared with
+      // /api/git/push via lib/server-github.classifyGitPushFailure.
+      const diag = classifyGitPushFailure(push.stderr, push.stdout)
+      const status = diag.reason === "permission_denied" ? 403 : 502
       return NextResponse.json(
         {
           ok: false,
-          reason: isPermErr ? "permission_denied" : "push_failed",
-          message: isPermErr
-            ? "GitHub rejected the push because the authenticated account does not have permission for this repository. Your Git may be using cached credentials from another account."
-            : "git push failed",
+          phase: "push",
+          reason: diag.reason,
+          message: diag.message,
+          suggestions: diag.suggestions,
           stderr: push.stderr.slice(0, 4000),
           stdout: push.stdout.slice(0, 2000),
+          github: {
+            login: gh.login,
+            owner: remote.owner,
+            repo: remote.repo,
+            remoteUrl: remote.remoteUrl,
+            protocol: remote.protocol,
+            permissions: perm.permissions,
+            canPush: perm.canPush,
+          },
         },
-        { status: isPermErr ? 403 : 502 }
+        { status }
       )
     }
 
@@ -433,13 +560,24 @@ export async function POST(request: Request) {
       draft: wantDraft,
     })
     if (!created.ok) {
+      // 422 already_exists / no_commits should not be reported as a
+      // 502 (bad gateway) — they're 4xx user-correctable conditions.
+      // already_exists in particular is *informational*: the push step
+      // above succeeded, so the user's changes already reached
+      // origin and the existing PR was just updated by git itself.
+      const httpStatus =
+        created.reason === "already_exists" || created.reason === "no_commits"
+          ? 409
+          : 502
       return NextResponse.json(
         {
           ok: false,
           created: false,
+          phase: "create",
           reason: created.reason,
           message: created.message,
           stderr: created.stderr,
+          existingPr: created.existingPr ?? null,
           decision: evaluation?.decision,
           evaluation,
           policy: policyMeta?.policy,
@@ -453,7 +591,7 @@ export async function POST(request: Request) {
             ? { risk_score: scan.risk_score, summary: scan.summary }
             : null,
         },
-        { status: 502 }
+        { status: httpStatus }
       )
     }
 
@@ -501,6 +639,10 @@ export async function POST(request: Request) {
       head,
       base: baseBranch,
       draft: wantDraft,
+      // Flag the "PR from a remote branch" case so the UI can say
+      // "Fetched origin/<head> locally before pushing" instead of the
+      // user wondering when the local branch appeared.
+      fetchedFromOrigin,
       decision: evaluation?.decision ?? "pass",
       prAction,
       autoMerge,

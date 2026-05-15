@@ -35,6 +35,7 @@ import {
   Check,
   Wrench,
   GitPullRequest,
+  ArrowUpFromLine,
 } from "lucide-react"
 import {
   Tooltip,
@@ -56,6 +57,7 @@ import { fetchGitStatus, type GitStatusResponse } from "@/lib/git-client"
 import {
   CommitDialog,
   PullConfirmDialog,
+  PushConfirmDialog,
 } from "@/components/git-ops-dialogs"
 import { CreatePrDialog } from "@/components/git-pr-dialog"
 import {
@@ -162,6 +164,7 @@ export function TopBar({
   const [toolsPickerOpen, setToolsPickerOpen] = useState(false)
   const [pullOpen, setPullOpen] = useState(false)
   const [commitOpen, setCommitOpen] = useState(false)
+  const [pushOpen, setPushOpen] = useState(false)
   const [createPrOpen, setCreatePrOpen] = useState(false)
   const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null)
   // Top-bar GitHub auth indicator. Refreshed on mount and after the
@@ -633,7 +636,10 @@ export function TopBar({
                       size="sm"
                       className="gap-2"
                       disabled={gitDisabled}
-                      onClick={() => setCommitOpen(true)}
+                      onClick={() => {
+                        void refreshLocalGitStatus()
+                        setCommitOpen(true)
+                      }}
                     >
                       <Upload className="h-4 w-4" />
                       Commit
@@ -662,6 +668,40 @@ export function TopBar({
                           : hasSecondaryOnly
                             ? secondaryTooltip ?? ""
                             : `Commit local changes ('${currentBranch}' is currently clean)`}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+
+                {/* Push — raw `git push origin <branch>` through the
+                 *  same policy gate as Create PR. Useful when the user
+                 *  already has an open PR for this branch (or doesn't
+                 *  need a PR at all) and just wants their new commits
+                 *  to reach origin. The dialog
+                 *  (`PushConfirmDialog`) handles the scan toggles,
+                 *  permission errors, and policy block / warn
+                 *  surfacing — we just open it here. */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      disabled={gitDisabled}
+                      onClick={() => {
+                        void refreshLocalGitStatus()
+                        setPushOpen(true)
+                      }}
+                    >
+                      <ArrowUpFromLine className="h-4 w-4" />
+                      Push
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {gitDisabled
+                        ? "Open a Git repo to enable push"
+                        : `Run policy gate and push '${currentBranch}' to origin`}
                     </p>
                   </TooltipContent>
                 </Tooltip>
@@ -742,7 +782,10 @@ export function TopBar({
         <>
           <PullConfirmDialog
             open={pullOpen}
-            onOpenChange={setPullOpen}
+            onOpenChange={(open) => {
+              setPullOpen(open)
+              if (open) void refreshLocalGitStatus()
+            }}
             projectPath={project.path}
             branch={currentBranch}
             // Pull only cares about REAL working-tree dirtiness; a
@@ -763,7 +806,10 @@ export function TopBar({
           />
           <CommitDialog
             open={commitOpen}
-            onOpenChange={setCommitOpen}
+            onOpenChange={(open) => {
+              setCommitOpen(open)
+              if (open) void refreshLocalGitStatus()
+            }}
             projectPath={project.path}
             branch={currentBranch}
             workingTreeStatus={gitStatus?.workingTreeStatus ?? null}
@@ -774,6 +820,17 @@ export function TopBar({
             stashCount={gitStatus?.currentBranchStashCount ?? 0}
             onComplete={handleAfterGitOp}
           />
+          <PushConfirmDialog
+            open={pushOpen}
+            onOpenChange={(open) => {
+              setPushOpen(open)
+              if (open) void refreshLocalGitStatus()
+            }}
+            projectPath={project.path}
+            branch={currentBranch}
+            headBranch={gitCurrentBranch}
+            onComplete={handleAfterGitOp}
+          />
         </>
       )}
       <CreatePrDialog
@@ -782,6 +839,7 @@ export function TopBar({
         projectPath={project?.path ?? null}
         headBranch={currentBranch || null}
         branches={branches ?? []}
+        remoteOnlyBranches={remoteOnlyBranches ?? []}
         onCreated={handleAfterGitOp}
       />
       {/* In-app GitHub sign-in dialog. Always mounted so the badge in

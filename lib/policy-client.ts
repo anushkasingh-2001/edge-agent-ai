@@ -4,11 +4,12 @@
  */
 
 import type { ScanReport, WorkingTreeStatus } from "@/lib/scan-report"
-import type {
-  EvalMetrics,
-  Policy,
-  PolicyEvalContext,
-  PolicyEvaluation,
+import {
+  TOGGLABLE_NUMERIC_KEYS,
+  type EvalMetrics,
+  type Policy,
+  type PolicyEvalContext,
+  type PolicyEvaluation,
 } from "@/lib/policy"
 
 export interface PolicyApiResponse {
@@ -66,11 +67,45 @@ export async function savePolicy(args: {
   const res = await fetch("/api/policy/save", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(args),
+    body: JSON.stringify({
+      projectPath: args.projectPath,
+      policy: serializePolicyForWire(args.policy),
+    }),
   })
   return (await res.json()) as PolicyApiResponse & {
     saved?: boolean
     bytesWritten?: number
+  }
+}
+
+/**
+ * `JSON.stringify` drops `undefined` keys, which makes "user toggled
+ * this threshold off" indistinguishable from "key was never sent" on
+ * the server. For the togglable numeric thresholds the UI exposes,
+ * convert `undefined` → `null` so the server can see the explicit
+ * disable and not re-apply the default value when it merges with
+ * `DEFAULT_POLICY`. Every other field is left alone (booleans
+ * serialize cleanly as true/false, and untouched sections stay as
+ * whatever the loader put there).
+ */
+function serializePolicyForWire(policy: Policy): Policy {
+  const fillNullsForOff = <T extends object>(
+    section: T,
+    togglableKeys: readonly string[]
+  ): T => {
+    const out = { ...(section as Record<string, unknown>) }
+    for (const k of togglableKeys) {
+      if (out[k] === undefined) out[k] = null
+    }
+    return out as T
+  }
+  return {
+    ...policy,
+    security: fillNullsForOff(
+      policy.security,
+      TOGGLABLE_NUMERIC_KEYS.security
+    ),
+    evals: fillNullsForOff(policy.evals, TOGGLABLE_NUMERIC_KEYS.evals),
   }
 }
 

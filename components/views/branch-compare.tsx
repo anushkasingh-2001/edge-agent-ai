@@ -590,6 +590,7 @@ export function BranchCompare({
           headBranch={targetBranch}
           baseBranchHint={baseBranch || null}
           branches={branches}
+          remoteOnlyBranches={remoteOnlyBranches}
         />
       )}
 

@@ -147,7 +147,10 @@ export async function fetchGitStatus(
   projectPath: string
 ): Promise<GitStatusResponse> {
   const url = `/api/git/status?projectPath=${encodeURIComponent(projectPath)}`
-  const res = await fetch(url, { method: "GET" })
+  // cache: "no-store" so we always re-read the working tree (the
+  // user can run `git add` from a terminal between renders, and any
+  // stale cached response would lie about being clean).
+  const res = await fetch(url, { method: "GET", cache: "no-store" })
   return jsonOrThrow<GitStatusResponse>(res)
 }
 

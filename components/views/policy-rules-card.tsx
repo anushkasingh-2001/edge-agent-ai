@@ -457,7 +457,7 @@ export function PolicyRulesCard({
             {/* 3. Numeric thresholds */}
             <Section
               title="Numeric thresholds"
-              hint="Leave blank (clear the input) to disable a threshold."
+              hint="Use the switch on each card to enable or disable a threshold. Disabled thresholds aren't enforced."
             >
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <NumberField
@@ -876,35 +876,82 @@ function NumberField({
   step?: number
   onChange: (next: number | undefined) => void
 }) {
-  // Use a local string-backed state so we can correctly represent
-  // "empty input" without losing the field on every keystroke.
+  // A threshold is "enabled" when the policy has a numeric value for it;
+  // `undefined` (or `null`) means the rule is off entirely. The Switch
+  // below is the explicit on/off control — flipping it off clears the
+  // value, flipping it back on restores the last value the user typed
+  // (or falls back to the placeholder default so the field is never
+  // enabled-but-empty).
+  const enabled = value != null
   const [text, setText] = useState<string>(value == null ? "" : String(value))
+  // Remember the last non-empty value so toggling off → on restores it
+  // instead of forcing the user to re-type a number.
+  const [lastValue, setLastValue] = useState<string>(
+    value == null ? "" : String(value)
+  )
   useEffect(() => {
-    // Sync from props when policy is loaded / discarded externally.
     setText(value == null ? "" : String(value))
+    if (value != null) setLastValue(String(value))
   }, [value])
+
+  const handleToggle = (next: boolean) => {
+    if (!next) {
+      onChange(undefined)
+      return
+    }
+    // Restore last-typed value, else fall back to placeholder, else 0.
+    const restore = lastValue || placeholder || "0"
+    setText(restore)
+    const n = Number(restore)
+    onChange(Number.isFinite(n) ? n : undefined)
+  }
+
   return (
-    <div className="space-y-1.5">
-      <Label className="text-xs">{label}</Label>
+    <div
+      className={`space-y-1.5 rounded-md border px-3 py-2 transition-colors ${
+        enabled
+          ? "border-border/60 bg-secondary/30"
+          : "border-border/40 bg-secondary/10"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <Label
+          className={`text-xs ${enabled ? "" : "text-muted-foreground"}`}
+        >
+          {label}
+        </Label>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {enabled ? "on" : "off"}
+          </span>
+          <Switch checked={enabled} onCheckedChange={handleToggle} />
+        </div>
+      </div>
       <Input
         type="number"
         inputMode="decimal"
-        value={text}
-        placeholder={placeholder}
+        value={enabled ? text : ""}
+        placeholder={enabled ? placeholder : "Disabled"}
         min={min}
         max={max}
         step={step}
+        disabled={!enabled}
         onChange={(e) => {
           const raw = e.target.value
           setText(raw)
           if (raw.trim() === "") {
+            // Empty while enabled = transient typing state. Don't flip
+            // the rule off; just don't push a value upstream until they
+            // type a finite number. To turn the rule off, use the
+            // switch.
             onChange(undefined)
             return
           }
+          setLastValue(raw)
           const n = Number(raw)
           if (Number.isFinite(n)) onChange(n)
         }}
-        className="bg-secondary/50"
+        className="bg-secondary/50 disabled:opacity-50 disabled:cursor-not-allowed"
       />
     </div>
   )

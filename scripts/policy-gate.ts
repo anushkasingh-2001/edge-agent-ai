@@ -113,7 +113,12 @@ function parseArgs(argv: string[]): CliArgs {
 function runSh(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; allowFail?: boolean; quiet?: boolean } = {}
+  opts: {
+    cwd?: string
+    allowFail?: boolean
+    quiet?: boolean
+    env?: NodeJS.ProcessEnv
+  } = {}
 ): SpawnSyncReturns<string> {
   if (!opts.quiet) {
     process.stderr.write(`\u203a ${cmd} ${args.join(" ")}\n`)
@@ -122,6 +127,7 @@ function runSh(
     cwd: opts.cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: opts.env,
   })
   if (!opts.allowFail && r.status !== 0) {
     process.stderr.write(r.stdout || "")
@@ -129,6 +135,22 @@ function runSh(
     throw new Error(`Command failed (exit ${r.status}): ${cmd} ${args.join(" ")}`)
   }
   return r
+}
+
+/** Directory of this app (contains `scanner/src`). */
+function getAppDir(): string {
+  const env = process.env.EDGE_AGENT_APP_DIR
+  if (env && fs.existsSync(path.join(env, "scanner", "src", "edge_agent_scanner"))) {
+    return env
+  }
+  if (process.argv[1]) {
+    const scriptPath = path.resolve(process.argv[1])
+    const candidate = path.dirname(path.dirname(scriptPath))
+    if (fs.existsSync(path.join(candidate, "scanner", "src", "edge_agent_scanner"))) {
+      return candidate
+    }
+  }
+  return process.cwd()
 }
 
 function shortSha(repoRoot: string, ref: string): string | null {
@@ -156,25 +178,27 @@ function currentBranch(repoRoot: string): string | null {
 }
 
 /**
- * Run the Python scanner against `cwd` and return the parsed report.
- * We expect the scanner module to be importable as
- * `python -m edge_agent_scanner.cli` — installed via
- * `pip install -e scanner/` in CI or already present in the
- * developer's venv locally.
+ * Run scanner with PYTHONPATH so `edge_agent_scanner` imports without
+ * `pip install -e ./scanner`. Uses EDGE_AGENT_PYTHON when set (venv).
  */
 function runScanner(cwd: string, outFile: string): ScanReport {
-  // Resolve the python binary the same way GitHub Actions' setup-python does
-  // — `python` is the safe shim on Windows + most Linux runners; if a venv
-  // is active, `which python` picks it up automatically.
   const py = process.env.EDGE_AGENT_PYTHON || "python3"
-  runSh(py, [
-    "-m",
-    "edge_agent_scanner.cli",
-    "scan",
-    cwd,
-    "--out",
-    outFile,
-  ])
+  const appDir = getAppDir()
+  const scannerSrc = path.join(appDir, "scanner", "src")
+  if (!fs.existsSync(path.join(scannerSrc, "edge_agent_scanner"))) {
+    throw new Error(
+      `Scanner source not found at ${scannerSrc}. Set EDGE_AGENT_APP_DIR or run from the app repo.`
+    )
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONPATH: process.env.PYTHONPATH
+      ? `${scannerSrc}${path.delimiter}${process.env.PYTHONPATH}`
+      : scannerSrc,
+  }
+  runSh(py, ["-m", "edge_agent_scanner.cli", "scan", cwd, "--out", outFile], {
+    env,
+  })
   const raw = JSON.parse(fs.readFileSync(outFile, "utf8")) as unknown
   const parsed = ScanReportSchema.safeParse(raw)
   if (!parsed.success) {
@@ -213,12 +237,18 @@ function scanAtRef(repoRoot: string, ref: string, outFile: string): ScanReport {
 
 function loadPolicy(repoRoot: string, relPath: string): { policy: Policy; errors: string[]; path: string | null } {
   const abs = path.resolve(repoRoot, relPath)
-  if (!fs.existsSync(abs)) {
-    return { policy: DEFAULT_POLICY, errors: [], path: null }
+  if (fs.existsSync(abs)) {
+    const yamlText = fs.readFileSync(abs, "utf8")
+    const parsed = parsePolicyYaml(yamlText)
+    return { policy: parsed.policy, errors: parsed.errors, path: abs }
   }
-  const yamlText = fs.readFileSync(abs, "utf8")
-  const parsed = parsePolicyYaml(yamlText)
-  return { policy: parsed.policy, errors: parsed.errors, path: abs }
+  const globalAbs = path.join(os.homedir(), ".edge-agent-ai", "policy.default.yaml")
+  if (fs.existsSync(globalAbs)) {
+    const yamlText = fs.readFileSync(globalAbs, "utf8")
+    const parsed = parsePolicyYaml(yamlText)
+    return { policy: parsed.policy, errors: parsed.errors, path: globalAbs }
+  }
+  return { policy: DEFAULT_POLICY, errors: [], path: null }
 }
 
 // ── Markdown rendering ──────────────────────────────────────────────
@@ -434,8 +464,21 @@ async function main(): Promise<number> {
   const mdPath = path.join(outDir, "policy-report.md")
   const evalJson = path.join(outDir, "policy-result.json")
 
-  // 1. Scan target (current checkout — fastest, no worktree needed).
-  const target = runScanner(args.repoRoot, targetJson)
+  // 1. Scan target — fail-open if scanner env is broken (don't brick commits).
+  let target: ScanReport
+  try {
+    target = runScanner(args.repoRoot, targetJson)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    process.stderr.write(
+      "\nedge-agent: policy gate could NOT run — your commit/push is being ALLOWED.\n"
+    )
+    process.stderr.write(`            reason: ${msg.split("\n")[0]}\n`)
+    process.stderr.write(
+      "            enable locally:  cd <edge-agent-ai> && pnpm policy-gate-setup\n\n"
+    )
+    return 0
+  }
 
   // 2. Scan base (optional — drives delta rules).
   let base: ScanReport | null = null

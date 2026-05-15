@@ -97,6 +97,15 @@ interface CreatePrDialogProps {
    *  target without going back to the top bar. Empty list keeps the
    *  inputs as plain text. */
   branches?: string[]
+  /** Subset of `branches` that exist only as remote-tracking refs and
+   *  have NOT been checked out locally yet. These can't be pushed
+   *  (there's no local ref pointing at any commits), so we disable
+   *  them as a Head choice and surface a hint telling the user to
+   *  `git checkout` first. Sourced from `/api/git/branches`'s
+   *  `remoteOnly` field; same data the top-bar branch picker uses for
+   *  its "remote" badge. Optional — when omitted, every entry of
+   *  `branches` is treated as local-or-unknown (legacy behaviour). */
+  remoteOnlyBranches?: string[]
   /** Called after a successful create so the parent can refresh
    * branches / PR status / policy badges. */
   onCreated?: (resp: CreatePrApiResponse) => void
@@ -130,8 +139,15 @@ export function CreatePrDialog({
   headBranch,
   baseBranchHint,
   branches = [],
+  remoteOnlyBranches = [],
   onCreated,
 }: CreatePrDialogProps) {
+  // Memoised set lookup — keeps the JSX inside the SelectItem map a
+  // single O(1) check instead of an O(n) scan per render.
+  const remoteOnlySet = useMemo(
+    () => new Set(remoteOnlyBranches),
+    [remoteOnlyBranches]
+  )
   /* ---------------- Form state ---------------- */
   const [baseBranch, setBaseBranch] = useState<string>(baseBranchHint ?? "main")
   // Head branch lives in local state too so users can override the
@@ -212,6 +228,23 @@ export function CreatePrDialog({
     if (next) setBaseBranch(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [headSel])
+
+  // Re-query the existing-PR badge whenever the head changes. Without
+  // this, the "Existing PR" preflight row keeps showing the status of
+  // whatever branch the dialog opened with, even after the user
+  // switches the head dropdown. That stale value was masking the
+  // "PR #3 is open for `yeye`" hint that should appear when the user
+  // picks `yeye` instead of `main`.
+  useEffect(() => {
+    if (!open || !projectPath || !headSel) return
+    let cancelled = false
+    void fetchPrStatus({ projectPath, branch: headSel }).then((s) => {
+      if (!cancelled) setPrStatus(s)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, projectPath, headSel])
 
   const runPreflight = async () => {
     if (!projectPath) {
@@ -334,6 +367,21 @@ export function CreatePrDialog({
         // Refresh PR status badge. Don't close — the success body links
         // straight to the PR and we want the user to click it.
         void fetchPrStatus({ projectPath, branch: headSel }).then(setPrStatus)
+      } else if (resp.reason === "already_exists") {
+        // Not a failure: the push step in the create route succeeded,
+        // so the user's new commits already landed on the existing PR.
+        // The 422 from `gh pr create` is just GitHub refusing to make
+        // a duplicate. Surface it as a success so the UI doesn't lie.
+        const prNum = resp.existingPr?.number
+        toast.success(
+          prNum
+            ? `Pushed to PR #${prNum}. New commits added.`
+            : "Pushed to the existing open PR."
+        )
+        onCreated?.(resp)
+        // Refresh the badge — `updatedAt` will tick and the dialog's
+        // existing-PR row stays accurate.
+        void fetchPrStatus({ projectPath, branch: headSel }).then(setPrStatus)
       } else if (resp.blocked) {
         toast.error(resp.message ?? "PR blocked by policy.")
       } else {
@@ -396,6 +444,56 @@ export function CreatePrDialog({
             </div>
           )}
 
+          {/* ---------- Remote-only head info banner ---------- */}
+          {headSel && remoteOnlySet.has(headSel) && (
+            <div className="rounded-md border border-blue-500/40 bg-blue-500/5 p-2.5 text-xs text-blue-200 space-y-1">
+              <div className="font-medium">
+                <code className="font-mono">{headSel}</code> lives only on{" "}
+                <code className="font-mono">origin</code>.
+              </div>
+              <p className="opacity-90">
+                Edge Agent will fetch it locally
+                (<code className="font-mono">
+                  git fetch origin {headSel}:{headSel}
+                </code>
+                ) before creating the PR. Your currently checked-out branch
+                won&apos;t change.
+              </p>
+            </div>
+          )}
+
+          {/* ---------- Existing-PR info banner ----------
+            * Surface the existing-open-PR case up-front so users
+            * don't get confused when the create step returns
+            * `already_exists`. GitHub only allows one open PR per
+            * head→base pair, so submitting again just pushes new
+            * commits onto the existing PR. We tell them that here
+            * AND change the primary button label below. */}
+          {prStatus?.pr && prStatus.pr.state === "OPEN" && (
+            <div className="rounded-md border border-blue-500/40 bg-blue-500/5 p-2.5 text-xs text-blue-200 space-y-1">
+              <div className="font-medium flex items-center gap-1.5">
+                <GitPullRequest className="h-3.5 w-3.5" />
+                PR #{prStatus.pr.number} is already open for{" "}
+                <code className="font-mono">{prStatus.pr.headRefName}</code> →{" "}
+                <code className="font-mono">{prStatus.pr.baseRefName}</code>.
+              </div>
+              <p className="opacity-90">
+                GitHub allows only one open PR per branch pair. Submitting
+                will push your new commits, and they&apos;ll automatically
+                show up in the existing PR &mdash; no second PR is created.
+              </p>
+              <a
+                href={prStatus.pr.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 underline opacity-90 hover:opacity-100"
+              >
+                View PR #{prStatus.pr.number}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          )}
+
           {/* ---------- Form ----------
             * Order is intentionally head → base, matching how GitHub
             * itself describes a PR ("from <head> into <base>"). The
@@ -422,6 +520,14 @@ export function CreatePrDialog({
                   <SelectContent className="max-h-72">
                     {branches.map((b) => {
                       const isDefault = b === "main" || b === "master"
+                      // Branches that exist only as `origin/<name>`
+                      // remote-tracking refs are still selectable — the
+                      // server-side PR-create route auto-fetches them
+                      // locally before pushing, so the user can open a
+                      // PR from a branch they never checked out (e.g.
+                      // a teammate's branch). The hint surfaces what
+                      // will happen.
+                      const isRemoteOnly = remoteOnlySet.has(b)
                       return (
                         <SelectItem
                           key={b}
@@ -430,7 +536,11 @@ export function CreatePrDialog({
                           className="font-mono"
                         >
                           {b}
-                          {isDefault ? " · default branch (cannot be PR source)" : ""}
+                          {isDefault
+                            ? " · default branch (cannot be PR source)"
+                            : isRemoteOnly
+                              ? " · remote — will be fetched locally"
+                              : ""}
                         </SelectItem>
                       )
                     })}
@@ -665,15 +775,26 @@ export function CreatePrDialog({
             }
           >
             {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            {busy
-              ? runGate
-                ? "Running gate + opening PR…"
-                : "Opening PR…"
-              : decision === "block"
-                ? "Blocked"
-                : draft
-                  ? "Open Draft PR"
-                  : "Create Pull Request"}
+            {(() => {
+              // Label priority:
+              //   1. busy spinner copy
+              //   2. policy decision === block
+              //   3. existing-PR-open case → "Push to PR #N"
+              //   4. draft toggle
+              //   5. default "Create Pull Request"
+              const openPr =
+                prStatus?.pr && prStatus.pr.state === "OPEN"
+                  ? prStatus.pr
+                  : null
+              if (busy) {
+                if (openPr) return "Pushing to existing PR…"
+                return runGate ? "Running gate + opening PR…" : "Opening PR…"
+              }
+              if (decision === "block") return "Blocked"
+              if (openPr) return `Push to PR #${openPr.number}`
+              if (draft) return "Open Draft PR"
+              return "Create Pull Request"
+            })()}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -788,7 +909,7 @@ function PreflightStrip({
         warn={!!prStatus?.pr && prStatus.pr.state === "OPEN"}
         hint={
           prStatus?.pr?.state === "OPEN"
-            ? "creating again may fail (PR already exists)"
+            ? "your push will update this PR — no new PR will be created"
             : undefined
         }
         link={prStatus?.pr?.url}
@@ -956,6 +1077,12 @@ function ResultPanel({
             {result.url}
           </a>
         </div>
+        {result.fetchedFromOrigin && result.head && (
+          <div className="text-[11px] opacity-90">
+            Fetched <code className="font-mono">origin/{result.head}</code>{" "}
+            locally before pushing.
+          </div>
+        )}
         {result.decision && (
           <div>
             Policy decision:{" "}
@@ -978,8 +1105,56 @@ function ResultPanel({
       </div>
     )
   }
+  // Special "already exists" path — neither an error nor a success.
+  // The user's `git push` step actually succeeded (the route runs push
+  // before `gh pr create`), so their new commits already reached the
+  // existing PR. Render a green/info card with a clear "View PR" link
+  // and explain what just happened so they don't think the operation
+  // failed.
+  if (result.reason === "already_exists") {
+    const pr = result.existingPr
+    return (
+      <div className="rounded-md border border-blue-500/40 bg-blue-500/5 p-3 text-xs text-blue-200 space-y-2">
+        <div className="flex items-center gap-2 font-medium">
+          <GitPullRequest className="h-4 w-4" />
+          {pr
+            ? `Updated existing PR #${pr.number}`
+            : "An open PR already exists for this branch"}
+        </div>
+        <div>
+          {result.message ??
+            "Your push went through; GitHub attached the new commits to the existing pull request."}
+        </div>
+        {pr && (
+          <div className="flex items-center gap-2 pt-1">
+            <a
+              href={pr.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 px-2.5 py-1 text-xs font-medium"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              View PR #{pr.number}
+            </a>
+            <span className="opacity-80 font-mono text-[11px]">
+              {pr.headRefName} → {pr.baseRefName}
+              {pr.isDraft ? " · draft" : ""}
+            </span>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   // Failure path
   const isBlock = result.blocked || result.reason === "policy_block"
+  // Show stderr expanded by default for non-policy failures — those
+  // are almost always git/gh errors where the raw output is the most
+  // useful single line on the screen ("non-fast-forward", "src refspec
+  // does not match any", "Could not resolve host github.com", etc.).
+  // Policy blocks already have a clear evaluation.reasons list, so
+  // their stderr stays collapsed.
+  const stderrOpenByDefault = !isBlock && !!result.stderr
   return (
     <div
       className={`rounded-md border p-3 text-xs space-y-2 ${
@@ -1002,6 +1177,20 @@ function ResultPanel({
           ))}
         </ul>
       )}
+      {result.suggestions && result.suggestions.length > 0 && (
+        <div className="rounded-md border border-current/30 bg-current/5 p-2 space-y-1">
+          <div className="text-[11px] font-medium uppercase tracking-wide opacity-80">
+            Try this
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {result.suggestions.slice(0, 5).map((s, i) => (
+              <li key={i}>
+                <SuggestionText text={s} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {result.report && (
         <div className="font-mono text-[11px] opacity-80">
           {headBranch || "(no branch)"}: risk {result.report.risk_score}/100 ·{" "}
@@ -1012,14 +1201,43 @@ function ResultPanel({
         </div>
       )}
       {result.stderr && (
-        <details className="text-[11px] opacity-80">
-          <summary className="cursor-pointer">Raw stderr</summary>
-          <pre className="mt-1 whitespace-pre-wrap font-mono">
+        <details className="text-[11px] opacity-80" open={stderrOpenByDefault}>
+          <summary className="cursor-pointer">
+            {stderrOpenByDefault ? "git output" : "Raw stderr"}
+          </summary>
+          <pre className="mt-1 whitespace-pre-wrap font-mono max-h-48 overflow-auto">
             {result.stderr.slice(0, 2000)}
           </pre>
         </details>
       )}
     </div>
+  )
+}
+
+/**
+ * Render a suggestion string with any `inline-code` tokens turned into
+ * <code> spans. The server emits commands like "git pull --rebase"
+ * inside backticks; without this they'd render as plain text and lose
+ * legibility. Splits on backtick pairs, even segments are normal text,
+ * odd ones are code.
+ */
+function SuggestionText({ text }: { text: string }) {
+  const parts = text.split("`")
+  return (
+    <>
+      {parts.map((p, i) =>
+        i % 2 === 1 ? (
+          <code
+            key={i}
+            className="font-mono text-[11px] bg-black/30 rounded px-1 py-px"
+          >
+            {p}
+          </code>
+        ) : (
+          <span key={i}>{p}</span>
+        )
+      )}
+    </>
   )
 }
 

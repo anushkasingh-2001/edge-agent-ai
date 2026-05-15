@@ -7,6 +7,12 @@ import {
   resolveProjectPath,
   runGit,
 } from "@/lib/server-git"
+
+// Always read the working tree fresh. The user can run `git add`
+// from a terminal between requests and a cached response would
+// incorrectly report the tree as clean.
+export const dynamic = "force-dynamic"
+export const revalidate = 0
 import {
   attributeUntrackedFiles,
   listUntrackedFiles,

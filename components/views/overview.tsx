@@ -82,6 +82,10 @@ interface OverviewProps {
    * can pick the head branch directly without bouncing through the
    * top-bar branch picker. */
   branches?: string[]
+  /** Subset of `branches` that exist only on the remote. Forwarded to
+   *  CreatePrDialog so the Head picker can disable them (you can't
+   *  push a ref that isn't local). */
+  remoteOnlyBranches?: string[]
 }
 
 export function Overview({
@@ -105,6 +109,7 @@ export function Overview({
   project = null,
   lastGateRunAt = null,
   branches = [],
+  remoteOnlyBranches = [],
 }: OverviewProps) {
   // Local "Create PR" dialog so the Overview's PR card button can open
   // the same flow without bouncing the user up to the top bar.
@@ -244,6 +249,7 @@ export function Overview({
         projectPath={projectPath || null}
         headBranch={currentBranch || null}
         branches={branches}
+        remoteOnlyBranches={remoteOnlyBranches}
       />
 
       {/* Stats Grid */}

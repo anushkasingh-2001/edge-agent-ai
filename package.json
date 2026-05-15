@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "policy-gate": "tsx scripts/policy-gate.ts"
+    "policy-gate": "tsx scripts/policy-gate.ts",
+    "policy-gate-setup": "tsx scripts/policy-gate-setup.ts",
+    "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

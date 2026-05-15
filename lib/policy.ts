@@ -384,16 +384,43 @@ export const DEFAULT_POLICY: Policy = {
 
 const ModeSchema = z.enum(["warn", "block", "auto_merge"])
 
+/**
+ * Numeric threshold fields the UI can explicitly toggle OFF (see the
+ * Switch on each `NumberField` in Settings → Policy Rules).
+ *
+ * "Off" is meaningfully different from "missing": when a user flips
+ * one of these off, we record `null` on disk / on the wire so that
+ * reloading doesn't silently restore the default value. The in-memory
+ * `Policy` type continues to use `undefined` for "off"; this list
+ * tells the parser, serializer, and save-route how to convert at the
+ * boundaries.
+ */
+export const TOGGLABLE_NUMERIC_KEYS = {
+  security: [
+    "max_risk_score",
+    "max_risk_score_increase",
+    "max_critical_findings",
+    "max_high_findings",
+  ] as const,
+  evals: [
+    "min_accuracy",
+    "max_runtime_p95_ms",
+    "min_tool_selection_pass_rate",
+  ] as const,
+} as const
+
+const nullableNumber = () => z.number().nullable().optional()
+
 const SecuritySchema = z
   .object({
     block_if_critical: z.boolean().optional(),
     block_if_high_increased: z.boolean().optional(),
     block_if_medium_increased: z.boolean().optional(),
     require_risk_score_not_increase: z.boolean().optional(),
-    max_risk_score: z.number().optional(),
-    max_risk_score_increase: z.number().optional(),
-    max_critical_findings: z.number().optional(),
-    max_high_findings: z.number().optional(),
+    max_risk_score: nullableNumber(),
+    max_risk_score_increase: nullableNumber(),
+    max_critical_findings: nullableNumber(),
+    max_high_findings: nullableNumber(),
     block_if_secrets_found: z.boolean().optional(),
     block_if_dangerous_tool_without_approval: z.boolean().optional(),
     block_if_user_input_to_dangerous_code: z.boolean().optional(),
@@ -406,11 +433,11 @@ const SecuritySchema = z
 const EvalsSchema = z
   .object({
     block_if_accuracy_drops: z.boolean().optional(),
-    min_accuracy: z.number().optional(),
+    min_accuracy: nullableNumber(),
     block_if_runtime_increases: z.boolean().optional(),
-    max_runtime_p95_ms: z.number().optional(),
+    max_runtime_p95_ms: nullableNumber(),
     block_if_tool_selection_drops: z.boolean().optional(),
-    min_tool_selection_pass_rate: z.number().optional(),
+    min_tool_selection_pass_rate: nullableNumber(),
     block_if_required_evals_missing: z.boolean().optional(),
     block_if_tests_fail: z.boolean().optional(),
   })
@@ -535,14 +562,14 @@ export function parsePolicyYaml(yamlText: string): ParsePolicyResult {
   const v = validation.data
   const policy: Policy = {
     mode: v.mode ?? DEFAULT_POLICY.mode,
-    security: {
-      ...DEFAULT_POLICY.security,
-      ...(v.security ?? {}),
-    },
-    evals: {
-      ...DEFAULT_POLICY.evals,
-      ...(v.evals ?? {}),
-    },
+    security: stripExplicitNulls<SecurityPolicy>(
+      { ...DEFAULT_POLICY.security, ...(v.security ?? {}) },
+      TOGGLABLE_NUMERIC_KEYS.security
+    ),
+    evals: stripExplicitNulls<EvalsPolicy>(
+      { ...DEFAULT_POLICY.evals, ...(v.evals ?? {}) },
+      TOGGLABLE_NUMERIC_KEYS.evals
+    ),
     agents: { ...(v.agents ?? {}) },
     auto_merge: {
       ...DEFAULT_POLICY.auto_merge,
@@ -562,6 +589,26 @@ export function parsePolicyYaml(yamlText: string): ParsePolicyResult {
     },
   }
   return { policy, errors, parsed: true }
+}
+
+/**
+ * After merging a user's YAML over `DEFAULT_POLICY`, any togglable
+ * numeric field whose value is explicitly `null` represents
+ * "user disabled this" and must beat the default. Convert `null` →
+ * absent so the rest of the codebase (which treats `undefined` as
+ * "rule off") doesn't have to learn a new sentinel.
+ */
+function stripExplicitNulls<T extends object>(
+  merged: Record<string, unknown>,
+  togglableKeys: readonly string[]
+): T {
+  const out: Record<string, unknown> = { ...merged }
+  for (const k of togglableKeys) {
+    if (out[k] === null) {
+      delete out[k]
+    }
+  }
+  return out as T
 }
 
 /* -------------------------------------------------------------------------- */
@@ -590,31 +637,39 @@ export function serializePolicyToYaml(policy: Policy): string {
 function orderPolicy(p: Policy): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   out.mode = p.mode
-  out.security = orderKeys(p.security, [
-    "block_if_critical",
-    "block_if_high_increased",
-    "block_if_medium_increased",
-    "require_risk_score_not_increase",
-    "max_risk_score",
-    "max_risk_score_increase",
-    "max_critical_findings",
-    "max_high_findings",
-    "block_if_secrets_found",
-    "block_if_dangerous_tool_without_approval",
-    "block_if_user_input_to_dangerous_code",
-    "block_if_unsafe_mcp",
-    "block_if_schema_auth_gap",
-  ])
-  out.evals = orderKeys(p.evals, [
-    "block_if_accuracy_drops",
-    "min_accuracy",
-    "block_if_runtime_increases",
-    "max_runtime_p95_ms",
-    "block_if_tool_selection_drops",
-    "min_tool_selection_pass_rate",
-    "block_if_required_evals_missing",
-    "block_if_tests_fail",
-  ])
+  out.security = orderKeys(
+    p.security,
+    [
+      "block_if_critical",
+      "block_if_high_increased",
+      "block_if_medium_increased",
+      "require_risk_score_not_increase",
+      "max_risk_score",
+      "max_risk_score_increase",
+      "max_critical_findings",
+      "max_high_findings",
+      "block_if_secrets_found",
+      "block_if_dangerous_tool_without_approval",
+      "block_if_user_input_to_dangerous_code",
+      "block_if_unsafe_mcp",
+      "block_if_schema_auth_gap",
+    ],
+    TOGGLABLE_NUMERIC_KEYS.security
+  )
+  out.evals = orderKeys(
+    p.evals,
+    [
+      "block_if_accuracy_drops",
+      "min_accuracy",
+      "block_if_runtime_increases",
+      "max_runtime_p95_ms",
+      "block_if_tool_selection_drops",
+      "min_tool_selection_pass_rate",
+      "block_if_required_evals_missing",
+      "block_if_tests_fail",
+    ],
+    TOGGLABLE_NUMERIC_KEYS.evals
+  )
   // Drop the `agents` block entirely when empty so the YAML stays
   // focused on what the user actually configured.
   if (p.agents && Object.keys(p.agents).length > 0) {
@@ -649,15 +704,24 @@ function orderPolicy(p: Policy): Record<string, unknown> {
 
 function orderKeys(
   obj: object | undefined,
-  order: string[]
+  order: string[],
+  togglableKeys: readonly string[] = []
 ): Record<string, unknown> {
   const src = (obj ?? {}) as Record<string, unknown>
   const out: Record<string, unknown> = {}
+  const togglable = new Set(togglableKeys)
   for (const k of order) {
-    if (src[k] !== undefined) out[k] = src[k]
+    if (src[k] !== undefined) {
+      out[k] = src[k]
+    } else if (togglable.has(k)) {
+      // Togglable numeric that the user turned off — record explicit
+      // `null` so reloading the YAML doesn't silently re-apply the
+      // default value.
+      out[k] = null
+    }
   }
   for (const k of Object.keys(src)) {
-    if (!(k in out)) out[k] = src[k]
+    if (!(k in out) && src[k] !== undefined) out[k] = src[k]
   }
   return out
 }

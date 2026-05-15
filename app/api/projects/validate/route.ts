@@ -6,6 +6,8 @@ import {
   expandUserPath,
   getScanAllowRoot,
 } from "@/lib/server-path-utils"
+import { syncEdgeAgentImportGitIgnores } from "@/lib/server-edge-git-ignore"
+import { installEdgeAgentGate } from "@/lib/server-install-gate"
 
 export async function POST(request: Request) {
   let body: { projectPath?: string } = {}
@@ -41,5 +43,24 @@ export async function POST(request: Request) {
   }
 
   const name = path.basename(resolved) || "Project"
-  return NextResponse.json({ ok: true as const, name, path: resolved })
+  const importGitIgnores = syncEdgeAgentImportGitIgnores(resolved)
+  let policyGateInstall
+  try {
+    policyGateInstall = installEdgeAgentGate(resolved)
+  } catch (e) {
+    policyGateInstall = {
+      installed: false,
+      reason: e instanceof Error ? e.message : "unknown",
+      projectPath: resolved,
+      wrapperPath: "",
+      defaultPolicyPath: "",
+    }
+  }
+  return NextResponse.json({
+    ok: true as const,
+    name,
+    path: resolved,
+    importGitIgnores,
+    policyGateInstall,
+  })
 }

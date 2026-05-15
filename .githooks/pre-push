@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -e
+if [ "${EDGE_AGENT_SKIP:-0}" = "1" ]; then
+  echo "edge-agent: pre-push skipped (EDGE_AGENT_SKIP=1)"
+  exit 0
+fi
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 0
+if ! command -v pnpm >/dev/null 2>&1 || [ ! -d node_modules/tsx ]; then
+  exit 0
+fi
+UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+if [ -z "$UPSTREAM" ]; then
+  exec pnpm --silent policy-gate --target HEAD --repo "$ROOT"
+fi
+exec pnpm --silent policy-gate --target HEAD --base "$UPSTREAM" --repo "$ROOT"

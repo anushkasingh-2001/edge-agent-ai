@@ -601,6 +601,178 @@ export function isGitHubPermissionError(stderr: string): boolean {
   return false
 }
 
+/**
+ * Stable reasons for a failed `git push`. Used by API routes to map
+ * git's free-form stderr into a structured response the UI can react
+ * to (and to keep error copy consistent across routes).
+ */
+export type GitPushFailureReason =
+  | "permission_denied"
+  | "non_fast_forward"
+  | "no_local_branch"
+  | "auth_prompt_disabled"
+  | "repository_not_found"
+  | "secret_push_protection"
+  | "branch_protection"
+  | "network_unreachable"
+  | "timeout"
+  | "push_failed"
+
+export interface GitPushFailureDiagnosis {
+  reason: GitPushFailureReason
+  /** One-line, user-facing message. Don't include stderr — that's a
+   *  separate field on the response. */
+  message: string
+  /** Concrete next steps. Ordered most-likely-to-help first. */
+  suggestions: string[]
+}
+
+/**
+ * Inspect the stderr/stdout of a failed `git push` and return a
+ * categorical reason + actionable suggestions. Never throws — when no
+ * pattern matches, falls back to the generic `push_failed` bucket with
+ * generic guidance.
+ *
+ * The classifier covers the common cases users hit in this app:
+ *   - 403 / "Permission denied" → wrong-account / stale credential
+ *   - "fetch first" / "non-fast-forward" → branch behind origin
+ *   - "src refspec ... does not match" → branch doesn't exist locally
+ *   - "could not read Username" → no creds for HTTPS, prompts disabled
+ *   - "Repository not found" → wrong URL or fully revoked access
+ *   - "GH013"/"secret detected" → secret push-protection
+ *   - "GH006"/"protected branch" / "rejected ... protected" → branch rules
+ *   - "Network is unreachable" / "Could not resolve host" → connectivity
+ */
+export function classifyGitPushFailure(
+  stderr: string,
+  stdout = ""
+): GitPushFailureDiagnosis {
+  const blob = `${stderr || ""}\n${stdout || ""}`
+
+  if (isGitHubPermissionError(stderr)) {
+    return {
+      reason: "permission_denied",
+      message:
+        "GitHub rejected the push: the authenticated account doesn't have permission for this repository, or git is using cached credentials from another account.",
+      suggestions: [
+        "Sign in to GitHub from Settings with an account that has push access (or run `gh auth login`).",
+        "If you've already authenticated with the right account, clear your Git credential helper (macOS: `printf 'host=github.com\\nprotocol=https\\n' | git credential-osxkeychain erase`) and try again.",
+        "Or switch the remote to SSH and use your SSH key: `git remote set-url origin git@github.com:<owner>/<repo>.git`.",
+      ],
+    }
+  }
+  if (/Repository not found/i.test(blob) || /HTTP 404\b/.test(blob)) {
+    return {
+      reason: "repository_not_found",
+      message:
+        "GitHub returned 'Repository not found' — the remote URL is wrong, the repo was renamed/deleted, or your account has no access at all.",
+      suggestions: [
+        "Check the `origin` URL: `git remote -v`. Update it with `git remote set-url origin <url>` if it's stale.",
+        "Confirm you're signed into the right GitHub account in Settings.",
+        "Ask the repo owner to grant you collaborator access if this is a private repo.",
+      ],
+    }
+  }
+  if (
+    /\[rejected\][\s\S]*non-fast-forward/i.test(blob) ||
+    /fetch first/i.test(blob) ||
+    /Updates were rejected because the remote contains work/i.test(blob)
+  ) {
+    return {
+      reason: "non_fast_forward",
+      message:
+        "The remote branch has commits your local branch doesn't have, so git refused the push.",
+      suggestions: [
+        "Pull and replay your changes on top: `git pull --rebase origin <branch>`, fix conflicts if any, then retry.",
+        "If you intentionally want to overwrite the remote, run `git push --force-with-lease` from your terminal (not supported here on purpose).",
+      ],
+    }
+  }
+  if (
+    /src refspec .+ does not match any/i.test(blob) ||
+    /does not appear to be a git repository/i.test(blob)
+  ) {
+    return {
+      reason: "no_local_branch",
+      message:
+        "The branch you tried to push doesn't exist locally. Make sure you're pushing the same branch you have checked out.",
+      suggestions: [
+        "Run `git branch --list` to confirm the branch name.",
+        "Switch to the branch (`git checkout <branch>`) before pushing, or commit at least once so the branch ref exists.",
+      ],
+    }
+  }
+  if (
+    /could not read Username for/i.test(blob) ||
+    /terminal prompts disabled/i.test(blob) ||
+    /Authentication failed/i.test(blob)
+  ) {
+    return {
+      reason: "auth_prompt_disabled",
+      message:
+        "Git tried to prompt for credentials, but prompts are disabled in this app. You're not authenticated to the remote.",
+      suggestions: [
+        "Sign in to GitHub from Settings to inject an in-app token, or run `gh auth login` in your terminal.",
+        "If you use HTTPS without `gh`, create a Personal Access Token with `repo` scope and configure a credential helper.",
+        "Or switch the remote to SSH: `git remote set-url origin git@github.com:<owner>/<repo>.git`.",
+      ],
+    }
+  }
+  if (/GH013/i.test(blob) || /secret detected/i.test(blob) || /push protection/i.test(blob)) {
+    return {
+      reason: "secret_push_protection",
+      message:
+        "GitHub blocked the push because a secret was detected in your commits (push protection).",
+      suggestions: [
+        "Remove the secret from your history before pushing. Rotate the credential — assume it's compromised.",
+        "If it's a known false positive, follow the unblock URL in the stderr below.",
+      ],
+    }
+  }
+  if (/GH006/i.test(blob) || /protected branch/i.test(blob) || /required status check/i.test(blob)) {
+    return {
+      reason: "branch_protection",
+      message:
+        "The branch is protected and the push was rejected by a branch-protection rule (e.g. required reviews, status checks, or linear history).",
+      suggestions: [
+        "Open a pull request into a different branch instead of pushing directly.",
+        "Ask a repo admin to relax the rule or grant you a bypass.",
+      ],
+    }
+  }
+  if (/Network is unreachable/i.test(blob) || /Could not resolve host/i.test(blob)) {
+    return {
+      reason: "network_unreachable",
+      message:
+        "git couldn't reach github.com. You may be offline or behind a proxy/firewall.",
+      suggestions: [
+        "Check your internet connection, then retry.",
+        "If you're on a corporate network, configure git's HTTP proxy: `git config --global http.proxy <proxy-url>`.",
+      ],
+    }
+  }
+  if (/timed out|operation timed out|timeout/i.test(blob)) {
+    return {
+      reason: "timeout",
+      message:
+        "git push timed out (we cap pushes at 90s to avoid hanging the dialog).",
+      suggestions: [
+        "Try again on a faster connection.",
+        "For large repos, run `git push` once from your terminal — subsequent pushes will be incremental.",
+      ],
+    }
+  }
+  return {
+    reason: "push_failed",
+    message:
+      "git push failed. See the stderr below for the exact reason returned by git.",
+    suggestions: [
+      "Re-run with the suggestions below after reading the stderr.",
+      "If this looks like a credential problem, sign in from Settings or run `gh auth login`.",
+    ],
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Pull-request helpers (gh pr create / merge / status)                       */
 /* -------------------------------------------------------------------------- */
@@ -635,8 +807,18 @@ export type CreatePrResult =
       ok: false
       message: string
       stderr: string
-      /** "no_remote", "no_branch", "auth", "perm", "create_failed", … */
+      /** "no_remote", "no_branch", "auth", "perm", "create_failed",
+       *  "already_exists", "no_commits", … */
       reason: string
+      /**
+       * Populated when GitHub rejected the create with
+       * `reason: "already_exists"`. Lets callers surface a "View PR"
+       * link + "Push to existing PR" CTA instead of just echoing the
+       * raw 422 body. Looked up via the REST list-PRs endpoint after
+       * the create fails so the URL we show really is the one
+       * blocking the create.
+       */
+      existingPr?: GhPullRequestSummary | null
     }
 
 const PR_NUM_RE = /\/pull\/(\d+)\b/
@@ -690,6 +872,7 @@ export async function createPullRequest(args: {
       const errBody = await res.text().catch(() => "")
       let message = `GitHub returned HTTP ${res.status} when creating the PR.`
       let reason = "create_failed"
+      let existingPr: GhPullRequestSummary | null = null
       if (res.status === 401) {
         reason = "auth"
         message =
@@ -699,14 +882,46 @@ export async function createPullRequest(args: {
         message = `@${stored.login} does not have permission to open PRs on ${owner}/${repo}. Check the token's scopes.`
       } else if (res.status === 422) {
         // Unprocessable Entity — typically "no commits between" or
-        // "PR already exists". Sniff the body for the canonical strings.
-        if (/no commits between/i.test(errBody)) reason = "no_commits"
-        else if (/already exists/i.test(errBody)) reason = "already_exists"
-        message =
-          extractGitHubErrorMessage(errBody) ||
-          "GitHub rejected the PR (422). Branch may have no commits or a PR may already exist."
+        // "PR already exists". Sniff the body for the canonical strings
+        // and replace the raw GitHub JSON with a human-readable line.
+        if (/no commits between/i.test(errBody)) {
+          reason = "no_commits"
+          message = `'${head}' has no commits that aren't already on '${base}'. Add a commit on '${head}' (or pick a different head/base) before opening a PR.`
+        } else if (/already exists/i.test(errBody)) {
+          reason = "already_exists"
+          // Try to look up the existing PR so the caller can render
+          // its URL/number. We don't fail the whole result if this
+          // lookup itself errors — it's a UX nicety, not a
+          // correctness requirement.
+          try {
+            const lookup = await fetchPullRequestForBranch({
+              cwd,
+              owner,
+              repo,
+              branch: head,
+            })
+            if (lookup.ok && lookup.pr) {
+              existingPr = lookup.pr
+            }
+          } catch {
+            /* ignore — fallthrough to generic message */
+          }
+          message = existingPr
+            ? `A pull request from '${head}' into '${base}' is already open: PR #${existingPr.number}. Pushing new commits to '${head}' will update that PR automatically — you don't need a second one.`
+            : `A pull request from '${head}' into '${base}' is already open. Pushing new commits to '${head}' will update that PR automatically — you don't need a second one.`
+        } else {
+          message =
+            extractGitHubErrorMessage(errBody) ||
+            "GitHub rejected the PR (422). Branch may have no commits or a PR may already exist."
+        }
       }
-      return { ok: false, message, stderr: errBody.slice(0, 4000), reason }
+      return {
+        ok: false,
+        message,
+        stderr: errBody.slice(0, 4000),
+        reason,
+        existingPr,
+      }
     } catch (e) {
       // Network failure — fall through to gh CLI if available.
       const err = e instanceof Error ? e.message : String(e)
@@ -784,21 +999,39 @@ export async function createPullRequest(args: {
   if (proc.status !== 0) {
     const stderr = proc.stderr ?? ""
     let reason = "create_failed"
+    let message =
+      proc.stderr.trim() || `gh pr create exited with status ${proc.status}`
+    let existingPr: GhPullRequestSummary | null = null
     if (/HTTP 401\b/.test(stderr) || /not logged into/.test(stderr)) {
       reason = "auth"
     } else if (/HTTP 403\b/.test(stderr)) {
       reason = "perm"
     } else if (/no commits between/i.test(stderr)) {
       reason = "no_commits"
+      message = `'${head}' has no commits that aren't already on '${base}'. Add a commit on '${head}' (or pick a different head/base) before opening a PR.`
     } else if (/already exists/i.test(stderr)) {
       reason = "already_exists"
+      try {
+        const lookup = await fetchPullRequestForBranch({
+          cwd,
+          owner,
+          repo,
+          branch: head,
+        })
+        if (lookup.ok && lookup.pr) existingPr = lookup.pr
+      } catch {
+        /* ignore */
+      }
+      message = existingPr
+        ? `A pull request from '${head}' into '${base}' is already open: PR #${existingPr.number}. Pushing new commits to '${head}' will update that PR automatically — you don't need a second one.`
+        : `A pull request from '${head}' into '${base}' is already open. Pushing new commits to '${head}' will update that PR automatically — you don't need a second one.`
     }
     return {
       ok: false,
-      message:
-        proc.stderr.trim() || `gh pr create exited with status ${proc.status}`,
+      message,
       stderr,
       reason,
+      existingPr,
     }
   }
   const stdout = proc.stdout ?? ""
