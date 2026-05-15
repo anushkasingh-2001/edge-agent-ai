@@ -60,6 +60,7 @@ import {
 } from "@/lib/github-client"
 import { GithubLoginDialog } from "@/components/github-login-dialog"
 import { PolicyRulesCard } from "@/components/views/policy-rules-card"
+import { SystemHealthGate } from "@/components/system-health-gate"
 import type { Project } from "@/lib/projects"
 import type { ScanReport } from "@/lib/scan-report"
 
@@ -105,6 +106,15 @@ export function Settings({
         <h1 className="text-2xl font-semibold">Settings</h1>
         <p className="text-muted-foreground">Configure Edge Agent AI preferences</p>
       </div>
+
+      {/* A0. System Health — desktop-readiness probe for git / gh /
+          scanner. Surfaces here (and not just on first launch) because
+          users typically come to Settings when something feels off,
+          and "is my scanner even installed?" is the cheapest
+          first-question to answer. Soft-blocks via warnings only;
+          actual feature gating lives in the consumers (Run Scan,
+          Create PR, etc.). */}
+      <SystemHealthGate />
 
       {/* A. Appearance */}
       <Card className="bg-card border-border">
