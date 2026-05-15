@@ -33,8 +33,8 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-import {
-  Search,
+import { 
+  Search, 
   Shield,
   ChevronRight,
   ChevronDown,
@@ -188,16 +188,16 @@ export function Findings({
           : "text-green-400"
 
   if (!hasProject || !hasScan) {
-    return (
-      <div className="p-6 space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Findings</h1>
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Findings</h1>
             <p className="text-muted-foreground">
               Security issues detected in your AI agents
             </p>
-          </div>
         </div>
+      </div>
         <Card className="bg-card border-border">
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
             {hasProject
@@ -231,7 +231,7 @@ export function Findings({
             <div className={`text-3xl font-bold ${riskColor}`}>{riskScore}</div>
           </CardContent>
         </Card>
-
+        
         <Card className="bg-card border-border">
           <CardHeader className="pb-2">
             <CardDescription>Critical</CardDescription>
@@ -467,8 +467,8 @@ function CodeAnalysisPanel({
           <div className="flex items-center gap-4">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search findings..."
+              <Input 
+                placeholder="Search findings..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9 bg-secondary/50"
@@ -546,7 +546,7 @@ function CodeAnalysisPanel({
           </TableHeader>
           <TableBody>
             {filteredFindings.map((finding) => (
-              <TableRow
+              <TableRow 
                 key={finding.scannerFindingId ?? finding.id}
                 className="cursor-pointer hover:bg-secondary/50 border-border"
                 onClick={() => {
@@ -584,9 +584,9 @@ function CodeAnalysisPanel({
         </Table>
       </Card>
 
-      <FindingDrawer
-        finding={selectedFinding}
-        open={drawerOpen}
+      <FindingDrawer 
+        finding={selectedFinding} 
+        open={drawerOpen} 
         onOpenChange={setDrawerOpen}
         projectPath={projectPath}
         onFixApplied={handleApplied}
