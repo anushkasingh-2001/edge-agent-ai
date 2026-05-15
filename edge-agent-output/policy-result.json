@@ -7,11 +7,11 @@
     "security.max_critical_findings",
     "security.max_high_findings",
     "security.block_if_secrets_found",
-    "security.block_if_user_input_to_dangerous_code"
+    "security.block_if_user_input_to_dangerous_code",
+    "security.block_if_schema_auth_gap"
   ],
   "passedConditions": [
     "security.block_if_unsafe_mcp",
-    "security.block_if_schema_auth_gap",
     "security.block_if_dangerous_tool_without_approval"
   ],
   "inapplicableConditions": [
@@ -33,9 +33,10 @@
     "Warning: target scan has 3 critical findings.",
     "Warning: risk score 100 exceeds policy ceiling 70.",
     "Warning: 3 critical findings exceed ceiling 0.",
-    "Warning: 146 high findings exceed ceiling 0.",
+    "Warning: 308 high findings exceed ceiling 0.",
     "Warning: secret-like values were detected in source.",
     "Warning: user input can flow into dangerous code paths.",
+    "Warning: OpenAPI / auth / schema quality issues were found.",
     "Accuracy/runtime metrics are unavailable because eval runner has not been run."
   ],
   "deltas": {
@@ -56,14 +57,14 @@
     "risk_score": 100,
     "summary": {
       "critical": 3,
-      "high": 146,
-      "medium": 57,
-      "low": 24,
-      "total": 230
+      "high": 308,
+      "medium": 69,
+      "low": 3,
+      "total": 383
     },
-    "generated_at": "2026-05-15T06:06:27.386273+00:00"
+    "generated_at": "2026-05-15T19:53:35.965220+00:00"
   },
   "base": null,
-  "policyPath": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-ai/.edgeagent/policy.yaml",
+  "policyPath": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-recovered/.edgeagent/policy.yaml",
   "policyErrors": []
 }
