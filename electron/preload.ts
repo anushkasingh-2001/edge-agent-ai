@@ -1,35 +1,35 @@
 /**
- * Edge Agent AI — Electron preload (Step 2).
+ * Edge Agent AI — Electron preload (Step 3).
  *
- * The preload runs in an isolated world between Electron's main process
- * and the Next.js renderer. With `contextIsolation: true` enabled in
- * main.ts, this is the *only* sanctioned channel for exposing
- * functionality to the React/Next.js code running inside the window.
+ * Bridges the renderer (Next.js / React) to a narrow, audited surface
+ * of main-process APIs. With `contextIsolation: true` in main.ts, this
+ * is the ONLY sanctioned channel — the renderer cannot reach `fs`,
+ * `child_process`, `shell`, `ipcRenderer`, or any other Node primitive.
  *
- * At Step 2 we deliberately expose only:
- *   - `isDesktop`: a constant boolean the renderer can use to switch
- *     UI affordances (e.g. show "Pick Folder…" instead of a manual
- *     path input) without doing brittle userAgent sniffing.
- *   - `versions`: the Electron/Chrome/Node version triple — useful for
- *     debug output and "About" panels.
+ * Exposed surface (window.edgeAgentAI):
+ *   - platform:     `process.platform` — "darwin" | "win32" | "linux" | …
+ *                   Cheap signal for OS-specific UI affordances
+ *                   (path separators, keyboard shortcuts, etc.).
+ *   - selectFolder: opens the native OS folder picker. Resolves with the
+ *                   chosen absolute path, or `null` if the user cancelled.
+ *                   Rejects with an `Error` when the selection fails
+ *                   validation in main (outside allowlist, not a
+ *                   directory, missing, etc.) — the renderer should
+ *                   `try/catch` and surface the message.
  *
- * Step 3 will add IPC bridges here (folder picker, system info, etc.)
- * via `ipcRenderer.invoke` wrapped behind narrow, audited methods.
- * Until then, the renderer cannot reach `ipcRenderer`, `fs`, `child_process`,
- * or any other Node primitive — which is the point.
+ * Renderers running in plain-browser mode (`pnpm dev`) never see this
+ * preload, so `window.edgeAgentAI` is `undefined` there. That `undefined`
+ * is exactly how the React components feature-detect desktop mode.
  */
 
-import { contextBridge } from "electron"
+import { contextBridge, ipcRenderer } from "electron"
 
-const bridge = {
-  isDesktop: true as const,
-  versions: {
-    electron: process.versions.electron ?? "unknown",
-    chrome: process.versions.chrome ?? "unknown",
-    node: process.versions.node ?? "unknown",
-  },
+const api = {
+  platform: process.platform,
+  selectFolder: (): Promise<string | null> =>
+    ipcRenderer.invoke("edge-agent-ai:select-folder"),
 } as const
 
-contextBridge.exposeInMainWorld("edgeAgent", bridge)
+contextBridge.exposeInMainWorld("edgeAgentAI", api)
 
-export type EdgeAgentBridge = typeof bridge
+export type EdgeAgentAIBridge = typeof api

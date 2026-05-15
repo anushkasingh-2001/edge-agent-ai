@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Folder,
+  FolderInput,
   FolderOpen,
   Home,
   Loader2,
@@ -93,6 +94,14 @@ export function OpenProjectDialog({
   const [typedPath, setTypedPath] = useState("")
   // Submission state ------------------------------------------------------
   const [busy, setBusy] = useState(false)
+  // Desktop-only affordance: only true when running inside Electron and
+  // the preload bridge has actually exposed `selectFolder`. We can't read
+  // `window` during SSR, so it's flipped on after mount.
+  const [hasNativePicker, setHasNativePicker] = useState(false)
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    setHasNativePicker(typeof window.edgeAgentAI?.selectFolder === "function")
+  }, [])
 
   // Reset transient state on close so reopening starts clean.
   useEffect(() => {
@@ -189,6 +198,37 @@ export function OpenProjectDialog({
 
   const selectedPath = pathMode === "browse" ? cwd : typedPath.trim()
 
+  // Native folder picker (Electron-only). On success we drop the
+  // chosen path into the type-a-path input and switch to that mode so
+  // the user can review the selection and click Open Project /
+  // Open and Scan — i.e. the existing validation flow runs unchanged.
+  // Errors carry stable code prefixes from main.ts (see electron/main.ts).
+  const handleSelectFolder = useCallback(async () => {
+    const fn = typeof window !== "undefined" ? window.edgeAgentAI?.selectFolder : undefined
+    if (!fn) return
+    setError(null)
+    try {
+      const picked = await fn()
+      if (!picked) return // user cancelled — keep current state untouched
+      setTypedPath(picked)
+      setPathMode("type")
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error"
+      if (msg.startsWith("OUTSIDE_ALLOWLIST")) {
+        setError(
+          "This folder is outside the allowed scan directory. Update " +
+            "EDGE_AGENT_SCAN_ALLOWLIST or choose a folder under your home directory."
+        )
+      } else if (msg.startsWith("NOT_A_DIRECTORY")) {
+        setError("Could not select this folder: the selection is not a directory.")
+      } else if (msg.startsWith("NOT_FOUND")) {
+        setError("Could not select this folder: the folder no longer exists.")
+      } else {
+        setError(`Could not select this folder: ${msg}`)
+      }
+    }
+  }, [])
+
   const handleOpen = async () => {
     if (!selectedPath) return
     const project = await validate(selectedPath)
@@ -219,8 +259,30 @@ export function OpenProjectDialog({
 
         {/* Mode toggle: browse vs type. We default to browse because
          *  it's the friendlier of the two, but power users can flip
-         *  to a single-line absolute-path input. */}
+         *  to a single-line absolute-path input. Desktop mode adds a
+         *  "Select Folder…" shortcut that delegates to the OS-native
+         *  picker (Electron only — invisible in browser mode). */}
         <div className="flex items-center gap-2 -mt-1">
+          {hasNativePicker && (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => void handleSelectFolder()}
+                title="Open the native OS folder picker"
+              >
+                <FolderInput className="h-3.5 w-3.5 mr-1.5" />
+                Select Folder…
+              </Button>
+              <span
+                aria-hidden
+                className="text-muted-foreground/40 mx-0.5 select-none"
+              >
+                |
+              </span>
+            </>
+          )}
           <Button
             type="button"
             size="sm"
