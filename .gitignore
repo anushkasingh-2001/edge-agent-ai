@@ -29,3 +29,10 @@ scanner/*.spec.bak
 
 # electron-builder output (.dmg / .zip / mac-arm64/Edge Agent AI.app)
 release/
+
+# Policy-gate artefacts — regenerated on every commit by the .githooks/pre-commit
+# hook (`pnpm policy-gate`). Tracking them in git creates an infinite "modified
+# after commit" loop: the hook overwrites them post-stage, so the next git status
+# sees them dirty again. They're per-commit transient state, not source.
+# (CI uploads them as artifacts; that's the canonical archive.)
+edge-agent-output/
