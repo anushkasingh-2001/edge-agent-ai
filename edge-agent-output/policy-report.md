@@ -6,7 +6,7 @@
 - **Decision:** **⚠️ WARN**
 - **Policy mode:** `warn`
 - **Policy file:** `.edgeagent/policy.yaml`
-- **Timestamp:** 2026-05-16T03:25:30.621Z
+- **Timestamp:** 2026-05-16T03:52:27.280Z
 
 ## Compared States
 
@@ -16,7 +16,7 @@
 
 ### Target
 - **Branch:** `main`
-- **Commit:** `9864516`
+- **Commit:** `9a37f2b`
 
 ## Risk and Severity Delta
 
