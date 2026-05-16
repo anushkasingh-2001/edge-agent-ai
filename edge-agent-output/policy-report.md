@@ -6,7 +6,7 @@
 - **Decision:** **⚠️ WARN**
 - **Policy mode:** `warn`
 - **Policy file:** `.edgeagent/policy.yaml`
-- **Timestamp:** 2026-05-16T03:25:13.405Z
+- **Timestamp:** 2026-05-16T03:25:30.621Z
 
 ## Compared States
 

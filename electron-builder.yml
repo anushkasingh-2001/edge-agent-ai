@@ -60,11 +60,11 @@ files:
 asar: true
 
 # ----------------------------------------------------------------------------
-# Resources copied verbatim into Edge Agent AI.app/Contents/Resources/,
-# OUTSIDE the asar archive. These end up at `process.resourcesPath/...`
-# in main.ts, which is exactly where:
-#   findStandaloneServerJs() looks first for `standalone/server.js`
-#   findScannerBin()         looks first for `scanner-bin/edge-agent-scanner`
+# Cross-platform resources copied verbatim into
+# <app>.app/Contents/Resources/ (mac), or resources/ (win/linux), OUTSIDE
+# the asar archive. These end up at `process.resourcesPath/...` in
+# main.ts, which is exactly where `findStandaloneServerJs()` and
+# `findScannerBin()` look first.
 #
 # We ship the WHOLE .next/standalone tree (server.js + the trimmed
 # node_modules Next.js traced, plus the postbuild-copied .next/static and
@@ -73,9 +73,12 @@ asar: true
 #   • dlopen sharp's `*.node` binding (no asar dlopen restriction)
 #   • avoid the asar overhead for the bulk of the bundle
 #
-# Scanner-bin restricted to darwin-arm64 because the binary is host-built
-# by PyInstaller and cannot be cross-compiled. When we add Windows/Linux
-# we'll override extraResources in those platforms' blocks.
+# The scanner binary itself is per-platform (PyInstaller cannot
+# cross-compile), so each `mac:` / `win:` / `linux:` block below adds
+# its own `extraResources` entry pointing at the correct slot inside
+# `electron/resources/scanner-bin/<plat>-<arch>/`. electron-builder
+# MERGES top-level extraResources with the platform-specific ones, so
+# every artefact gets the standalone bundle AND the right scanner binary.
 # ----------------------------------------------------------------------------
 extraResources:
   # The standalone bundle (server.js + traced source). electron-builder
@@ -89,8 +92,6 @@ extraResources:
   # during the copy, so we end up with a flat, lockfile-free runtime tree.
   - from: .next/standalone/node_modules
     to: standalone/node_modules
-  - from: electron/resources/scanner-bin/darwin-arm64/edge-agent-scanner
-    to: scanner-bin/edge-agent-scanner
 
 # ----------------------------------------------------------------------------
 # macOS target configuration.
@@ -117,6 +118,14 @@ mac:
   # the secure-input flags, or any entitlements file. Keeping these defaults
   # explicit so a future contributor knows nothing was forgotten.
   gatekeeperAssess: false
+  # The macOS scanner binary lives at this exact path because that's
+  # what `pnpm build:scanner` produces on an arm64 host. The pre-flight
+  # `scripts/check-scanner-bin.mjs` (wired into `package:mac` in
+  # package.json) refuses to invoke electron-builder if it isn't there,
+  # so this `from:` should always resolve at packaging time.
+  extraResources:
+    - from: electron/resources/scanner-bin/darwin-arm64/edge-agent-scanner
+      to: scanner-bin/edge-agent-scanner
 
 # ----------------------------------------------------------------------------
 # .dmg cosmetics. Keeping the bare minimum — no custom background or icon
@@ -124,6 +133,122 @@ mac:
 # ----------------------------------------------------------------------------
 dmg:
   writeUpdateInfo: false
+
+# ----------------------------------------------------------------------------
+# Windows target configuration.
+#
+# Targets:
+#   - nsis — single-file .exe installer. Handles user/system installs,
+#            Start menu shortcuts, and per-user uninstaller via NSIS.
+#            This is what 95% of Windows users will run.
+#
+# Architecture:
+#   - x64 only for now. arm64 Windows builds need a Windows-on-ARM host
+#     for PyInstaller (cross-compile is unsupported); we can add that
+#     later by running `pnpm build:scanner` on a Surface Pro / WSL2 arm
+#     box and adding `arch: arm64` to the target list.
+#
+# Code signing:
+#   - Deliberately OFF (`signAndEditExecutable: false`). A signed Windows
+#     build needs a code-signing cert; that's a Step-9 concern. Unsigned
+#     installers will display a SmartScreen warning that the user can
+#     "More info → Run anyway" past — same UX as macOS Gatekeeper today.
+#
+# Scanner binary:
+#   - Must exist at `electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe`
+#     before invoking `pnpm package:win`. Build it on a Windows host with
+#     `pnpm build:scanner`, then commit the file (or copy via CI artefact).
+#     The pre-flight check refuses to invoke electron-builder otherwise.
+# ----------------------------------------------------------------------------
+win:
+  target:
+    - target: nsis
+      arch: x64
+  signAndEditExecutable: false
+  # Same per-platform extraResources mechanism as mac: above. The .exe
+  # binary suffix is required — without it Electron's `spawn` on Windows
+  # won't pick up the executable from PATH-like resolution.
+  extraResources:
+    - from: electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe
+      to: scanner-bin/edge-agent-scanner.exe
+
+# ----------------------------------------------------------------------------
+# NSIS installer cosmetics. Keep defaults: per-user install (so we don't
+# need admin rights to install/update), a one-click installer that
+# launches the app afterwards. No custom installer art for now.
+# ----------------------------------------------------------------------------
+nsis:
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Edge Agent AI
+
+# ----------------------------------------------------------------------------
+# Linux target configuration.
+#
+# Targets:
+#   - AppImage — the lowest-friction option. A single executable file
+#                that runs on every modern distro without root or apt-get.
+#                The user just `chmod +x Edge\ Agent\ AI-*.AppImage && ./<file>`.
+#   - deb      — for Debian/Ubuntu users who'd rather install via the
+#                package manager. Lands in /opt/Edge\ Agent\ AI/ with a
+#                .desktop launcher under /usr/share/applications/. Includes
+#                an explicit dependency list so apt installs git/etc. for us.
+#
+# Architecture:
+#   - x64 only. arm64 Linux (Raspberry Pi 5, Ampere servers, Apple Silicon
+#     under multipass) would need its own PyInstaller build on an arm64
+#     Linux host — straightforward, just not in scope yet.
+#
+# Category + .desktop:
+#   - "Development;Utility" is the canonical FreeDesktop menu category.
+#     The installer will create a .desktop file that points launchers at
+#     the AppImage / installed binary; no extra work needed from us.
+#
+# Scanner binary:
+#   - Must exist at `electron/resources/scanner-bin/linux-x64/edge-agent-scanner`
+#     before `pnpm package:linux`. Same PyInstaller-per-host rule as
+#     Windows. Build on a Linux host (or in a Docker container with the
+#     right glibc) and commit / scp the result.
+# ----------------------------------------------------------------------------
+linux:
+  target:
+    - target: AppImage
+      arch: x64
+    - target: deb
+      arch: x64
+  category: Development
+  # Default Electron icon is fine for now; swap to build/icon.png (512x512)
+  # when we have brand art. Mirror the mac: comment for consistency.
+  extraResources:
+    - from: electron/resources/scanner-bin/linux-x64/edge-agent-scanner
+      to: scanner-bin/edge-agent-scanner
+
+# ----------------------------------------------------------------------------
+# Debian-specific tweaks for the .deb target.
+#
+# `depends:` controls apt's "Depends:" field in the resulting .deb's
+# control file. We list the runtime tools the app actually shells out to
+# (git, openssh-client for git+ssh, libgtk-3-0 + the usual Electron/Chrome
+# runtime libs). Without these the .deb installs fine but launching it
+# on a barebones server gives the user a confusing "[X11] failed to
+# initialise display" or "git: command not found" first-launch.
+# ----------------------------------------------------------------------------
+deb:
+  priority: optional
+  depends:
+    - git
+    - openssh-client
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
 
 # ----------------------------------------------------------------------------
 # Build-time hooks deliberately disabled. We rely on the package.json

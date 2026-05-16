@@ -1,0 +1,208 @@
+# Edge Agent AI — Build Windows + Linux Installers
+#
+# Manual workflow that produces the per-OS installers you can host on
+# your website. macOS is intentionally NOT in this matrix because you
+# already build it locally on your Apple Silicon Mac with `pnpm package:mac`
+# (which is also the canonical, fully-exercised path — see
+# docs/DESKTOP-PACKAGING.md).
+#
+# What each job does:
+#   1. Checks out the repo at the branch you picked when triggering.
+#   2. Installs Python 3.11 + Node 22 + pnpm 11 (matching the local dev
+#      stack so the lockfile resolves cleanly).
+#   3. `pnpm install` — pulls every JS dep including electron-builder.
+#   4. `pnpm build:scanner` — PyInstaller runs natively on the runner
+#      (this is the step that CANNOT happen on macOS — PyInstaller
+#      cross-compile doesn't exist) and drops the binary into the right
+#      `electron/resources/scanner-bin/<plat>-<arch>/` slot.
+#   5. `pnpm package:<os>` — builds the Next standalone bundle, compiles
+#      Electron, runs the scanner-bin pre-flight check, and invokes
+#      electron-builder to emit the installer.
+#   6. Uploads `release/*.{exe,AppImage,deb,zip,yml}` as named artifacts
+#      you can download from the workflow run page.
+#
+# Trigger: workflow_dispatch (the "Run workflow" button under the Actions
+# tab on GitHub). Pick a branch, click Run, wait ~12–18 minutes, download.
+# Future enhancement: bump this to a `release` event so pushing a v* tag
+# auto-creates a GitHub Release with these artifacts attached.
+
+name: Build Windows + Linux Installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Which platform(s) to build"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - windows
+          - linux
+
+# Only one packaging run per ref at a time — a second click while a
+# build is in flight cancels the older one. Saves runner minutes when
+# you bump versions in quick succession.
+concurrency:
+  group: build-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # WINDOWS BUILD
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Build Windows installer (NSIS, x64)
+    if: ${{ inputs.targets == 'both' || inputs.targets == 'windows' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (PyInstaller host runtime)
+        uses: actions/setup-python@v5
+        with:
+          # Match scanner/pyproject.toml's lower bound; 3.11 is what
+          # scripts/build-scanner.mjs picks first.
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          run_install: false
+
+      - name: Cache pnpm store
+        id: pnpm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install JS dependencies
+        # `install-hooks.mjs` (the `prepare` script) detects CI=true and
+        # no-ops, so no special flags are needed to skip git-hooks setup.
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows scanner binary (PyInstaller)
+        # `pnpm build:scanner` auto-detects host (win32-x64 on this runner)
+        # and writes electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe
+        run: pnpm build:scanner
+
+      - name: Package Windows installer
+        # `pnpm package:win` runs:
+        #   build:standalone → build:electron → check-scanner-bin pre-flight →
+        #   electron-builder --win (NSIS one-click installer, x64, unsigned).
+        run: pnpm package:win
+
+      - name: List release artefacts
+        # Pure diagnostic — surfaces the exact filenames in the job log
+        # so the upload-artifact step below is debuggable if something
+        # ever gets misnamed.
+        shell: bash
+        run: ls -la release/
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-agent-ai-windows-x64
+          # NSIS produces a single Setup .exe + a .blockmap + latest.yml
+          # auto-update manifest. We bundle them together so future
+          # electron-updater wiring just works.
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # LINUX BUILD
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Build Linux installers (AppImage + deb, x64)
+    if: ${{ inputs.targets == 'both' || inputs.targets == 'linux' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (PyInstaller host runtime)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          run_install: false
+
+      - name: Cache pnpm store
+        id: pnpm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install Linux build deps
+        # electron-builder's deb target uses fakeroot+dpkg under the hood
+        # to assemble the .deb. ubuntu-latest already has dpkg; fakeroot
+        # we install explicitly so we don't depend on it being pre-baked.
+        # libfuse2 is required for AppImage runtime smoke-testing — without
+        # it electron-builder still PRODUCES the AppImage but its
+        # post-build verification step warns loudly.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fakeroot libfuse2
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Linux scanner binary (PyInstaller)
+        # Produces electron/resources/scanner-bin/linux-x64/edge-agent-scanner
+        # built against the runner's glibc (~2.35 on ubuntu-latest = 24.04).
+        # Older glibc target distros need a different runner image; see
+        # docs/DESKTOP-PACKAGING.md "Building on Linux".
+        run: pnpm build:scanner
+
+      - name: Package Linux installers
+        # `pnpm package:linux` builds both AppImage AND deb targets in one
+        # electron-builder invocation (see electron-builder.yml).
+        run: pnpm package:linux
+
+      - name: List release artefacts
+        run: ls -la release/
+
+      - name: Upload Linux installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-agent-ai-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 30

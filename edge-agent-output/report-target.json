@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "scan_root": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-recovered",
-  "generated_at": "2026-05-16T03:25:13.330624+00:00",
+  "generated_at": "2026-05-16T03:25:30.543767+00:00",
   "frameworks_detected": [
     {
       "name": "LangChain",
@@ -191,7 +191,7 @@
   "risk_score": 100,
   "findings": [
     {
-      "id": "e75cdb54-dd88-445d-a450-9abdb94cb803",
+      "id": "1fefcede-2098-41cd-bb1f-5aca5f768309",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -206,7 +206,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e04ebe35-ca1a-478b-ae49-20091785436c",
+      "id": "f3bb0104-31ea-439c-b401-5e0250d9192a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -221,7 +221,7 @@
       "confidence": 0.9
     },
     {
-      "id": "96e7b556-2df6-4b2c-b180-f3da9f3c2afc",
+      "id": "8c2a1bdd-2476-42ca-848c-292fb1102b98",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -236,7 +236,7 @@
       "confidence": 0.9
     },
     {
-      "id": "abfa1f14-6826-4989-af09-f02b1445b1d3",
+      "id": "cf3980ac-c85c-4388-b553-9a53c53e4b55",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -251,7 +251,7 @@
       "confidence": 0.9
     },
     {
-      "id": "3815974a-6074-4e4a-b3a1-e942c0bee317",
+      "id": "d0ef1712-42fb-4e50-9054-5cf02fbc3d22",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -266,7 +266,7 @@
       "confidence": 0.9
     },
     {
-      "id": "21c29947-6875-4c45-87d9-c13def316fe9",
+      "id": "5e572076-768b-436e-9f02-c66e01f3a112",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -281,7 +281,7 @@
       "confidence": 0.9
     },
     {
-      "id": "9593c70e-1e62-4373-aa85-f60dc0320a9d",
+      "id": "6107ea7d-b4db-45c6-8c50-961853a5bd26",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -296,7 +296,7 @@
       "confidence": 0.9
     },
     {
-      "id": "08fa9a62-7ec7-49e2-8766-de43553bc6ab",
+      "id": "0a02ba35-ffb6-4878-a16c-4a122ab668ba",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -311,7 +311,7 @@
       "confidence": 0.9
     },
     {
-      "id": "4672dcb6-542b-4bf5-aa3b-10a4522b3c6f",
+      "id": "6a3e97b1-45d1-4d80-96be-cf5aa9651538",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -326,7 +326,7 @@
       "confidence": 0.9
     },
     {
-      "id": "5db2069b-55e8-4c34-8393-ff4760379caa",
+      "id": "62c080b1-e606-4b02-b3a9-60c51e59ed0e",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -341,7 +341,7 @@
       "confidence": 0.9
     },
     {
-      "id": "5ac51f77-9ab4-4ce5-8304-905eb3e5759b",
+      "id": "9f982529-34e9-4cdc-bba3-30a4788c3c16",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -356,7 +356,7 @@
       "confidence": 0.9
     },
     {
-      "id": "125c6703-e5c6-48ad-b82d-03d040eb4cef",
+      "id": "8dbd9cdc-9757-4832-9ba3-42cac0f031ad",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -371,7 +371,7 @@
       "confidence": 0.9
     },
     {
-      "id": "673e8083-53f1-415d-9612-95190a3655fc",
+      "id": "33e08806-de5b-4f39-b38a-247dcabe1f7d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -386,7 +386,7 @@
       "confidence": 0.9
     },
     {
-      "id": "540164e8-4f1d-4295-a0c4-0e62fdb24050",
+      "id": "c76df279-0866-406d-bd45-6652b2ba01e7",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -401,7 +401,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b9a52c63-c0a7-46f0-b60a-839119cb0c7e",
+      "id": "e74fc20c-280f-4123-bd05-2d8e9b556651",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -416,7 +416,7 @@
       "confidence": 0.9
     },
     {
-      "id": "72b4811f-a941-4b2a-8fcd-097bbca6f1b2",
+      "id": "c887783b-04fb-4c21-91bd-d2ba1072f2b5",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -431,7 +431,7 @@
       "confidence": 0.9
     },
     {
-      "id": "00a0e527-0c04-4def-a1cb-2af2446b0fdb",
+      "id": "e651d3dd-bcb9-45f5-a2a8-ddcdd9846772",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -446,7 +446,7 @@
       "confidence": 0.9
     },
     {
-      "id": "75cfffc9-16c8-476f-aa34-3cc390df805a",
+      "id": "53ec7e99-f7fd-473b-a855-fe31da6b9500",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -461,7 +461,7 @@
       "confidence": 0.9
     },
     {
-      "id": "df31eac4-3569-4dab-bb41-93e6de6314dc",
+      "id": "0d0f29f0-f7f7-4de5-818a-81c4fb308721",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -476,7 +476,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7fe15223-6d07-4e37-ac07-2eb108fa4e95",
+      "id": "0a77f6c6-8b5a-47b8-a725-500748f0f93b",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -491,7 +491,7 @@
       "confidence": 0.9
     },
     {
-      "id": "15bc8f0a-499a-427d-a7dc-bafa05129f56",
+      "id": "1484e55f-9aa0-449f-ab62-b732f36d9d21",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -506,7 +506,7 @@
       "confidence": 0.9
     },
     {
-      "id": "1def8eca-2e5c-4a96-9797-d2e560b571be",
+      "id": "f58358b7-7eda-4cc3-8806-68535c2e03fd",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -521,7 +521,7 @@
       "confidence": 0.9
     },
     {
-      "id": "5f012b41-d0d0-4c89-b663-85275e49c783",
+      "id": "d3ce6205-beac-4798-a0c4-d00f87277ee3",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -536,7 +536,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e2a15aba-ed9f-4beb-9b60-65c7583a605d",
+      "id": "6b195a5f-034b-4c41-aa46-191ec284ae7d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -551,7 +551,7 @@
       "confidence": 0.9
     },
     {
-      "id": "a31b14d1-2bdb-4acf-a425-716b329e33fe",
+      "id": "8fb9358a-6008-4252-8ef9-a9b41578f86b",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -566,7 +566,7 @@
       "confidence": 0.9
     },
     {
-      "id": "68b2c623-edb6-42d8-a586-9fa3b1f0d2ae",
+      "id": "26d4dda3-9c05-40d8-b468-5aba12570747",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -581,7 +581,7 @@
       "confidence": 0.9
     },
     {
-      "id": "02282ebb-fece-4ea9-8704-93f954114683",
+      "id": "c9725e76-b21b-47ab-8b5a-22810cdeac50",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -596,7 +596,7 @@
       "confidence": 0.9
     },
     {
-      "id": "1cb31e88-262c-491f-816f-194fda9f3785",
+      "id": "a324cb25-6843-4535-a684-061b6a201776",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -611,7 +611,7 @@
       "confidence": 0.9
     },
     {
-      "id": "868ace33-2c20-4810-8a83-0cfeed6042a1",
+      "id": "9187de8e-3752-4797-adae-1197f0e953c1",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -626,7 +626,7 @@
       "confidence": 0.9
     },
     {
-      "id": "41e6d2c0-fe85-4578-a58c-f742ad440c40",
+      "id": "c168fdc4-0cc2-4e68-8c1f-c48334b29030",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -641,7 +641,7 @@
       "confidence": 0.9
     },
     {
-      "id": "804097b5-888c-426f-8c65-a3736330b784",
+      "id": "1759306e-0358-4a01-be6e-1dc05126b450",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -656,7 +656,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b1c8a09c-eb20-4667-9df0-2ff4b70a0147",
+      "id": "6d0d24f6-f57f-4dd0-8c49-cabf098141d8",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -671,7 +671,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e7fedac4-3593-4e15-97a3-183ecd37ebfd",
+      "id": "fbac3987-a8e3-4f1a-ad4d-fb52e3f26b56",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -686,7 +686,7 @@
       "confidence": 0.9
     },
     {
-      "id": "80d6fdee-b4a0-4293-9766-dc7bc45fb2fe",
+      "id": "cb18342f-a183-4569-8714-cfe1c181163d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -701,7 +701,7 @@
       "confidence": 0.9
     },
     {
-      "id": "ad2194b7-dac2-4c7f-83e8-2075db6863d6",
+      "id": "d6fa6c36-4b65-4643-a248-06a82b7436f0",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -716,7 +716,7 @@
       "confidence": 0.9
     },
     {
-      "id": "5e68baeb-c3eb-4dc9-82cf-3cbf7d037c0d",
+      "id": "9957359f-d27f-4c9c-b247-53ddf54183be",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -731,7 +731,7 @@
       "confidence": 0.9
     },
     {
-      "id": "1344a9fd-de06-4ae6-be60-633c46aa902e",
+      "id": "07308927-98b7-4f46-b1e9-ccb4b9b80b11",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -746,7 +746,7 @@
       "confidence": 0.9
     },
     {
-      "id": "f30c7e11-9437-4868-bbbc-548deb2258c9",
+      "id": "d9f3b1ab-001b-43f1-8309-a32c0aa87437",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -761,7 +761,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e6d74544-f98d-4a18-9e30-722f381b17ca",
+      "id": "3bda9342-3e24-400d-98d3-ca55e9ab1059",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -776,7 +776,7 @@
       "confidence": 0.9
     },
     {
-      "id": "8b1278c7-6139-4f4c-b4b5-454a6293d508",
+      "id": "41478847-c5e9-4e7e-803f-1625857667c9",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -791,7 +791,7 @@
       "confidence": 0.9
     },
     {
-      "id": "0c46939b-fb24-437d-b56b-c6b5fdb6a756",
+      "id": "1ce730a1-361d-4af3-a93e-e3f0f3e40d9c",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -806,7 +806,7 @@
       "confidence": 0.9
     },
     {
-      "id": "5438b67a-01fa-4230-9d31-714bca8eb130",
+      "id": "2d7e15aa-00d9-41f8-90c4-f761d4e3aa5a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -821,7 +821,7 @@
       "confidence": 0.9
     },
     {
-      "id": "26161608-c165-41b3-959b-76f812e7c5e6",
+      "id": "1b462a9f-d8c5-47d3-8066-9cca74ee334a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -836,7 +836,7 @@
       "confidence": 0.9
     },
     {
-      "id": "eecaf66a-ab04-4fb0-a049-8c3c55049489",
+      "id": "762358f2-cc38-479f-954a-f6fb4cf3e5a3",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -851,7 +851,7 @@
       "confidence": 0.9
     },
     {
-      "id": "713b3b5c-8dec-4d94-9a78-aae0dbc3f4bb",
+      "id": "020e0be9-4eb8-4d07-8c43-08d74c950a1a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -866,7 +866,7 @@
       "confidence": 0.9
     },
     {
-      "id": "34bf39a8-0fb4-431d-9e38-e810a7c97b5d",
+      "id": "dd9b9824-8791-4099-ac13-535c060afff0",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -881,7 +881,7 @@
       "confidence": 0.9
     },
     {
-      "id": "95cc0489-d472-4da9-ac24-c69630d18b35",
+      "id": "a84a45cd-0f2d-4619-9fc8-0a29fe70c23c",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -896,7 +896,7 @@
       "confidence": 0.9
     },
     {
-      "id": "4fd900f9-2aa7-423d-a785-d089937f9911",
+      "id": "d2fe1580-92ff-49c4-b6c8-992e555130b5",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -911,7 +911,7 @@
       "confidence": 0.9
     },
     {
-      "id": "6d720f60-b230-406d-bc10-33fc288028dd",
+      "id": "93275ebb-b121-4e0e-a6e0-0d83dc3f6516",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -926,7 +926,7 @@
       "confidence": 0.9
     },
     {
-      "id": "db3f8d60-d2da-46d2-8d69-b4a8ab14aa26",
+      "id": "fc450934-a774-437f-a575-a42c7766078d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -941,7 +941,7 @@
       "confidence": 0.9
     },
     {
-      "id": "339952e1-f431-4719-b7e1-c94658da44b2",
+      "id": "37362414-43b3-4368-998f-e6b2998e68b6",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -956,7 +956,7 @@
       "confidence": 0.9
     },
     {
-      "id": "33303b5e-f597-4545-9bf6-6be2b1a91232",
+      "id": "09747cd3-d180-4751-a978-3a632a8a72c5",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -971,7 +971,7 @@
       "confidence": 0.9
     },
     {
-      "id": "149cde6b-b5ea-42be-b39e-41a9058fddf3",
+      "id": "7ed37e01-6558-4fd6-a360-97601703345f",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -986,7 +986,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c1f3bc2c-cf1a-4ac1-8b29-188046b748ab",
+      "id": "34a12a19-d26d-486b-bcb2-4894afaa0b89",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1001,7 +1001,7 @@
       "confidence": 0.9
     },
     {
-      "id": "cf6b87db-d105-4f05-87c2-44a928a053fd",
+      "id": "bcb97b32-d41b-45c4-8303-d60483215084",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1016,7 +1016,7 @@
       "confidence": 0.9
     },
     {
-      "id": "85dc9d6d-4459-48da-accf-96a09d89ff67",
+      "id": "b076d8ce-334e-4d5c-99be-387d9afca36f",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1031,7 +1031,7 @@
       "confidence": 0.9
     },
     {
-      "id": "f3627cd3-344b-479b-84b1-5003c3cbe012",
+      "id": "5e829c2b-62d1-46a5-8737-9d81388b65f0",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1046,7 +1046,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e13e4408-2a8b-4031-b666-51e8f262d044",
+      "id": "ab2ada7b-8d66-414e-86a2-9bbc6647252d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1061,7 +1061,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7a82eb36-0a9e-4a0e-8525-9a349adb07d5",
+      "id": "0267d2d7-4e02-4035-98d7-827f7f1d3a2f",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1076,7 +1076,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b3dbccbb-4b20-4ecc-af85-b7e064b0cf22",
+      "id": "f726a4a7-0e52-4e11-ad70-2d978ffa397d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1091,7 +1091,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e076ae40-0037-4968-aab8-d9ca146e3f26",
+      "id": "8f7c2fa6-d92a-46ac-8414-fc41e5e7bb22",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1106,7 +1106,7 @@
       "confidence": 0.9
     },
     {
-      "id": "532e1575-757f-4f18-9fbf-22d00c1f2de9",
+      "id": "b92b045a-a005-440d-a417-50a368555f67",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1121,7 +1121,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c613674b-2d8f-4777-a0ce-9d0906085c55",
+      "id": "e78bea38-5fe5-4a91-af20-ba7340ea94d2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1136,7 +1136,7 @@
       "confidence": 0.9
     },
     {
-      "id": "1e593c2e-dbcd-4d85-a8d1-262c0804ab1e",
+      "id": "7047cbc8-8e8b-4045-a38d-a97429707205",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1151,7 +1151,7 @@
       "confidence": 0.9
     },
     {
-      "id": "a1b49456-7c3e-4d07-9ce9-12aef756916c",
+      "id": "1793e18f-be29-4987-a3da-e57f24ffd097",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1166,7 +1166,7 @@
       "confidence": 0.9
     },
     {
-      "id": "9f05a7ff-cdb1-4aeb-a942-dbf4d51cdce8",
+      "id": "880d36cc-6d1f-4af8-ad2f-80a2c5a6c3e4",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1181,7 +1181,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e03349a6-5ec9-4c98-a8b9-3f27918c2e2a",
+      "id": "ee0fbfd7-df3b-4ab6-8a39-bcebf684d88d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1196,7 +1196,7 @@
       "confidence": 0.9
     },
     {
-      "id": "607382bc-d3b5-42a8-a3c7-1b3321aaec98",
+      "id": "e4f3610b-29bd-40f8-a571-bac980509c88",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1211,7 +1211,7 @@
       "confidence": 0.9
     },
     {
-      "id": "9cbe6bec-839d-407d-9de9-e08bdf793d20",
+      "id": "970c8cd1-597c-444b-8c6e-f7fc595a9705",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1226,7 +1226,7 @@
       "confidence": 0.9
     },
     {
-      "id": "3eddc03a-19ae-41ab-ac1a-764b744ebc81",
+      "id": "c7343a93-a8e8-4759-9ac3-8bf0aa4301cf",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1241,7 +1241,7 @@
       "confidence": 0.9
     },
     {
-      "id": "0c795b82-4547-4f5d-9c5d-5990668e5b0f",
+      "id": "c94517f2-1f3f-4dc6-9209-d9bc57f23052",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1256,7 +1256,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7b32d398-41c0-4697-add2-17e23d530524",
+      "id": "8f5ce014-312e-4eb0-bea4-a542c47305f1",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1271,7 +1271,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e455fd9e-1976-4f23-bf3c-8c24b6afd3f0",
+      "id": "18963b39-dd2e-4291-994c-4124f66f5d46",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1286,7 +1286,7 @@
       "confidence": 0.9
     },
     {
-      "id": "63f495db-b60d-40d9-90f5-87a0e0fda1ba",
+      "id": "dc4b498a-3224-4ae0-b785-e7612d1524c7",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1301,7 +1301,7 @@
       "confidence": 0.9
     },
     {
-      "id": "aa37f9fe-7f8e-4c07-b6f4-d8f23220437c",
+      "id": "66da97f6-36c0-4def-aa3c-3c9e69146fde",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1316,7 +1316,7 @@
       "confidence": 0.9
     },
     {
-      "id": "29cec6fc-cc95-4b50-bef9-541c37d568ac",
+      "id": "72c40473-aa92-4d25-9a13-7aae2247eebd",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1331,7 +1331,7 @@
       "confidence": 0.9
     },
     {
-      "id": "9b762871-c631-4c4e-8a7b-58117517f8c1",
+      "id": "d451457a-efb3-48cb-abed-853e9d9fc168",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1346,7 +1346,7 @@
       "confidence": 0.9
     },
     {
-      "id": "5297791e-f78a-416e-9eff-ea7464daaf27",
+      "id": "bb63c4e3-eab9-45ae-8a8d-bc1a406f4b9f",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1361,7 +1361,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b4732827-6409-4512-819e-bab6ab323e53",
+      "id": "f206abad-bf0e-49b1-9d6e-56ed02474d8c",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1376,7 +1376,7 @@
       "confidence": 0.9
     },
     {
-      "id": "fe7ecfae-efcf-49c5-88d9-01bb87931fb7",
+      "id": "cefe58d0-2bdc-44cc-a286-9e7c2605fdad",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1391,7 +1391,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e180513d-9794-48de-b6e7-008368ca4b10",
+      "id": "d292749f-333e-4114-bf1a-4b33591da00e",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1406,7 +1406,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7f230aaa-9ca7-4546-8615-1ed5ba94fc2c",
+      "id": "c44b6ee1-e8f0-4e99-b867-70aed8bfcba2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1421,7 +1421,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c264eb59-6cb9-47e4-9654-4338f621d95f",
+      "id": "9f6fc4a1-a51b-4318-8229-e83fb9067781",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1436,7 +1436,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e9f7d40a-ff7a-4292-88fa-261609cfda5c",
+      "id": "adf0c80d-3028-4da1-8301-72413d6ac9c1",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1451,7 +1451,7 @@
       "confidence": 0.9
     },
     {
-      "id": "ee78dd79-c0ac-4531-8210-6ecead866b65",
+      "id": "46e2a819-0d91-45c9-b671-c5b56db8c319",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1466,7 +1466,7 @@
       "confidence": 0.9
     },
     {
-      "id": "81daba8f-1821-4c49-801f-09188641b08b",
+      "id": "e3c89fc7-8200-4afc-ab08-67c79ca9dd94",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1481,7 +1481,7 @@
       "confidence": 0.9
     },
     {
-      "id": "0380a6d8-d724-4405-b86d-263de680b450",
+      "id": "04a533bd-282b-4385-904d-2525857269f2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1496,7 +1496,7 @@
       "confidence": 0.9
     },
     {
-      "id": "99fa3998-1a62-4923-ba7f-c4e0635a7d69",
+      "id": "d346c1d9-62b4-4cb4-a06a-94c60b0d2012",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1511,7 +1511,7 @@
       "confidence": 0.9
     },
     {
-      "id": "055bbb1e-22e7-4e37-af0f-4ddfbadea080",
+      "id": "581c4760-ba2f-4869-a6a1-3908abf8f57b",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1526,7 +1526,7 @@
       "confidence": 0.9
     },
     {
-      "id": "a2e70933-8807-403d-ae1b-300c9c792f2b",
+      "id": "eeffdcd4-a2ad-40f6-93b7-e211a9cc8012",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1541,7 +1541,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b749b55c-ca2b-44e8-b254-45e35740bf52",
+      "id": "b6e7e2bd-17a2-4b85-ac77-0397f4334b4b",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1556,7 +1556,7 @@
       "confidence": 0.9
     },
     {
-      "id": "492ef85e-648d-419f-b416-9994817723af",
+      "id": "d2fb9fac-0a27-4a1e-8ed3-349c3edefdf2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1571,7 +1571,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7ae0e0ee-34e9-4696-8158-52a72ed9fc24",
+      "id": "08cde770-cb8c-4743-ba82-0b7e953f8797",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1586,7 +1586,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e44e0652-6e9a-4d56-8bf3-fa17fd4f8c93",
+      "id": "013c3266-f24c-4207-b4ae-9950f4129dfd",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1601,7 +1601,7 @@
       "confidence": 0.9
     },
     {
-      "id": "55f7ea93-8454-451d-b76f-8862216481ea",
+      "id": "9753830f-b00a-44ec-bdcc-7100eab3a233",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1616,7 +1616,7 @@
       "confidence": 0.9
     },
     {
-      "id": "42832099-5194-4b0c-b916-4f21287568de",
+      "id": "7e1c17ea-494c-4311-a660-6b168c40969e",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1631,7 +1631,7 @@
       "confidence": 0.9
     },
     {
-      "id": "1bcfc1f7-ba75-40fb-bef9-5f2d3e57945c",
+      "id": "b797585c-905b-41c6-a5d4-e0403b128926",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1646,7 +1646,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e854a1c8-c763-404c-86f4-bdda5567bd16",
+      "id": "7b5b54f7-d06c-4491-81dc-0aaddc470b5f",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1661,7 +1661,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c2531ddd-82b9-46bc-9022-cecd069a49b5",
+      "id": "348324ca-4641-427b-952d-c04152a960ea",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1676,7 +1676,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c579c4d3-61b4-4950-abd7-58ec249233ca",
+      "id": "842fe4a7-0f52-4d8f-b42d-3c96372c1535",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1691,7 +1691,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c427d0db-08bb-4c66-b2c3-cb97245a808d",
+      "id": "bf3910a0-af4d-42af-83e7-667e494ae304",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1706,7 +1706,7 @@
       "confidence": 0.9
     },
     {
-      "id": "cdd33624-bfe2-4e68-b8e8-eb2b2c7131a5",
+      "id": "168617f1-f3da-4540-ae56-e363d49e4e03",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1721,7 +1721,7 @@
       "confidence": 0.9
     },
     {
-      "id": "11b9f9bf-8bee-4915-b1d1-8ad21d188a7e",
+      "id": "016a5692-ff8d-4044-9790-605f26bd6fab",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1736,7 +1736,7 @@
       "confidence": 0.9
     },
     {
-      "id": "de96039c-351d-4fd6-93d8-97717909c719",
+      "id": "353268fe-a095-47f6-a00d-f91d8aa26047",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1751,7 +1751,7 @@
       "confidence": 0.9
     },
     {
-      "id": "05a32193-e63d-40c8-a256-161d814fddd4",
+      "id": "446189bb-2692-4742-acb3-9ec8c27af9c4",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1766,7 +1766,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e7d88973-fe91-45d3-9297-ca14c67149b6",
+      "id": "4061ec06-337a-41fb-ab57-8ce500597b24",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1781,7 +1781,7 @@
       "confidence": 0.9
     },
     {
-      "id": "0c9b579f-0da1-4cc7-b832-34d6a9340e7a",
+      "id": "2d170ca6-b7fa-4b2d-ae1a-ec0c6eede0bd",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1796,7 +1796,7 @@
       "confidence": 0.9
     },
     {
-      "id": "ddb3d737-dd82-4995-8111-e6f48e9b1303",
+      "id": "882d673e-018b-426b-be68-7b98fa456ba6",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1811,7 +1811,7 @@
       "confidence": 0.9
     },
     {
-      "id": "9dd01fff-f766-4cfc-8251-871a58ae887e",
+      "id": "a1fe406b-7a90-4921-b349-0afe62cdb93c",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1826,7 +1826,7 @@
       "confidence": 0.9
     },
     {
-      "id": "85671d75-63f1-4cdd-b16d-239f8d324284",
+      "id": "c5fad3c0-e368-4800-bf7b-5e0e0f8e8f5a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1841,7 +1841,7 @@
       "confidence": 0.9
     },
     {
-      "id": "a2692aed-4191-46a5-8b2b-a00e5b7039db",
+      "id": "052a9353-97d9-4212-b894-deba39f02d1e",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1856,7 +1856,7 @@
       "confidence": 0.9
     },
     {
-      "id": "2b3ee97b-dd67-478d-88a0-05cd98acc1ff",
+      "id": "b174990c-02f1-44d5-86ec-7407ce6d1047",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1871,7 +1871,7 @@
       "confidence": 0.9
     },
     {
-      "id": "03cc64fb-6f95-4d6a-9c64-d354388119d0",
+      "id": "b38036de-303d-4b4a-9a13-246d64a4e1ef",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1886,7 +1886,7 @@
       "confidence": 0.9
     },
     {
-      "id": "89081347-1b5a-43df-835a-fb3eec36c997",
+      "id": "0c36ba33-c0ec-43f2-8616-951d98884eee",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1901,7 +1901,7 @@
       "confidence": 0.9
     },
     {
-      "id": "e201373e-230e-4ce2-aaa7-20b0be38a2ba",
+      "id": "ba215329-0d58-44da-afad-fc0753b84329",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1916,7 +1916,7 @@
       "confidence": 0.9
     },
     {
-      "id": "93ca1972-0e54-46eb-99e4-22e5c178196f",
+      "id": "fe3f81fd-bde7-44c1-b2bf-32341b5506d2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1931,7 +1931,7 @@
       "confidence": 0.9
     },
     {
-      "id": "445c8198-73ba-41d7-af0a-23c2c502b65b",
+      "id": "48200433-173a-4003-8d33-4312808412b6",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1946,7 +1946,7 @@
       "confidence": 0.9
     },
     {
-      "id": "37c9db96-cb15-4e4c-bf9e-149634229b1a",
+      "id": "e12d2d29-f0af-491b-a8af-02342d5683ae",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1961,7 +1961,7 @@
       "confidence": 0.9
     },
     {
-      "id": "bfcff571-10d2-444a-a180-0f7a768c40be",
+      "id": "aea84baf-9353-44d0-a350-bd3100ffb12e",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1976,7 +1976,7 @@
       "confidence": 0.9
     },
     {
-      "id": "625947a9-a740-405f-9c94-daaaec0e1839",
+      "id": "fb0c0c25-1b51-48ac-823c-c7b0147c7df6",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -1991,7 +1991,7 @@
       "confidence": 0.9
     },
     {
-      "id": "f7f66275-e22a-44ff-aa7a-5efe25c67bb2",
+      "id": "63f234fa-3eca-47af-81a3-dbc18e941331",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2006,7 +2006,7 @@
       "confidence": 0.9
     },
     {
-      "id": "58cb0183-952f-4876-9eee-86b9250f5509",
+      "id": "8da417df-fcaa-41e1-a17f-81305678caf9",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2021,7 +2021,7 @@
       "confidence": 0.9
     },
     {
-      "id": "912cb4b8-2f19-4d9d-9573-58b071eb892f",
+      "id": "23dcb219-fe27-47d3-bbc5-4b877abb6983",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2036,7 +2036,7 @@
       "confidence": 0.9
     },
     {
-      "id": "303b5119-632a-418b-88de-d0c9a39a8c43",
+      "id": "6081a6ce-0c6d-41a6-9eae-07796188a3ab",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2051,7 +2051,7 @@
       "confidence": 0.9
     },
     {
-      "id": "2c63f1af-ef44-46b4-a93b-ec6e26826266",
+      "id": "212a8a21-c374-4d17-81e6-935c38d777ff",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2066,7 +2066,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b564f980-6069-4420-8fd9-15d1c53c06f2",
+      "id": "8853a64d-f209-4ddf-b7c7-b770b69a0967",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2081,7 +2081,7 @@
       "confidence": 0.9
     },
     {
-      "id": "4bbe3d92-7677-4776-8029-d4463700304c",
+      "id": "693ab7af-5fbb-4d60-aafd-ec44e81035c9",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2096,7 +2096,7 @@
       "confidence": 0.9
     },
     {
-      "id": "d64ac8b1-533e-43dd-8fe4-ba8293db1fa4",
+      "id": "a63cfcc8-10ce-43a9-a1b0-4c46ebc80c73",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2111,7 +2111,7 @@
       "confidence": 0.9
     },
     {
-      "id": "59a0105f-a945-4a17-a018-1cd03e37e9d9",
+      "id": "49b56ed2-3a79-4c70-a881-3843c9f8cc89",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2126,7 +2126,7 @@
       "confidence": 0.9
     },
     {
-      "id": "c7811e15-c727-4815-9de1-2798fb5c55fe",
+      "id": "5a8d737d-1e25-4d96-99d3-d1710c365113",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2141,7 +2141,7 @@
       "confidence": 0.9
     },
     {
-      "id": "6ad9c792-41eb-4714-b4bd-3a8e88832fbc",
+      "id": "10696fd2-f393-4276-b1a2-82e1812f5ad9",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2156,7 +2156,7 @@
       "confidence": 0.9
     },
     {
-      "id": "829d9afe-3f20-46a7-8523-71f9ba104465",
+      "id": "72281548-b16d-42ee-8496-72109dc06cf9",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2171,7 +2171,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b3ec52de-c631-483f-9a66-da9daa4a227b",
+      "id": "d6bcf437-6e3c-4518-9e0b-40042781edd7",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2186,7 +2186,7 @@
       "confidence": 0.9
     },
     {
-      "id": "d3e3133f-f564-4b0d-9a3f-c4bbe7ce1335",
+      "id": "bc5bd23a-630d-4d13-b3eb-eff6f52e08e2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2201,7 +2201,7 @@
       "confidence": 0.9
     },
     {
-      "id": "02797a86-eaa7-40af-b491-e275955315ed",
+      "id": "fdde3eff-28f4-4d11-8e45-53a81fbcdb60",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2216,7 +2216,7 @@
       "confidence": 0.9
     },
     {
-      "id": "f2e0a893-7f8c-46a6-8f64-7db1dc964a25",
+      "id": "7a41fc89-16d7-48ab-b745-1a93af8e37a9",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2231,7 +2231,7 @@
       "confidence": 0.9
     },
     {
-      "id": "651e5129-545c-4e5e-b231-f684608927ee",
+      "id": "3f04fe2e-f445-4088-97fc-6f89b3e29e8a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2246,7 +2246,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7d31fb81-84f2-4d68-992d-f293126bc798",
+      "id": "170ee1b2-7d85-4929-8a8b-09be8fea7a9b",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2261,7 +2261,7 @@
       "confidence": 0.9
     },
     {
-      "id": "4c962387-0363-4246-875d-78adb83a413b",
+      "id": "0713a64b-b181-49cb-9b45-2741fd842195",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2276,7 +2276,7 @@
       "confidence": 0.9
     },
     {
-      "id": "50885156-6607-4013-a98a-9e3da20b65b1",
+      "id": "361d1d41-42ce-475c-b301-f5b9284b1c62",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2291,7 +2291,7 @@
       "confidence": 0.9
     },
     {
-      "id": "2e72a001-b494-482c-9233-3d24d410ff66",
+      "id": "02cd63a3-ac5f-444f-af20-901311424eb5",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2306,7 +2306,7 @@
       "confidence": 0.9
     },
     {
-      "id": "6223f38d-6c5b-4c98-aaaa-cfdd6123476f",
+      "id": "054038ae-8a9d-4193-a35b-15d10a569432",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2321,7 +2321,7 @@
       "confidence": 0.9
     },
     {
-      "id": "b3b4fe9f-a480-44a4-a2b4-087c0399d730",
+      "id": "2bb639de-c7a7-4b53-815c-81d18140b36a",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2336,7 +2336,7 @@
       "confidence": 0.9
     },
     {
-      "id": "a73d6b8f-258a-4eae-83b2-33ff84880b03",
+      "id": "08fb3bb8-447c-4122-bb03-9f3882575f69",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2351,7 +2351,7 @@
       "confidence": 0.9
     },
     {
-      "id": "a652d952-5739-4f49-aada-144817824d62",
+      "id": "0fe44ec4-5273-471f-be7d-4ab0c638bda8",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2366,7 +2366,7 @@
       "confidence": 0.9
     },
     {
-      "id": "aae06821-ee7b-4ffe-9409-db3085064156",
+      "id": "35ee5999-7b27-4388-8fe2-805be5594a56",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2381,7 +2381,7 @@
       "confidence": 0.9
     },
     {
-      "id": "031c5539-1422-4b69-a288-cf3d3344c386",
+      "id": "4b9562a2-9976-4974-98bc-5539d1e31132",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2396,7 +2396,7 @@
       "confidence": 0.9
     },
     {
-      "id": "d2b69836-1e53-4ef3-a7da-239fb003e839",
+      "id": "41c114c7-a5e5-49d2-96d7-79de9c0ac185",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2411,7 +2411,7 @@
       "confidence": 0.9
     },
     {
-      "id": "58153cc8-655c-4fa8-9112-92b6d4c75568",
+      "id": "4466ba08-2eef-4d88-9fe1-759192e1cab2",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2426,7 +2426,7 @@
       "confidence": 0.9
     },
     {
-      "id": "cc84a50a-dfc4-4f7f-b277-1f06c65727c8",
+      "id": "a9c3127d-7998-432d-8896-50c2b572906d",
       "rule_id": "dangerous-tools",
       "severity": "high",
       "category": "Dangerous tool / side effect",
@@ -2441,7 +2441,7 @@
       "confidence": 0.9
     },
     {
-      "id": "7b6c37ae-40aa-4b6e-921e-b127b53aa6dd",
+      "id": "c656fb8c-824a-4159-8af0-6599eedaf2b2",
       "rule_id": "dependency-risks",
       "severity": "low",
       "category": "Dependencies",
@@ -2456,7 +2456,7 @@
       "confidence": 0.48
     },
     {
-      "id": "a63c078b-6ad4-4b0e-ac8d-5292c9194ce2",
+      "id": "c3ee4130-6abb-462d-bd71-f65568a02436",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2471,7 +2471,7 @@
       "confidence": 0.72
     },
     {
-      "id": "7872382a-7b42-4716-a5a2-59c2a338ee60",
+      "id": "01cf21d9-7deb-4a4b-9843-cd7f6ca82f2d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2486,7 +2486,7 @@
       "confidence": 0.72
     },
     {
-      "id": "06c0fa12-e493-4ff1-adcb-0bfc931c0852",
+      "id": "81834731-acf5-4735-8062-d432d6e03632",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2501,7 +2501,7 @@
       "confidence": 0.72
     },
     {
-      "id": "5703ccef-6d7e-4390-8f10-d08b7ec52bed",
+      "id": "faffdd37-5bc6-4b94-9afb-ccb55e52cc22",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2516,7 +2516,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ded8802a-0aa6-44c1-897b-e90048f0a2f7",
+      "id": "d969ea93-79c2-4917-8354-9d903c88461a",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2531,7 +2531,7 @@
       "confidence": 0.72
     },
     {
-      "id": "3b437e28-00e2-4c48-a56a-e6e5890224bb",
+      "id": "c4cc353e-a4f8-4462-9c36-e7784de7bd54",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2546,7 +2546,7 @@
       "confidence": 0.72
     },
     {
-      "id": "374e15ab-6a92-4192-b634-6800d096efed",
+      "id": "c6eab933-c103-4059-9968-1f94e2f508e9",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2561,7 +2561,7 @@
       "confidence": 0.72
     },
     {
-      "id": "62f699bd-7b87-417b-a562-a55926748879",
+      "id": "a4eddc27-f015-41e1-9327-785e6c3fec06",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2576,7 +2576,7 @@
       "confidence": 0.72
     },
     {
-      "id": "02879a5f-3500-472c-a128-a5bd35315f19",
+      "id": "db65d815-2863-43d9-b7da-a1d3d49fcb06",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2591,7 +2591,7 @@
       "confidence": 0.72
     },
     {
-      "id": "99b89059-e2fa-4c1a-aed2-0738f4040679",
+      "id": "a8ea6670-bc35-44f9-a2bc-877b6581a219",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2606,7 +2606,7 @@
       "confidence": 0.72
     },
     {
-      "id": "0f8bc49c-2b2f-4885-ae53-07d54fed95dc",
+      "id": "ce900709-ef90-4e7f-a3fe-bda37f797d75",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2621,7 +2621,7 @@
       "confidence": 0.72
     },
     {
-      "id": "e9f0fcfb-7ee6-4523-9072-c9931c2a90c8",
+      "id": "6eba8450-5cff-4c35-a08b-b0dee462d108",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2636,7 +2636,7 @@
       "confidence": 0.72
     },
     {
-      "id": "7a9b9172-bffa-4f0a-9531-2ff5882d0add",
+      "id": "ed82dba5-e777-4e99-8319-c23c7d79c4b6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2651,7 +2651,7 @@
       "confidence": 0.72
     },
     {
-      "id": "93c2f145-a086-4d62-bd4b-1c0ecc0db70a",
+      "id": "9c46eb56-0623-4d42-b6b3-e547e4fa4ae8",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2666,7 +2666,7 @@
       "confidence": 0.72
     },
     {
-      "id": "e52dcc03-61c2-4ef3-a04a-75ddf2e7b113",
+      "id": "a5233c99-5450-41d7-aa80-1d34198dea47",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2681,7 +2681,7 @@
       "confidence": 0.72
     },
     {
-      "id": "f582afd6-ac31-4929-ba53-fa03f1212eba",
+      "id": "041ff56a-1beb-4de3-8730-e70ff5864585",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2696,7 +2696,7 @@
       "confidence": 0.72
     },
     {
-      "id": "6a65eecc-cd6f-4a5a-99da-277c5adcaafa",
+      "id": "ddf652d8-6ed9-42a1-835e-43340ee319dd",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2711,7 +2711,7 @@
       "confidence": 0.72
     },
     {
-      "id": "d430967f-746f-4aa9-914d-68304d07401d",
+      "id": "d4c5590a-a4db-444e-96b5-06e27afde7ab",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2726,7 +2726,7 @@
       "confidence": 0.72
     },
     {
-      "id": "8f1beff6-b1b1-4b8c-88f7-d81752f15aae",
+      "id": "5789f83c-b0b7-411b-9fb1-c19dd74a5850",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2741,7 +2741,7 @@
       "confidence": 0.72
     },
     {
-      "id": "6f485e2c-a4be-40c1-9ba7-78baf7144250",
+      "id": "23c4d41f-10a1-4311-b944-710052260707",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2756,7 +2756,7 @@
       "confidence": 0.72
     },
     {
-      "id": "5f5a3f90-a24b-47dc-abe1-2936faee2ad3",
+      "id": "eef88835-4906-46fc-b166-103e0eb1b392",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2771,7 +2771,7 @@
       "confidence": 0.72
     },
     {
-      "id": "9c09a1f6-cad9-4878-b505-bca0b31269ba",
+      "id": "6ce8f355-338e-49ba-a827-4f324dd32420",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2786,7 +2786,7 @@
       "confidence": 0.72
     },
     {
-      "id": "f7907e5e-a4d9-4f16-8386-6893c2438498",
+      "id": "caf3ec62-4a7e-4187-ad8d-885d2c6cb05b",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2801,7 +2801,7 @@
       "confidence": 0.72
     },
     {
-      "id": "b6ac8f6d-cd22-44e1-a25d-17ad52080371",
+      "id": "712fbfb7-564f-45d1-8cfa-5a17f9c87530",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2816,7 +2816,7 @@
       "confidence": 0.72
     },
     {
-      "id": "03810640-55fb-4c65-bea2-79acaf49032e",
+      "id": "85bc37a9-2569-4e75-bfc0-90262d7a4cce",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2831,7 +2831,7 @@
       "confidence": 0.72
     },
     {
-      "id": "8b3fcaf3-4042-47ff-9232-a6e85396508f",
+      "id": "7bd76725-182b-4613-82e2-c593b2d93b1e",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2846,7 +2846,7 @@
       "confidence": 0.72
     },
     {
-      "id": "0ad7786c-eb4a-4555-b46a-80974ddc2fed",
+      "id": "c89fd518-b270-410c-9fae-f214483f2d29",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2861,7 +2861,7 @@
       "confidence": 0.72
     },
     {
-      "id": "a0fe0325-dfb7-41ef-8913-95a9a3f860b9",
+      "id": "f12d9393-e25f-4682-ab54-392477b29527",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2876,7 +2876,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ef96d6e8-ba82-4218-87a4-4cbb5f365c25",
+      "id": "9aa2336b-13a7-46bd-b28b-cdd0677225ea",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2891,7 +2891,7 @@
       "confidence": 0.72
     },
     {
-      "id": "a5f79602-24db-4c9e-9e9a-bb9fe220919f",
+      "id": "77c6487b-bc6b-46aa-933f-6ce093e77a99",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2906,7 +2906,7 @@
       "confidence": 0.72
     },
     {
-      "id": "9ecc863a-7576-4cc2-8db6-5d542d4e2ace",
+      "id": "32353e69-e092-421f-9c41-5332aacdd203",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2921,7 +2921,7 @@
       "confidence": 0.72
     },
     {
-      "id": "2f5c32f7-4b2e-4d47-ab6d-0acca7ef2ffc",
+      "id": "9668925e-d9bf-4035-a604-ccb34adb2338",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2936,7 +2936,7 @@
       "confidence": 0.72
     },
     {
-      "id": "101c66ab-2e9c-447d-b618-857bd1f0e1c0",
+      "id": "9946b7da-9bc3-4237-befc-3ea6739db98d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2951,7 +2951,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fafac220-25dc-4523-9c85-eba32850f09d",
+      "id": "6c4fe528-f26f-439b-9c34-93ffa3b32310",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2966,7 +2966,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1b777989-f2a9-41f5-ae80-568a03fc89b5",
+      "id": "2aac7216-e263-4dc7-9544-0d78f56ed187",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2981,7 +2981,7 @@
       "confidence": 0.72
     },
     {
-      "id": "e9ded6b8-8a86-49e2-9976-bbf56960d909",
+      "id": "49265624-791c-422b-a0c3-d55ae74bf5c6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -2996,7 +2996,7 @@
       "confidence": 0.72
     },
     {
-      "id": "01aa704a-4e58-44cc-b59d-6406a5dc6024",
+      "id": "3025a74e-f54e-4737-8955-f460670a2d58",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3011,7 +3011,7 @@
       "confidence": 0.72
     },
     {
-      "id": "335bf140-a1bb-4cc9-af55-b57f77b094e6",
+      "id": "071db5f4-f970-49ca-a1c4-e186bc825402",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3026,7 +3026,7 @@
       "confidence": 0.72
     },
     {
-      "id": "d31e9230-978d-40ea-8887-b2a072c1e44e",
+      "id": "2baf3cc4-5b7f-4e87-88a3-19f3404a8e28",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3041,7 +3041,7 @@
       "confidence": 0.72
     },
     {
-      "id": "c9d4e9d8-43ad-435f-ada2-48c74b841a21",
+      "id": "ed23aba0-d408-4ea5-9de1-2a9d33eb8ed1",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3056,7 +3056,7 @@
       "confidence": 0.72
     },
     {
-      "id": "27c4590e-9359-4db1-bc93-8e7e049b5148",
+      "id": "0625db9c-79b5-40c7-92cb-cfe322b6dcf3",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3071,7 +3071,7 @@
       "confidence": 0.72
     },
     {
-      "id": "a7a5ec3a-d644-4f7d-aac7-60577fd51931",
+      "id": "f76142be-0b7c-4111-82e3-8d86f51652b9",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3086,7 +3086,7 @@
       "confidence": 0.72
     },
     {
-      "id": "55ceffc6-57bf-41d5-a46a-8a18b6d07aa2",
+      "id": "9a8a6e20-cd9b-44d6-bf60-c9990df016fe",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3101,7 +3101,7 @@
       "confidence": 0.72
     },
     {
-      "id": "34b05dca-02d7-42ad-af8f-62a85ca8f177",
+      "id": "feabf3c2-f446-4702-9ee6-1651d4b6fadb",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3116,7 +3116,7 @@
       "confidence": 0.72
     },
     {
-      "id": "d60278ac-65dc-4dc0-9e3c-e351b9b73757",
+      "id": "9d94b608-1a24-4e0a-859b-6201d98707c4",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3131,7 +3131,7 @@
       "confidence": 0.72
     },
     {
-      "id": "580f8d38-54f7-4d49-89cc-85fa5e83ddac",
+      "id": "55934658-a4e0-43a8-af5c-25290c5b0812",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3146,7 +3146,7 @@
       "confidence": 0.72
     },
     {
-      "id": "3b8e5a7c-1f93-44a6-81c1-195ecb3ca705",
+      "id": "f2ea1462-301b-49eb-8bbc-fe65106a785d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3161,7 +3161,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fa527d17-6285-42c1-bf01-493c0e24a8b0",
+      "id": "34fa1af7-e013-4a36-9123-f0f7ac986d8d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3176,7 +3176,7 @@
       "confidence": 0.72
     },
     {
-      "id": "915cb517-3755-46fb-9f73-76ebcb2f95ed",
+      "id": "6b24ec47-91e0-4544-9a85-1c9071343f53",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3191,7 +3191,7 @@
       "confidence": 0.72
     },
     {
-      "id": "314e0e17-6387-4f04-b92f-d7bd93a9cf3d",
+      "id": "632b3977-aeef-48e3-8cfa-d0dec4b9ed06",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3206,7 +3206,7 @@
       "confidence": 0.72
     },
     {
-      "id": "f342f83c-8b85-43b8-b974-13988b31d7bc",
+      "id": "11893077-eeff-45f6-aa6a-d7124d9b403d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3221,7 +3221,7 @@
       "confidence": 0.72
     },
     {
-      "id": "35c4cae9-53aa-4fe1-b865-2249501c1d89",
+      "id": "742ee705-7042-42db-a168-c28171f41db7",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3236,7 +3236,7 @@
       "confidence": 0.72
     },
     {
-      "id": "3dffe64b-350e-4ded-9381-c91d5e2ecc1f",
+      "id": "f59183fb-55bc-47fc-9fb4-66ed13400462",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3251,7 +3251,7 @@
       "confidence": 0.72
     },
     {
-      "id": "67272ec8-93a1-4e83-979c-f94c255e915c",
+      "id": "7377e98d-15b5-4949-bb61-c6e91a8cd6c0",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3266,7 +3266,7 @@
       "confidence": 0.72
     },
     {
-      "id": "55fe7e57-eef0-4240-9934-f99eab2d08b2",
+      "id": "f4db3077-a623-456f-bca7-e32c22dae3d1",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3281,7 +3281,7 @@
       "confidence": 0.72
     },
     {
-      "id": "566b6d6e-780f-425b-836e-1bc6aafd4d68",
+      "id": "1f74820f-3d65-4608-b9c5-1494951a6976",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3296,7 +3296,7 @@
       "confidence": 0.72
     },
     {
-      "id": "13db05bd-a19a-4bfc-9a04-edfcfa3c313a",
+      "id": "34115bc5-23df-4f9d-b4e3-98d4d49f10d3",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3311,7 +3311,7 @@
       "confidence": 0.72
     },
     {
-      "id": "684ae953-7d39-4ffc-8374-be5009f19871",
+      "id": "44ff736e-88c6-4724-833d-91eb745bd01e",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3326,7 +3326,7 @@
       "confidence": 0.72
     },
     {
-      "id": "87bdcb6e-81ac-4288-a378-c1f8cbcc5b7d",
+      "id": "7c3f3956-923d-4bd8-a082-0789b3d8a8df",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3341,7 +3341,7 @@
       "confidence": 0.72
     },
     {
-      "id": "0f384148-4752-4623-8112-b87c5d3735c7",
+      "id": "59feec8d-9ee5-4c3d-ad78-1b42b6f7eabe",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3356,7 +3356,7 @@
       "confidence": 0.72
     },
     {
-      "id": "02c11fa8-db37-4c16-8291-65249aa7f8b6",
+      "id": "145f8a77-8c38-468e-b2d9-5dd0104c555e",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3371,7 +3371,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ea479aaa-6378-404d-bf52-940a172763fb",
+      "id": "a0c4313c-dcb3-47b8-887c-c417beccbdb6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3386,7 +3386,7 @@
       "confidence": 0.72
     },
     {
-      "id": "3111c4c0-e90c-4b35-b75b-30c89e423902",
+      "id": "fa327c4c-8b38-4e30-9bdb-e557c3dee426",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3401,7 +3401,7 @@
       "confidence": 0.72
     },
     {
-      "id": "bdfa51b5-688b-4c6e-8fce-55674cd97654",
+      "id": "dcc9dbf5-ecce-4320-b8f3-0638ace9edb0",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3416,7 +3416,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fb5ce52e-9df3-40c5-b8e2-95be88b48e64",
+      "id": "f59795bd-7582-473f-9fb3-4f94cb386f7b",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3431,7 +3431,7 @@
       "confidence": 0.72
     },
     {
-      "id": "2ed4fc87-b66a-4c46-b350-15b9d0701abb",
+      "id": "97116f27-bb1a-4c3d-b59d-754a1c8438b6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3446,7 +3446,7 @@
       "confidence": 0.72
     },
     {
-      "id": "85342ae0-af48-4255-9cc8-34601c54f713",
+      "id": "3a35f412-7b07-4636-8de8-c2ed42a3ec50",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3461,7 +3461,7 @@
       "confidence": 0.72
     },
     {
-      "id": "64ae71ed-b362-49a7-9072-4cc8302dac0b",
+      "id": "6d1acf57-f262-4cd3-b89a-2d498b9a70ca",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3476,7 +3476,7 @@
       "confidence": 0.72
     },
     {
-      "id": "9ace8a2a-b61b-47bc-944e-5bbb0f692f7a",
+      "id": "b45811c2-100b-4e15-aa47-19bfc9dc67be",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3491,7 +3491,7 @@
       "confidence": 0.72
     },
     {
-      "id": "0a5aa2e0-af58-4a14-adf5-f5d3721639bb",
+      "id": "1d2d52c4-628e-4ee4-b602-173dc9664ac5",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3506,7 +3506,7 @@
       "confidence": 0.72
     },
     {
-      "id": "43d02688-b364-49d0-8bd1-30cdc9d3e6c0",
+      "id": "ee6789dd-3af8-4c6c-ac3d-3dc5b46f7ccf",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3521,7 +3521,7 @@
       "confidence": 0.72
     },
     {
-      "id": "45db676f-afec-4e6c-8edb-8a5720302971",
+      "id": "be2a12c0-a373-4927-b1ff-23e9cb71afe9",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3536,7 +3536,7 @@
       "confidence": 0.72
     },
     {
-      "id": "6d31161a-59f8-43f5-af28-cd8d2f4abe16",
+      "id": "0539cdca-06dd-4447-bdd4-9c4785639d10",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3551,7 +3551,7 @@
       "confidence": 0.72
     },
     {
-      "id": "81eebbab-868e-4bd2-ac84-50a04a72ee11",
+      "id": "43b2cd6e-3255-429b-8e71-ea3a0acc1d4f",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3566,7 +3566,7 @@
       "confidence": 0.72
     },
     {
-      "id": "e16dbe89-7797-4e36-83f0-8c45e2d07403",
+      "id": "a358e5ec-d0e5-4f79-b740-406dad8d9422",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3581,7 +3581,7 @@
       "confidence": 0.72
     },
     {
-      "id": "138a1709-b297-455f-a2cb-80f56782aa98",
+      "id": "ea4b2210-1ece-4887-8e18-92f721b5ee61",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3596,7 +3596,7 @@
       "confidence": 0.72
     },
     {
-      "id": "5b8c0642-2253-4017-9752-11fd0a02b96b",
+      "id": "c8227a4b-088a-4384-8f71-9f03e1f9c22b",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3611,7 +3611,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fd1a89e5-791d-4e07-8fd3-7b250c46145a",
+      "id": "bdf0e3d7-21fe-4f1f-b9d0-faf71e428301",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3626,7 +3626,7 @@
       "confidence": 0.72
     },
     {
-      "id": "39103d33-1733-4149-885c-5f4d76dccc1e",
+      "id": "8b546a64-1300-416d-86dd-458bc5188ddb",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3641,7 +3641,7 @@
       "confidence": 0.72
     },
     {
-      "id": "8033b471-1788-4524-ba3d-72ee856274a7",
+      "id": "6846dd38-54e7-4658-aafb-22a0f523f9a1",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3656,7 +3656,7 @@
       "confidence": 0.72
     },
     {
-      "id": "d5839f7e-9c9d-4151-b9a9-880f9bfb0821",
+      "id": "6a7401fd-2cc1-4df3-8948-c8e3433e0684",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3671,7 +3671,7 @@
       "confidence": 0.72
     },
     {
-      "id": "88bf40e7-efbe-474e-b916-651e85943104",
+      "id": "f680b1e2-eccc-4579-8b66-f1c2f22d69f0",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3686,7 +3686,7 @@
       "confidence": 0.72
     },
     {
-      "id": "28d7df50-d180-4b15-b40d-fd8e70413dc2",
+      "id": "6065676e-5d19-45ac-9f2b-6e6462e3bc01",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3701,7 +3701,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fef49a0c-33ad-4ef4-b20c-c3a92b92951f",
+      "id": "705e6086-1e30-4592-83f4-14e4debe34cd",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3716,7 +3716,7 @@
       "confidence": 0.72
     },
     {
-      "id": "101a830f-d48f-497d-824a-3dbf090d8329",
+      "id": "c61d9bc8-4ab5-4e47-a9d6-06c8938e420d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3731,7 +3731,7 @@
       "confidence": 0.72
     },
     {
-      "id": "be274d12-5217-4455-af78-0ff76929d738",
+      "id": "834ae211-0186-49f9-bfe9-b22445b5730a",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3746,7 +3746,7 @@
       "confidence": 0.72
     },
     {
-      "id": "77e3ca41-a84c-4e97-8e48-5b6d8001f850",
+      "id": "ae0add5a-e60f-4e2d-8017-ff53a96d3a27",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3761,7 +3761,7 @@
       "confidence": 0.72
     },
     {
-      "id": "c6d1b6e2-fe11-47b9-a1e0-6cd7992ea7e0",
+      "id": "d508da9d-600c-435d-a189-9aa9dac3f7af",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3776,7 +3776,7 @@
       "confidence": 0.72
     },
     {
-      "id": "b6efec70-6b92-47a2-8c98-0adf155b52c7",
+      "id": "d7fa0b50-8c51-4407-8dff-4099e8d81e1a",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3791,7 +3791,7 @@
       "confidence": 0.72
     },
     {
-      "id": "003de368-d1b8-46f4-860f-be97d51cd8c3",
+      "id": "5689a3df-6257-48eb-8df5-6c20939d204d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3806,7 +3806,7 @@
       "confidence": 0.72
     },
     {
-      "id": "21999493-fcbb-421d-b4b0-6cc700b0b521",
+      "id": "db5c6c35-7bab-41b9-93b0-80bcd2d53c19",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3821,7 +3821,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ee99f169-105d-4881-a3d0-c2ffd4885671",
+      "id": "8e3e0392-5f0b-4ae3-afac-a7b50fb05572",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3836,7 +3836,7 @@
       "confidence": 0.72
     },
     {
-      "id": "7d2c29a2-b283-4f7b-98ab-bbe884b586e5",
+      "id": "38184df3-f189-42c8-9b96-2e09ebebe79f",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3851,7 +3851,7 @@
       "confidence": 0.72
     },
     {
-      "id": "f4418b81-dfb7-48a1-89a1-73de5c02e5b1",
+      "id": "b7050691-6271-4957-86ca-47e5f478bdbc",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3866,7 +3866,7 @@
       "confidence": 0.72
     },
     {
-      "id": "2a1c663b-fb61-4167-8368-dfe51f7289a1",
+      "id": "134f4419-2056-4ebf-808a-559c5b8a20f3",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3881,7 +3881,7 @@
       "confidence": 0.72
     },
     {
-      "id": "24078966-22ea-4809-ae24-4a246516220e",
+      "id": "b5b94fa0-873d-45b8-b48b-af4564881687",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3896,7 +3896,7 @@
       "confidence": 0.72
     },
     {
-      "id": "eaf388da-080d-4d97-ae2e-a82fdc4b3d6e",
+      "id": "b8349400-ce80-46e4-bbbd-7fb07c7a4bd8",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3911,7 +3911,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ccaa1e1c-57c5-462c-8678-70a80e5cafd6",
+      "id": "c6c70b65-dd21-4ddb-9d39-fb1f95b4f545",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3926,7 +3926,7 @@
       "confidence": 0.72
     },
     {
-      "id": "070a2664-a3e2-41fc-be8a-d3d9cf0ed94e",
+      "id": "c10b81b4-9375-416f-a82f-fa64a6c11649",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3941,7 +3941,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fa80ce70-da29-48db-b7bf-84ab396eb193",
+      "id": "ec17bdb2-7393-42c5-8faf-c2d532ae0cfd",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3956,7 +3956,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1f94d271-1205-441b-aace-2a6433a8fb33",
+      "id": "d5990319-5f24-45b5-ab47-9e814297e69a",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3971,7 +3971,7 @@
       "confidence": 0.72
     },
     {
-      "id": "9894d166-26aa-480c-959e-c0237a19de25",
+      "id": "386ee604-5149-4559-823f-101dc9e9808b",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -3986,7 +3986,7 @@
       "confidence": 0.72
     },
     {
-      "id": "4f899542-a9b2-4299-839e-ae5d557a56ce",
+      "id": "5bc9dcbf-5747-4e5d-9684-c032c2ae909f",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4001,7 +4001,7 @@
       "confidence": 0.72
     },
     {
-      "id": "8a3d9222-b757-44ba-8418-550b5778e5b0",
+      "id": "f04e1c32-5ee9-44c2-8f58-57cfa8d323e5",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4016,7 +4016,7 @@
       "confidence": 0.72
     },
     {
-      "id": "8acfa608-7b78-424b-ac16-efe4db88ae25",
+      "id": "77fb2f6f-52ec-4129-91b8-df34a5005630",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4031,7 +4031,7 @@
       "confidence": 0.72
     },
     {
-      "id": "354e3f91-6cc9-4d16-81cb-f8124dafed67",
+      "id": "177619b7-ab88-410a-b743-7a13b5395642",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4046,7 +4046,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1b2b02ec-1ab2-4b8e-91af-caafec841620",
+      "id": "13c96ce4-f026-47d6-84a9-93dc65f2b315",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4061,7 +4061,7 @@
       "confidence": 0.72
     },
     {
-      "id": "acdc13c7-e949-432c-96ab-97d49a48e5e4",
+      "id": "e6a73bcc-7508-48d8-bdea-2d924588fd1f",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4076,7 +4076,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ee6da7bb-c50d-42f1-8e7e-5f748c832f82",
+      "id": "ccb7868f-ca87-46b8-9abc-aafa0af34da5",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4091,7 +4091,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1524b934-48f8-4168-b259-036de77bfe09",
+      "id": "fe2cd0e1-686e-459d-b7c2-018bf48244b8",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4106,7 +4106,7 @@
       "confidence": 0.72
     },
     {
-      "id": "d23a90db-d705-444b-a6c6-aeb9313d90b2",
+      "id": "4eac2657-e634-4ec0-a3be-ba8c260aa87e",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4121,7 +4121,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1d9a357d-f627-4cb4-a00a-cf42751f4538",
+      "id": "a5fe7e0c-bf92-4de2-b046-a17a1b78d501",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4136,7 +4136,7 @@
       "confidence": 0.72
     },
     {
-      "id": "f6bc097a-6f30-4fe2-afca-41776d42019a",
+      "id": "efb7e505-3353-4475-800e-9245f8adb3fd",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4151,7 +4151,7 @@
       "confidence": 0.72
     },
     {
-      "id": "6178eb4a-0e92-4833-85b2-13046ab77b42",
+      "id": "1ef4c6b4-4020-4568-808c-78995dac469d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4166,7 +4166,7 @@
       "confidence": 0.72
     },
     {
-      "id": "9be4a37b-622a-4706-9937-38c2ef243673",
+      "id": "f3f88363-a915-4f2f-b9e8-8d19762112a6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4181,7 +4181,7 @@
       "confidence": 0.72
     },
     {
-      "id": "953d4af7-2a6f-49fd-92fb-0a13d82ad88d",
+      "id": "93bf654a-5872-40a7-9e63-d00718a8bb32",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4196,7 +4196,7 @@
       "confidence": 0.72
     },
     {
-      "id": "aff7dab8-7c5f-402e-8eff-8bad533c0915",
+      "id": "781bed13-5961-4517-969d-b62f55468ff7",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4211,7 +4211,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fa1558c1-f94c-474a-8b7a-5dac9deb88ee",
+      "id": "29bbab39-7348-4af8-a508-72112807c3ba",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4226,7 +4226,7 @@
       "confidence": 0.72
     },
     {
-      "id": "032f0ce4-3633-4fee-9903-58df4e38107e",
+      "id": "240d0511-2757-47e1-9075-3fc3db99e1dd",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4241,7 +4241,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1570526b-b440-4668-8f65-26d4ae5f4bf4",
+      "id": "fde027ce-a356-40d9-84a5-7b37d4c20f28",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4256,7 +4256,7 @@
       "confidence": 0.72
     },
     {
-      "id": "2aac8347-d313-42c3-a5be-461fb9e937b5",
+      "id": "b98dd337-40c6-48be-933f-34bf77f09cb6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4271,7 +4271,7 @@
       "confidence": 0.72
     },
     {
-      "id": "367a1e02-b151-40d1-9036-86745f47662f",
+      "id": "47c344c1-ced5-4cea-8678-963c132fcaa3",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4286,7 +4286,7 @@
       "confidence": 0.72
     },
     {
-      "id": "97473641-d057-4b78-948f-d7c20b64fede",
+      "id": "cd5aaad5-381f-471a-a260-56eeb8c04f7d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4301,7 +4301,7 @@
       "confidence": 0.72
     },
     {
-      "id": "7f3882f6-1081-42bf-8227-37f4a3a47074",
+      "id": "2715f78e-04cc-4026-93aa-74ea0cab2106",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4316,7 +4316,7 @@
       "confidence": 0.72
     },
     {
-      "id": "38003e3b-5f0e-4fd3-a50b-70cb57e6199d",
+      "id": "6c30ea62-609d-41d8-946f-9aaa12017fe4",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4331,7 +4331,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ccea2aa3-a3f5-4273-9f80-139aa6e21eaa",
+      "id": "e57721bf-a5b0-4102-a120-5d129766c363",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4346,7 +4346,7 @@
       "confidence": 0.72
     },
     {
-      "id": "7dc354a9-d44f-40c2-afa4-69b1dfe08460",
+      "id": "48822ec9-1d94-40d7-8097-19f780f318f9",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4361,7 +4361,7 @@
       "confidence": 0.72
     },
     {
-      "id": "9d85f2bb-b179-4ace-bfc8-d83b00eceacf",
+      "id": "aefdff4d-be74-45ca-8bda-95069cffaf8c",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4376,7 +4376,7 @@
       "confidence": 0.72
     },
     {
-      "id": "d83eac95-6694-4279-b8ca-79cab345ac91",
+      "id": "32e98409-1347-47ca-84b5-61296fbc25ab",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4391,7 +4391,7 @@
       "confidence": 0.72
     },
     {
-      "id": "c55a4543-ef42-42b2-918c-620c1f8ee691",
+      "id": "61235403-f44a-4957-b3da-875dec426e27",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4406,7 +4406,7 @@
       "confidence": 0.72
     },
     {
-      "id": "992504ef-0702-48e8-b35d-7cbfc79edbac",
+      "id": "48036741-7d56-486d-b165-60259ad72618",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4421,7 +4421,7 @@
       "confidence": 0.72
     },
     {
-      "id": "dc99a6f2-62f0-47e6-b515-b6638f1c7724",
+      "id": "a30d6c1f-6b8b-4c01-8d15-7b6a55be3ec4",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4436,7 +4436,7 @@
       "confidence": 0.72
     },
     {
-      "id": "1fe984d8-ad6d-46cf-b1eb-7cf1102484f7",
+      "id": "dfee8441-a967-4dbc-87d8-d7399366c2b2",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4451,7 +4451,7 @@
       "confidence": 0.72
     },
     {
-      "id": "535c6814-2ee0-414e-9789-70835587a886",
+      "id": "53219870-31f5-40b1-bee1-8d363ac5ccef",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4466,7 +4466,7 @@
       "confidence": 0.72
     },
     {
-      "id": "6a7fe043-a063-477a-aaac-99fd29b549c0",
+      "id": "478979f5-0091-4c80-a255-8e331ed2c2ec",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4481,7 +4481,7 @@
       "confidence": 0.72
     },
     {
-      "id": "8ef4b716-bc40-4274-a90c-cbbbe3ff9b36",
+      "id": "486d36cd-055c-479e-88ad-55c12d94efbc",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4496,7 +4496,7 @@
       "confidence": 0.72
     },
     {
-      "id": "fbb5ee84-75b4-4d94-8089-9f42ae9b9c7e",
+      "id": "0b4cb1bb-98bc-49cf-afcc-aa362a858b91",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4511,7 +4511,7 @@
       "confidence": 0.72
     },
     {
-      "id": "c709aee7-a8d7-4041-9707-36a02aae3f60",
+      "id": "bf884241-c69d-4a41-aa08-9f39beaf3851",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4526,7 +4526,7 @@
       "confidence": 0.72
     },
     {
-      "id": "eaad44d7-dc73-4d5a-bc9c-ac3697c64415",
+      "id": "e46fb86c-1bf2-4c55-8e40-dcc52a8f8f79",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4541,7 +4541,7 @@
       "confidence": 0.72
     },
     {
-      "id": "5e0a2d01-9409-44f5-929f-9700361d7cc3",
+      "id": "65d9a30e-4efc-4c97-b68c-033bd6a09d67",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4556,7 +4556,7 @@
       "confidence": 0.72
     },
     {
-      "id": "ba23b60e-016b-4d81-8af9-3845e8a81382",
+      "id": "faf57636-54ca-408e-81c3-000a2acc1153",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4571,7 +4571,7 @@
       "confidence": 0.72
     },
     {
-      "id": "80f31f97-666e-40cb-81d8-1b520a574d7f",
+      "id": "277d0334-e2ee-4564-836e-125d89f6ae38",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4586,7 +4586,7 @@
       "confidence": 0.72
     },
     {
-      "id": "abcab2bf-94d5-44b9-9b2c-239b277763eb",
+      "id": "5bc69f52-8f8e-4215-8c5f-d00b07ae6211",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4601,7 +4601,7 @@
       "confidence": 0.72
     },
     {
-      "id": "481b38e6-6bfb-4643-98d4-332baf502b37",
+      "id": "9fb3bb43-6798-4656-869d-b34a8eeaa1fc",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4616,7 +4616,7 @@
       "confidence": 0.72
     },
     {
-      "id": "bba4a4dd-9534-446c-b4c9-616495c99dba",
+      "id": "1ee2ecc4-618b-4d82-9a28-96d428b9abd6",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4631,7 +4631,7 @@
       "confidence": 0.72
     },
     {
-      "id": "267007a7-5407-40f6-affc-45fe3d75c813",
+      "id": "84dab58d-36c1-4710-bb73-75638e94b03d",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4646,7 +4646,7 @@
       "confidence": 0.72
     },
     {
-      "id": "0b6db2da-1545-438a-8a0f-f415396c46dd",
+      "id": "d341a750-0e1e-473b-956e-4d678594a1a9",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4661,7 +4661,7 @@
       "confidence": 0.72
     },
     {
-      "id": "94aed7ad-d3b9-4a8d-9488-07cf69bd6fbb",
+      "id": "ec6554a1-aa3d-41ca-a023-d1d1cb6f400b",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4676,7 +4676,7 @@
       "confidence": 0.72
     },
     {
-      "id": "09328a82-1f69-4096-9029-0d6734ab2e13",
+      "id": "c1f402c9-95b9-4b33-a654-7986af8c55ea",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4691,7 +4691,7 @@
       "confidence": 0.72
     },
     {
-      "id": "4a4c1881-33af-432d-b1b5-11f8697f2139",
+      "id": "98bd8da7-4e6e-43ca-b540-80f6feb0b142",
       "rule_id": "human-approval",
       "severity": "high",
       "category": "Missing approval gate",
@@ -4706,7 +4706,7 @@
       "confidence": 0.72
     },
     {
-      "id": "2dc6f0fd-758d-40b8-b50b-41503e304711",
+      "id": "b9a24423-c8a6-4651-b4dc-c892729c27be",
       "rule_id": "openapi-schema",
       "severity": "medium",
       "category": "OpenAPI",
@@ -4721,7 +4721,7 @@
       "confidence": 0.52
     },
     {
-      "id": "a5b2147a-baaa-4f0d-bacf-00fe9ce7d76b",
+      "id": "ff47d339-a02b-4c51-b635-3465b4f5fb3b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4736,7 +4736,7 @@
       "confidence": 0.75
     },
     {
-      "id": "faaa381a-2785-42a6-bb7a-cdd7d1fd26fe",
+      "id": "9fecca43-4a6a-4ec1-84b5-e0831342d680",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4751,7 +4751,7 @@
       "confidence": 0.75
     },
     {
-      "id": "85752665-486f-4f03-ad6b-183ee7c90569",
+      "id": "94695071-0e3f-43a4-9a32-ea6e0323d215",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4766,7 +4766,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b4ea20f2-0441-4e67-8fda-cd1d4c5f4c26",
+      "id": "1d2c4495-e19e-4ab7-bbf7-acea37a33df1",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4781,7 +4781,7 @@
       "confidence": 0.75
     },
     {
-      "id": "992002ed-325d-4d20-9c91-b880551aac79",
+      "id": "d66b7ea7-a61a-4cb4-b0cd-4dad3ffeba01",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4796,7 +4796,7 @@
       "confidence": 0.75
     },
     {
-      "id": "e5532d95-0eca-4e87-9a66-055bc35e2cb9",
+      "id": "b9027a2f-e5f3-450a-bf6d-395d7f29702c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4811,7 +4811,7 @@
       "confidence": 0.75
     },
     {
-      "id": "6d12928e-9570-49a8-82ef-2153fd4dbe3a",
+      "id": "ca32e640-c7ea-43dc-844e-1aca2c449160",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4826,7 +4826,7 @@
       "confidence": 0.75
     },
     {
-      "id": "d912bdb8-e18e-471f-bacd-b49d570deddc",
+      "id": "41822def-f000-42a4-b04e-7b465a8213a2",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4841,7 +4841,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2e49a024-63f3-4612-8d6a-5a4fc97316f8",
+      "id": "0474530a-65e2-43d1-8166-79b0b4edfa5d",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4856,7 +4856,7 @@
       "confidence": 0.75
     },
     {
-      "id": "4c98423f-038e-4472-ba2e-50c0cdd3ed49",
+      "id": "3274563a-2a36-4ac7-b261-f13b547423e0",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4871,7 +4871,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b27816fa-9a28-439f-b4b0-2bf027b41a4c",
+      "id": "a5903398-7528-4364-83ca-d26722a0853a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4886,7 +4886,7 @@
       "confidence": 0.75
     },
     {
-      "id": "8464ef25-332c-4830-9f73-78196d3a3feb",
+      "id": "5ba94768-93a0-4ddb-9edd-53dc800913fa",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4901,7 +4901,7 @@
       "confidence": 0.75
     },
     {
-      "id": "e0c499dd-365b-4480-a7e3-ef4a96b428c0",
+      "id": "ea8e09b4-267a-4dff-9c7b-2a499fcd40d2",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4916,7 +4916,7 @@
       "confidence": 0.75
     },
     {
-      "id": "a10a0789-3e43-48d0-99fc-6f8926aeb813",
+      "id": "6731a7da-5313-442e-b28b-2da0b2fced22",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4931,7 +4931,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ae85fe46-14fe-401d-a28a-0db9681007a4",
+      "id": "c5c56448-3383-43dd-9805-2e82338fc6e1",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4946,7 +4946,7 @@
       "confidence": 0.75
     },
     {
-      "id": "99dbab36-12c2-4a46-8260-fddb2dfd9be7",
+      "id": "a52d6d6c-4b37-45cb-83ae-9e032fc791b7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4961,7 +4961,7 @@
       "confidence": 0.78
     },
     {
-      "id": "e4880c4b-3de2-4750-a204-88654d9e933e",
+      "id": "eacf8c57-8aa4-4214-9de8-98bbb4979255",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4976,7 +4976,7 @@
       "confidence": 0.78
     },
     {
-      "id": "23d1d7f7-86f0-4b0b-8203-5d9e798a691b",
+      "id": "9b1bf75d-9a30-4e64-8369-21b7a0ba9896",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -4991,7 +4991,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5bf68ccb-d307-4aa0-924f-1dbbe3f7973c",
+      "id": "fb977108-4a3a-48df-96c1-b5252c54b201",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5006,7 +5006,7 @@
       "confidence": 0.75
     },
     {
-      "id": "7bc32e53-6ac5-4eae-93b4-eb2ea43f4df1",
+      "id": "002dd8aa-b4c2-47cb-96bd-ba3f380cacf2",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5021,7 +5021,7 @@
       "confidence": 0.75
     },
     {
-      "id": "3ca2c04d-6b1a-49bb-a364-2972b2750781",
+      "id": "7864e466-5f1f-4c33-bc63-5a1bea8f83c1",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5036,7 +5036,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5b7df698-7e43-49c0-9c65-55f49ee2479a",
+      "id": "10a1ae1b-20bd-4d01-9155-d5804d6d05e4",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5051,7 +5051,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b2484f19-778d-4a8f-89ba-370541bed8b0",
+      "id": "fb9bf905-a80d-4b1f-a011-511e595c7d64",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5066,7 +5066,7 @@
       "confidence": 0.75
     },
     {
-      "id": "651ab60b-44ab-4022-b80c-768433034b5d",
+      "id": "a635c816-7e98-4640-8cc9-3013d2bea329",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5081,7 +5081,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0f02b5ef-222c-4b0d-9000-de867ca7d195",
+      "id": "8a33f63e-59c0-4d4b-81ef-5b526e70a27a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5096,7 +5096,7 @@
       "confidence": 0.75
     },
     {
-      "id": "e3f12f9a-d713-48f5-8fa3-0a2c5bcb5b15",
+      "id": "203f2772-bf61-4424-ac8c-50d4003a62c7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5111,7 +5111,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ee2d33a1-03b7-4bc0-85a7-6f35b4f8de6f",
+      "id": "87e955d8-a1c5-48c6-a862-491fa87efe5a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5126,7 +5126,7 @@
       "confidence": 0.75
     },
     {
-      "id": "44739772-cd7a-48dc-a2c6-b0d3ca3903fc",
+      "id": "422ffb38-7a82-492b-a954-1db6fd43c315",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5141,7 +5141,7 @@
       "confidence": 0.75
     },
     {
-      "id": "9063028e-bfc1-4c02-9747-52779496ba96",
+      "id": "4111851a-d640-4ff5-b6fc-560bb87b35c3",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5156,7 +5156,7 @@
       "confidence": 0.75
     },
     {
-      "id": "83fbf1f1-9e4f-43cd-ac38-b4f091d88f67",
+      "id": "52d4a9e7-0356-4900-8de6-2ccbe2a38e4e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5171,7 +5171,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0a366436-ed92-432d-bfff-8fd3f445db5f",
+      "id": "fb59ce5c-c7ca-4e5e-8254-7cba8c3dec9d",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5186,7 +5186,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b805b495-2529-4bf0-aa91-fb2927d36536",
+      "id": "be933073-2bb5-4e59-90b3-ba15ef559455",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5201,7 +5201,7 @@
       "confidence": 0.75
     },
     {
-      "id": "a0ed5b0f-b1b9-4da3-b899-a3c80c2d4902",
+      "id": "eedc109d-02af-451c-b057-2c21e05d877d",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5216,7 +5216,7 @@
       "confidence": 0.75
     },
     {
-      "id": "68244607-798c-435a-b82f-deed138ba6f9",
+      "id": "efd0ed23-80ce-4495-bc3f-ec5bc3fd4bc7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5231,7 +5231,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ebbf7630-77a4-4db1-b3eb-0286df83a7ab",
+      "id": "87c2fbe7-7c4a-4f0b-8b20-8441c7a54f41",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5246,7 +5246,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0056da05-3973-42d1-87c2-1ddb20808b4c",
+      "id": "e094ffdc-817b-49c0-a0ca-84dbc93b6143",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5261,7 +5261,7 @@
       "confidence": 0.75
     },
     {
-      "id": "7bff9743-1704-4a3c-b571-c4a688550d40",
+      "id": "cfd78bf0-f14f-4596-a340-e90da5583718",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5276,7 +5276,7 @@
       "confidence": 0.75
     },
     {
-      "id": "d7534759-150a-42d0-afd0-8729e532251f",
+      "id": "4b7894f7-1abb-44cf-88c8-08a299c593ee",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5291,7 +5291,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0ba02645-17d0-47aa-816e-73e93222ef01",
+      "id": "20e12b42-0a48-41f0-87ef-aca5adc8204e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5306,7 +5306,7 @@
       "confidence": 0.75
     },
     {
-      "id": "fe21e172-6083-4078-bf85-7a252b091f7f",
+      "id": "f5461bde-019b-4db3-a970-752dfac48cf8",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5321,7 +5321,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5f463a8d-a09b-48de-86ef-bb17951ca2da",
+      "id": "759045e0-72a2-424f-8af9-a4845b32f0c4",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5336,7 +5336,7 @@
       "confidence": 0.75
     },
     {
-      "id": "53c85fcc-02fe-443f-8702-de378a37f282",
+      "id": "56abbabb-f7c0-4111-a2fa-e9ff70e44668",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5351,7 +5351,7 @@
       "confidence": 0.75
     },
     {
-      "id": "10bd1042-a7d6-45fd-918d-a9c6fa663bcd",
+      "id": "92dc67ec-8f60-48c8-b072-418c41aee08b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5366,7 +5366,7 @@
       "confidence": 0.75
     },
     {
-      "id": "08b6efa8-c40d-4fb2-9758-312633bf2ebc",
+      "id": "90ca2369-e8a5-4a52-85b8-053ee3c77981",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5381,7 +5381,7 @@
       "confidence": 0.75
     },
     {
-      "id": "bbb89904-8c0a-4139-aa9f-e0145ae804a2",
+      "id": "1bab3ca7-02e9-4fdc-bc90-93299b0dcdb4",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5396,7 +5396,7 @@
       "confidence": 0.75
     },
     {
-      "id": "f485ab55-4d21-4719-8d4c-7f1aa4a8d276",
+      "id": "af0a87b2-6bcb-4e51-bdb1-296fda998501",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5411,7 +5411,7 @@
       "confidence": 0.75
     },
     {
-      "id": "bdefe629-9518-4366-bf50-1dd23d8109f0",
+      "id": "42f4de41-f0e9-47b8-80ae-b1ac5776402f",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5426,7 +5426,7 @@
       "confidence": 0.75
     },
     {
-      "id": "e8b0363f-f94f-48d1-a0d9-21b88e3b4aec",
+      "id": "2ca54d18-f2d3-4430-b938-1f60452c725a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5441,7 +5441,7 @@
       "confidence": 0.75
     },
     {
-      "id": "1a6bcd02-9f3e-4868-a799-7a93ba0c4d52",
+      "id": "cca43527-8d21-4a94-ba71-ced5094156c2",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5456,7 +5456,7 @@
       "confidence": 0.75
     },
     {
-      "id": "43247793-3aac-4b9b-af04-90f506305417",
+      "id": "4f5127b5-767b-45c9-a6aa-ead047636176",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5471,7 +5471,7 @@
       "confidence": 0.75
     },
     {
-      "id": "372584dd-f92b-4466-b27b-2ec710e28de8",
+      "id": "8f68250c-4eb4-4d1a-ba0b-0f38c1563ece",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5486,7 +5486,7 @@
       "confidence": 0.75
     },
     {
-      "id": "1cbfccd6-d915-4414-85f8-6fa6e012cc9b",
+      "id": "b24aca68-acbe-4b39-9bd3-54a6506044b5",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5501,7 +5501,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b75d604c-6ba8-41df-97de-0cffcf155004",
+      "id": "481388db-af5c-4071-99b1-e27c801a5ce4",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5516,7 +5516,7 @@
       "confidence": 0.75
     },
     {
-      "id": "d2fbde9f-ebda-4591-8992-8b82f4a1dfb7",
+      "id": "f3348ee0-a40b-46c0-9b0f-c1ebbf04d417",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5531,7 +5531,7 @@
       "confidence": 0.75
     },
     {
-      "id": "963b6aab-cd97-4bdf-b0ac-75d754c9a408",
+      "id": "af94e53b-2c80-44c6-af83-09717b3acbf0",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5546,7 +5546,7 @@
       "confidence": 0.75
     },
     {
-      "id": "6400b1f0-f487-4846-a1d8-2327a65ff601",
+      "id": "4122cea6-5272-4e7b-b7b9-bee06924bee9",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5561,7 +5561,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5163046e-c18b-433b-ae6f-1f006395030e",
+      "id": "36aedb36-240e-4463-839b-f02db3e67698",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5576,7 +5576,7 @@
       "confidence": 0.75
     },
     {
-      "id": "9599b5a5-ad5a-4a21-a9b0-cf9a307ada2d",
+      "id": "a27cd794-2ce6-48ef-adef-f96f034255cb",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5591,7 +5591,7 @@
       "confidence": 0.75
     },
     {
-      "id": "6681c8b2-a2b5-4ae1-84d5-947e58390f96",
+      "id": "be318b39-509c-487f-9149-e421f7f40753",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5606,7 +5606,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2687effa-e672-40d6-a01f-0dc9e7b2ea4c",
+      "id": "b4b72fbc-eedc-4282-bb44-48e02c8cb5e4",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5621,7 +5621,7 @@
       "confidence": 0.75
     },
     {
-      "id": "97638f7c-4e87-4a90-a015-8e51c7d8ea12",
+      "id": "612eec45-cc15-4c7e-ba30-7d836d89d8ea",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5636,7 +5636,7 @@
       "confidence": 0.75
     },
     {
-      "id": "dbfeb92f-59fc-497c-9136-e3443d65beba",
+      "id": "12608fe3-1a05-43e8-90ee-cfdba1c6fe54",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5651,7 +5651,7 @@
       "confidence": 0.75
     },
     {
-      "id": "747efa1b-1492-4f01-b2dd-e15fb8d4d07e",
+      "id": "e7bc09d8-784a-451c-ae73-582c0502abe5",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5666,7 +5666,7 @@
       "confidence": 0.75
     },
     {
-      "id": "43fc1083-e454-40f3-8f30-91379d5f6b57",
+      "id": "d7519d9a-d29a-4955-88ca-bf2e31814a2c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5681,7 +5681,7 @@
       "confidence": 0.75
     },
     {
-      "id": "35954e8f-e62a-465c-b067-cc6f01793785",
+      "id": "2fbc20ef-addd-439a-85eb-69ce1710a9bf",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5696,7 +5696,7 @@
       "confidence": 0.75
     },
     {
-      "id": "45b101b0-c791-4256-ad9a-4f7d3c24bfe1",
+      "id": "da16c528-57e5-4f10-ac27-57dff33ab608",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5711,7 +5711,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5bffc2c4-8e53-4339-9d8e-9a0d6bee501a",
+      "id": "2c02d51c-22c3-4512-97c4-6a563d6d2bb6",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5726,7 +5726,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ca873244-8dfa-4c47-8eb4-2cfd9f30fd71",
+      "id": "f4222827-75fe-4a46-92b9-0758e21a6d70",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5741,7 +5741,7 @@
       "confidence": 0.78
     },
     {
-      "id": "10f26ebf-739c-43cb-a516-013ab3c38b92",
+      "id": "4d9147c4-efe2-4494-aa7d-428e8b8b086c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5756,7 +5756,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0da8f3b7-5f37-45f7-af2a-319f9e443c65",
+      "id": "4773ba46-73c8-49d8-872a-1c975c5eea05",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5771,7 +5771,7 @@
       "confidence": 0.75
     },
     {
-      "id": "d7015022-c5cd-4910-b3ac-c93fe11f6bed",
+      "id": "8b41fd4e-e4c0-49d0-becb-8b78f54b442a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5786,7 +5786,7 @@
       "confidence": 0.78
     },
     {
-      "id": "ac24fabf-05a1-4477-b8bb-80eefe1c0ebd",
+      "id": "d9371e79-b474-4e13-8ac8-ca7184cc53e2",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5801,7 +5801,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ffd8e0aa-47ba-4cf5-946f-8efdb352ccdd",
+      "id": "c187539a-95d6-41b6-894b-b5fc2c5fa5c7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5816,7 +5816,7 @@
       "confidence": 0.75
     },
     {
-      "id": "859abf74-8cca-4ce9-9f64-de120973b743",
+      "id": "0965c442-1f67-4e4b-9ed8-0d929e1c1869",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5831,7 +5831,7 @@
       "confidence": 0.78
     },
     {
-      "id": "733f2312-9e9c-40e9-af79-4db810fc9dc3",
+      "id": "0b9a9539-4019-45da-9470-caca6c5247d3",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5846,7 +5846,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0e50de9f-8a08-4efa-9f15-24d4ec035af8",
+      "id": "7298f73e-7538-403d-8604-302f6d78d6a8",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5861,7 +5861,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5729d651-4b31-466a-8c81-e82c13a3f37e",
+      "id": "1ea33b97-047d-4ac0-ba6b-5421780696eb",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5876,7 +5876,7 @@
       "confidence": 0.75
     },
     {
-      "id": "3a88ce50-b226-43af-b04b-0f205d9ceeb2",
+      "id": "f403643e-420f-44c1-95ac-249213ac76cb",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5891,7 +5891,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b3d24db6-e197-4dd4-9d3d-4afc67062b47",
+      "id": "d2e30df1-03ca-4df5-88ea-1f7aa193eb5b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5906,7 +5906,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b43df5cf-6daa-49eb-aac5-20389f0b73d5",
+      "id": "7aefd286-db83-4be7-86ff-3526a00d605c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5921,7 +5921,7 @@
       "confidence": 0.75
     },
     {
-      "id": "bf6e273b-a659-4e88-b7a1-b126d11df11b",
+      "id": "9fd60f6c-b7a3-4a36-b13d-be6ec9b2182a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5936,7 +5936,7 @@
       "confidence": 0.75
     },
     {
-      "id": "a6bd21a1-9263-4418-b8f6-8a0aad424928",
+      "id": "a59b82cf-468b-4efb-aa61-4c0d198c0e09",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5951,7 +5951,7 @@
       "confidence": 0.75
     },
     {
-      "id": "bff82b12-72e2-4b3c-8c85-a0ed35fca41d",
+      "id": "59df64f6-2e0a-4d03-b525-a4d5b1264ff9",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5966,7 +5966,7 @@
       "confidence": 0.75
     },
     {
-      "id": "87e21fee-9140-46b8-a4ef-b414d646ce67",
+      "id": "c4ebc304-f4a2-4d6a-a062-7ccc19a4b3e8",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5981,7 +5981,7 @@
       "confidence": 0.75
     },
     {
-      "id": "9d1bef89-1b85-43c2-90aa-94cf9b9868cc",
+      "id": "c929ddee-6ca5-46b3-b51e-0d5b102d29fc",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -5996,7 +5996,7 @@
       "confidence": 0.75
     },
     {
-      "id": "20679534-2d16-46a9-8e4b-af702859758f",
+      "id": "e7576c7d-11db-4aa5-a1f0-504e1febc4c4",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6011,7 +6011,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ad2a9a0d-a250-4ee4-877f-e5d3a5eead83",
+      "id": "81caf560-ba10-4064-8653-8dadfdf4cf58",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6026,7 +6026,7 @@
       "confidence": 0.75
     },
     {
-      "id": "676a24f0-6833-4e96-addb-64b786797c76",
+      "id": "087275d7-235d-4193-92c0-b30b35f8cf01",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6041,7 +6041,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ff68a9c4-dc8a-4233-9b99-f6b5a6ab8540",
+      "id": "ed9dbc04-ba88-4460-b2cd-b4e9987953f0",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6056,7 +6056,7 @@
       "confidence": 0.75
     },
     {
-      "id": "cf63dca8-9040-4a4d-b7f8-efef7c9eb1cf",
+      "id": "c4b6ba65-ac87-44dd-98ff-ea33e53e088c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6071,7 +6071,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ec876727-a1b2-4748-a4ef-85ad924e4494",
+      "id": "33b2b5d7-251e-4274-bbdb-2d4c92aeebe9",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6086,7 +6086,7 @@
       "confidence": 0.75
     },
     {
-      "id": "a9192cd8-b3a9-4595-b7fd-b3ddf3d3c5f4",
+      "id": "57071132-c790-47d5-9483-e9227f3243f8",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6101,7 +6101,7 @@
       "confidence": 0.75
     },
     {
-      "id": "55cb0f60-2698-4021-8240-4fd47047a64d",
+      "id": "ba3ba529-a904-4cbb-8e91-a07656f20e28",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6116,7 +6116,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2faf1ada-ec59-44e5-aa66-a82be72245d1",
+      "id": "29ba29ad-175a-49d3-a586-c0f5ff0957c8",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6131,7 +6131,7 @@
       "confidence": 0.75
     },
     {
-      "id": "8abba87f-2cd9-48f5-9c10-e20a1af6550d",
+      "id": "aa096e07-5468-4522-b243-00918ab5aec7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6146,7 +6146,7 @@
       "confidence": 0.75
     },
     {
-      "id": "4bbb30be-9990-4b6d-9c1c-2a9aab2dd253",
+      "id": "e0dd763c-8c84-4eb2-9ebb-8858eefd1ba7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6161,7 +6161,7 @@
       "confidence": 0.75
     },
     {
-      "id": "8193b869-a640-464b-a969-c6545c44037e",
+      "id": "4ee3a77e-693f-4bb9-ab8d-f6c3382c136b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6176,7 +6176,7 @@
       "confidence": 0.75
     },
     {
-      "id": "53942133-62c5-4830-bfc0-9b3fa710e0fb",
+      "id": "2ac6fbd8-cedf-4727-8f4c-1f36459972c3",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6191,7 +6191,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b344a419-62ee-4319-bd52-4d30f05c571b",
+      "id": "b9652391-e1e5-4086-bc52-f85bf3829a89",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6206,7 +6206,7 @@
       "confidence": 0.75
     },
     {
-      "id": "618edcab-05ff-45df-9c7b-335c823ccadf",
+      "id": "7bb57802-f910-471d-987e-a53da7ffa88c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6221,7 +6221,7 @@
       "confidence": 0.75
     },
     {
-      "id": "4d623033-e457-4ebc-be4b-8a846e5dbbe6",
+      "id": "aca9cef0-e4d8-4cd3-afeb-4dbecfe8b36e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6236,7 +6236,7 @@
       "confidence": 0.78
     },
     {
-      "id": "5853ecc9-8909-42b1-b39e-7b1945b01b9c",
+      "id": "fff92665-3df1-49b4-9add-b5e8fa2b348a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6251,7 +6251,7 @@
       "confidence": 0.78
     },
     {
-      "id": "8fa0ca02-02f2-4263-90d4-111fcde182c6",
+      "id": "021845b8-04c0-46b9-9ac3-822f49e1463b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6266,7 +6266,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b8f2533f-6242-4c65-9d6b-97716934de1d",
+      "id": "3a0b8d0d-ff06-420a-ba9f-e99a2cbb7463",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6281,7 +6281,7 @@
       "confidence": 0.75
     },
     {
-      "id": "81eff0eb-b3ad-4186-b067-c2b32432c2ef",
+      "id": "974ca269-3c05-4f8d-a527-a7656c617492",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6296,7 +6296,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b72ebaf8-b101-4c8f-9d7b-203bc4c08905",
+      "id": "ced688ae-8613-4215-975d-48039f407747",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6311,7 +6311,7 @@
       "confidence": 0.75
     },
     {
-      "id": "69e176d6-361e-497c-acb3-2dfc8dad94b9",
+      "id": "7d00a272-bed7-4fdd-82c1-4e0acfca9dd7",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6326,7 +6326,7 @@
       "confidence": 0.75
     },
     {
-      "id": "6bf4540e-ed32-4d83-a258-3aeae231275e",
+      "id": "c93f37c9-5599-4c9e-aafd-5f982e218e25",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6341,7 +6341,7 @@
       "confidence": 0.75
     },
     {
-      "id": "623fb113-ebb0-46c4-9ede-f048a58f6c28",
+      "id": "dc5a181d-8817-4173-82cf-e7dd0db4fb2b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6356,7 +6356,7 @@
       "confidence": 0.75
     },
     {
-      "id": "46c8ebe0-96f3-4b48-9800-0109be10c038",
+      "id": "72855cdb-773b-4401-aa49-99e860ff7486",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6371,7 +6371,7 @@
       "confidence": 0.75
     },
     {
-      "id": "401d469a-e272-484d-a54f-308208b77441",
+      "id": "6e1664c4-1db7-4c93-bc40-8cff4ecba499",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6386,7 +6386,7 @@
       "confidence": 0.75
     },
     {
-      "id": "9a03e30a-339a-4633-957d-fabdd8a97858",
+      "id": "0f8c80e1-e3d6-4fc5-898e-a1368c3aab6e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6401,7 +6401,7 @@
       "confidence": 0.75
     },
     {
-      "id": "97b03f7f-485a-4e12-8bb5-efb8eb16c739",
+      "id": "20ba2bf2-f1f4-4340-b3aa-5204db401101",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6416,7 +6416,7 @@
       "confidence": 0.75
     },
     {
-      "id": "86e52c35-3fd8-4da6-86ee-93cc22ef9387",
+      "id": "0ce61864-4551-4fa6-b93a-d3e806ed15cc",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6431,7 +6431,7 @@
       "confidence": 0.75
     },
     {
-      "id": "c25491ef-8bbf-4a62-b1f4-4ea727710296",
+      "id": "d23918c7-b9df-4ee8-883d-850c90a9251b",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6446,7 +6446,7 @@
       "confidence": 0.75
     },
     {
-      "id": "c6d4d107-ed2b-4630-b776-c6a39bca949d",
+      "id": "374754af-eec1-49a0-8d82-1d913672d58a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6461,7 +6461,7 @@
       "confidence": 0.75
     },
     {
-      "id": "006c5ab9-2db6-4102-8c63-02cbe964d34d",
+      "id": "4ad43f1a-9b7b-4fdd-80f3-31d019edce68",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6476,7 +6476,7 @@
       "confidence": 0.75
     },
     {
-      "id": "950ae9f6-ec52-404c-b5fe-f99c9eaebf81",
+      "id": "9440426e-5124-4a4f-ab58-94de996feba2",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6491,7 +6491,7 @@
       "confidence": 0.75
     },
     {
-      "id": "ec6768bb-1e86-4288-b39e-31def60f88bb",
+      "id": "26f55814-748d-4783-8f15-535d783b5ce9",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6506,7 +6506,7 @@
       "confidence": 0.75
     },
     {
-      "id": "31e43255-71b1-4fff-a5c4-25dc2d5d3c3b",
+      "id": "1530988c-9c43-45d5-9e09-0a65e32df29d",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6521,7 +6521,7 @@
       "confidence": 0.75
     },
     {
-      "id": "d3ecfc28-858c-436b-be15-d278a3ab8582",
+      "id": "9243d81b-0da6-4d66-9e11-b92c3b6c429e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6536,7 +6536,7 @@
       "confidence": 0.75
     },
     {
-      "id": "edfea9e1-8eb4-4077-96f8-6916268d8a5c",
+      "id": "69f616f6-5c5c-4d84-9f34-f984d7157903",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6551,7 +6551,7 @@
       "confidence": 0.75
     },
     {
-      "id": "b2b90eaf-ff86-426e-89bf-29a27fba7d22",
+      "id": "b7077ad8-fadf-471c-a05a-b89efa452e81",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6566,7 +6566,7 @@
       "confidence": 0.75
     },
     {
-      "id": "e2d03045-34f1-4b24-91ca-dfede054cba6",
+      "id": "e9093ea6-7a5f-47e4-99be-69e1d9ab4531",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6581,7 +6581,7 @@
       "confidence": 0.75
     },
     {
-      "id": "c80474cf-b0cf-43e3-89dd-61ac6c79db06",
+      "id": "ca32780d-2ec1-4f82-ab4e-eaa06da0be1e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6596,7 +6596,7 @@
       "confidence": 0.75
     },
     {
-      "id": "d3c2f35b-88ca-4298-ad61-b6823ba843b1",
+      "id": "07207c5e-261d-4ff2-88b4-be28d3d54024",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6611,7 +6611,7 @@
       "confidence": 0.75
     },
     {
-      "id": "c1e66f2e-9b1a-4fd4-ad9e-16e636c5ee4a",
+      "id": "472f94f7-c635-49d9-91b4-a1c3a27c40c6",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6626,7 +6626,7 @@
       "confidence": 0.75
     },
     {
-      "id": "922cc9e1-2d81-4cb2-b828-9d5f0b30dd30",
+      "id": "32828fd9-eb1b-482d-99e4-a18d5778a378",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6641,7 +6641,7 @@
       "confidence": 0.75
     },
     {
-      "id": "63afe3fa-a5d9-4ffb-a987-ce62610df078",
+      "id": "d49d4840-669b-4d1e-a5d2-567b187a9b1d",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6656,7 +6656,7 @@
       "confidence": 0.75
     },
     {
-      "id": "8b33acef-db87-4b02-b47e-6576243ce979",
+      "id": "1534ac7e-6f5f-4500-b5a3-bc427dce80ac",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6671,7 +6671,7 @@
       "confidence": 0.75
     },
     {
-      "id": "1387ea8d-4d7d-45ce-aa76-c917c8a55688",
+      "id": "f87a37f7-1186-4753-8019-89f7d84764ff",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6686,7 +6686,7 @@
       "confidence": 0.75
     },
     {
-      "id": "150c4e94-93fa-4ba6-9bbc-22bcf7c81a11",
+      "id": "35f87994-432a-483c-bda2-dfd2c58470de",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6701,7 +6701,7 @@
       "confidence": 0.75
     },
     {
-      "id": "03ec40d8-bf4c-40be-952e-77b7906d2f39",
+      "id": "9c447a94-0dc0-48bc-89a3-c3a31e6c6c30",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6716,7 +6716,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2774c8b7-dd22-4e71-9fe5-1566204b5d46",
+      "id": "7b382e2a-5904-43cf-b401-009926906f32",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6731,7 +6731,7 @@
       "confidence": 0.75
     },
     {
-      "id": "03c10a09-4cee-4cfb-8e1a-d2bf1c048f3f",
+      "id": "dc086b5b-3632-4b45-83b9-9baa0694a21c",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6746,7 +6746,7 @@
       "confidence": 0.75
     },
     {
-      "id": "f8a3804c-ee6b-486d-9d80-9463fdaea70d",
+      "id": "8cd69836-c734-43f0-ba74-e106d89d0ab1",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6761,7 +6761,7 @@
       "confidence": 0.75
     },
     {
-      "id": "5b0ad2f3-e1b4-44a8-84f2-4c6825cafadb",
+      "id": "99fdca2a-fd22-4490-b22c-be6591624508",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6776,7 +6776,7 @@
       "confidence": 0.75
     },
     {
-      "id": "f3180901-b582-457c-ab4d-56b5bf49ab91",
+      "id": "19f86e27-c070-49e2-b19f-b2b5e2dbf4d9",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6791,7 +6791,7 @@
       "confidence": 0.75
     },
     {
-      "id": "0be8a9fa-8f1e-455d-9aa5-7dce2469e363",
+      "id": "7b8af564-8a4b-4a8b-85fd-3494a3c2fd75",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6806,7 +6806,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2c73aa06-c725-4d8c-a38b-3e2525f16c70",
+      "id": "7c39a48e-994b-4eb2-b682-858292f06769",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6821,7 +6821,7 @@
       "confidence": 0.75
     },
     {
-      "id": "4f8dcb8a-34b0-411e-93f4-60792d72f9ab",
+      "id": "d3a1aafe-34f0-4b6a-a4a5-86e8cbf56c70",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6836,7 +6836,7 @@
       "confidence": 0.75
     },
     {
-      "id": "a5b59cde-c3d8-4e99-8d7e-a6b70ad7c5c8",
+      "id": "1a98616f-43f2-46fc-9564-1544c35d8ba6",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6851,7 +6851,7 @@
       "confidence": 0.75
     },
     {
-      "id": "4477a210-b9d6-4945-8bfe-d0b0bd449011",
+      "id": "aeb97f3b-2be9-4af9-8c22-54d7c6397aa3",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6866,7 +6866,7 @@
       "confidence": 0.75
     },
     {
-      "id": "1d84a3cf-a2fc-47f9-a247-18f04779c3b9",
+      "id": "74b8e4f2-6212-4cea-93ee-c00c7c66b4c3",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6881,7 +6881,7 @@
       "confidence": 0.75
     },
     {
-      "id": "83e547cc-ef17-45f7-968b-23c89048c2c0",
+      "id": "f214f372-9cb2-418d-8f41-3a838e31f020",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6896,7 +6896,7 @@
       "confidence": 0.75
     },
     {
-      "id": "418ae416-4c9a-442f-8b6c-c7c976c11093",
+      "id": "598eb89e-c137-486d-9dc2-a22936c06da6",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6911,7 +6911,7 @@
       "confidence": 0.78
     },
     {
-      "id": "785367b6-9999-4e71-a6a2-cbe7781c2a32",
+      "id": "62d59162-ceb9-485f-bf9b-a064a54b0eff",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6926,7 +6926,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2798cf35-d0dc-413a-a3c6-7f94df759360",
+      "id": "f3b8751e-1950-44c5-9fc0-4f85bdfe718e",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6941,7 +6941,7 @@
       "confidence": 0.75
     },
     {
-      "id": "3e6315ef-cdea-4ff9-b8cb-13c367c232af",
+      "id": "ded4c3b2-7c9d-441e-88dc-f9ceff2bb57a",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6956,7 +6956,7 @@
       "confidence": 0.78
     },
     {
-      "id": "5d813276-47f8-490d-bab5-ae79c6b30927",
+      "id": "d9ec93ea-dbfc-450b-b53a-b2909d7ae42d",
       "rule_id": "prompt-injection",
       "severity": "high",
       "category": "Prompt injection",
@@ -6971,7 +6971,7 @@
       "confidence": 0.75
     },
     {
-      "id": "2b102de7-9752-47c0-96d6-a290ce330a3b",
+      "id": "19bdc115-3547-4e2b-a477-4721c0873598",
       "rule_id": "secrets",
       "severity": "critical",
       "category": "Hardcoded secret",
@@ -6986,7 +6986,7 @@
       "confidence": 0.9
     },
     {
-      "id": "12033e77-55f5-4abe-a6d9-29e32e4e8d63",
+      "id": "bb500bb3-fa22-4b68-bd9e-e1cab3f1bb53",
       "rule_id": "secrets",
       "severity": "critical",
       "category": "Hardcoded secret",
@@ -7001,7 +7001,7 @@
       "confidence": 0.95
     },
     {
-      "id": "6851249d-b043-4c12-99b6-43fe9a9f011a",
+      "id": "94912f7f-6e81-4958-8b27-c58879f77ae7",
       "rule_id": "secrets",
       "severity": "critical",
       "category": "Hardcoded secret",
@@ -7016,7 +7016,7 @@
       "confidence": 0.9
     },
     {
-      "id": "446a152e-3f02-4fde-a85c-2901ed383324",
+      "id": "2da416c2-3d28-4e1c-a00e-15316c4b71b9",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7031,7 +7031,7 @@
       "confidence": 0.62
     },
     {
-      "id": "cd5ef178-7ff1-4146-9158-f3d881e62c0f",
+      "id": "e8c2780f-67ed-4ab3-9bc3-86266ba8a966",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7046,7 +7046,7 @@
       "confidence": 0.62
     },
     {
-      "id": "36538134-ccd3-4233-9f87-c0c8b84f5dae",
+      "id": "75b16963-25c3-44ef-9287-084cd6b326b1",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7061,7 +7061,7 @@
       "confidence": 0.62
     },
     {
-      "id": "d966d76e-5536-46fe-9c59-0a8a60c15f0f",
+      "id": "52f13cd0-97b2-4c48-896f-c16966941b1f",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7076,7 +7076,7 @@
       "confidence": 0.62
     },
     {
-      "id": "d44d5225-b2be-4b4b-9d13-3e02f2cf66ef",
+      "id": "c030e96a-940d-462c-9142-53f174db2a4e",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7091,7 +7091,7 @@
       "confidence": 0.62
     },
     {
-      "id": "1b410fa3-ee55-44ef-9531-c73b24323c71",
+      "id": "4ba50c2f-51a0-4bf9-8ffe-6d799ef53af0",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7106,7 +7106,7 @@
       "confidence": 0.62
     },
     {
-      "id": "3c32b282-6a68-4b1f-80f4-4b5796e3523a",
+      "id": "2785df01-caed-4a6f-a1fa-7216f021a43f",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7121,7 +7121,7 @@
       "confidence": 0.62
     },
     {
-      "id": "80e4db72-54f4-4162-ad60-15223e01caf5",
+      "id": "acd765bf-4c47-45bf-84ff-d93f1da60459",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7136,7 +7136,7 @@
       "confidence": 0.62
     },
     {
-      "id": "fff4c6e8-ba2b-4a28-8073-eaa828030870",
+      "id": "73bde4ba-ac20-4096-93e7-51e0815a6df9",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7151,7 +7151,7 @@
       "confidence": 0.62
     },
     {
-      "id": "45a3081d-fb77-4f83-ac0c-b8adfe6c591b",
+      "id": "dc42bec2-454e-4e32-a89b-163125f2930f",
       "rule_id": "vague-prompts",
       "severity": "medium",
       "category": "Weak prompt",
@@ -7166,7 +7166,7 @@
       "confidence": 0.62
     },
     {
-      "id": "bc7f9339-312a-4673-81cd-3fa9ac6bb642",
+      "id": "c7083e57-62b0-4770-ab74-fee7e5f9a637",
       "rule_id": "vague-prompts",
       "severity": "low",
       "category": "Weak prompt",
@@ -7181,7 +7181,7 @@
       "confidence": 0.45
     },
     {
-      "id": "84938102-d42c-4f72-9431-e6a419d515a0",
+      "id": "0aad5a91-062d-43be-a39d-c8423a27b9a1",
       "rule_id": "vague-prompts",
       "severity": "low",
       "category": "Weak prompt",

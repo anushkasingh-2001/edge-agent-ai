@@ -1,7 +1,17 @@
-# Edge Agent AI — Desktop Packaging (macOS)
+# Edge Agent AI — Desktop Packaging
 
-This doc covers how to build and run the macOS desktop bundle produced by
-`pnpm package:mac`. Windows/Linux packaging is intentionally deferred.
+This doc covers how to build the desktop bundles produced by
+`pnpm package:mac` (the primary, fully-exercised target),
+`pnpm package:win`, and `pnpm package:linux`.
+
+> **Cross-compile note up front:** PyInstaller cannot produce a Windows
+> scanner binary from macOS (or vice versa). Each `package:*` script
+> therefore expects the matching slot under
+> `electron/resources/scanner-bin/<plat>-<arch>/` to already contain a
+> binary that was built on a *native* host of that OS+arch. The
+> `scripts/check-scanner-bin.mjs` pre-flight refuses to invoke
+> electron-builder otherwise, with a clear remediation message. See
+> [Building the scanner binary per OS](#building-the-scanner-binary-per-os).
 
 ## Build a macOS package
 
@@ -9,7 +19,7 @@ This doc covers how to build and run the macOS desktop bundle produced by
 pnpm package:mac
 ```
 
-This script chains four steps:
+This script chains five steps:
 
 1. `pnpm build:standalone` — produces `.next/standalone/server.js` plus the
    trimmed `node_modules` that Next.js's tracer determined the production
@@ -18,10 +28,136 @@ This script chains four steps:
    resulting binary at `electron/resources/scanner-bin/darwin-arm64/edge-agent-scanner`.
 3. `pnpm build:electron` — compiles `electron/main.ts` and `electron/preload.ts`
    to `electron/dist/main.js` + `preload.js`.
-4. `electron-builder --mac -c electron-builder.yml` — packs everything into
+4. `node scripts/check-scanner-bin.mjs --platform=darwin --arch=arm64` —
+   pre-flight gate. Fails fast if step 2 didn't produce a usable binary.
+5. `electron-builder --mac -c electron-builder.yml` — packs everything into
    `release/Edge Agent AI-<version>-arm64.dmg` and a matching `.zip`.
 
 The unpacked app sits at `release/mac-arm64/Edge Agent AI.app`.
+
+## Build a Windows package
+
+> **Run this on a Windows host.** macOS-hosted builds will fail at the
+> pre-flight check because there's no `win32-x64` scanner binary in the
+> repo, and cross-compiling one isn't supported.
+
+```powershell
+pnpm install
+pnpm build:scanner          # produces electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe
+pnpm package:win
+```
+
+The `package:win` script chains:
+
+1. `pnpm build:standalone`
+2. `pnpm build:electron`
+3. `node scripts/check-scanner-bin.mjs --platform=win32 --arch=x64`
+4. `electron-builder --win -c electron-builder.yml`
+
+Output:
+
+* `release\Edge Agent AI Setup <version>.exe` — NSIS one-click installer
+  (per-user install, creates Start menu + Desktop shortcuts, includes an
+  uninstaller). Unsigned for now; users will see a SmartScreen warning
+  on first launch they can click "More info → Run anyway" past.
+
+Architectures shipped: `x64`. Adding `arm64` requires running
+`pnpm build:scanner` on a Windows-on-ARM host (Surface Pro X, WSL on a
+Pi, etc.) and adding `arch: arm64` to `win.target` in `electron-builder.yml`.
+
+## Build a Linux package
+
+> **Run this on a Linux host** (any modern glibc-based distro: Ubuntu 22.04+,
+> Debian 12+, Fedora 38+ are all fine). Old-glibc distros may produce
+> AppImages that won't run on newer hosts and vice versa — match the
+> oldest target distro you want to support.
+
+```bash
+pnpm install
+pnpm build:scanner          # produces electron/resources/scanner-bin/linux-x64/edge-agent-scanner
+pnpm package:linux
+```
+
+The `package:linux` script chains the same four steps as
+`package:win`, just substituting `--linux`. Output:
+
+* `release/Edge Agent AI-<version>.AppImage` — single-file portable
+  binary. `chmod +x` it and run; no install needed.
+* `release/edge-agent-ai_<version>_amd64.deb` — Debian/Ubuntu package
+  with a `.desktop` launcher and an explicit `Depends:` list (git,
+  openssh-client, libgtk-3-0, …) so a `sudo apt install ./<file>.deb`
+  pulls in the runtime libraries the app needs.
+
+Install:
+
+```bash
+# AppImage — no admin required
+chmod +x "Edge Agent AI-0.1.0.AppImage"
+./"Edge Agent AI-0.1.0.AppImage"
+
+# .deb — adds a .desktop entry under /usr/share/applications/
+sudo apt install ./edge-agent-ai_0.1.0_amd64.deb
+edge-agent-ai
+```
+
+Architectures shipped: `x64`. arm64 Linux is a future task — build
+`pnpm build:scanner` on an arm64 Linux host and add `arch: arm64` to
+`linux.target`.
+
+## Building the scanner binary per OS
+
+PyInstaller bundles a host-specific C bootloader (`run` on macOS/Linux,
+`run.exe` on Windows) into every binary it produces, so the same source
+must be built independently on each OS+arch combo you ship for:
+
+| Target              | Build host                          | Output path                                                  |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------ |
+| macOS arm64         | macOS arm64 (Apple Silicon)         | `electron/resources/scanner-bin/darwin-arm64/edge-agent-scanner` |
+| macOS x64           | macOS x64 (Intel — or arm64 + Rosetta with care) | `electron/resources/scanner-bin/darwin-x64/edge-agent-scanner` |
+| Windows x64         | Windows x64                         | `electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe` |
+| Windows arm64       | Windows arm64                       | `electron/resources/scanner-bin/win32-arm64/edge-agent-scanner.exe` |
+| Linux x64 (glibc)   | Linux x64 (use the oldest glibc target distro you support) | `electron/resources/scanner-bin/linux-x64/edge-agent-scanner` |
+| Linux arm64         | Linux arm64                         | `electron/resources/scanner-bin/linux-arm64/edge-agent-scanner` |
+
+`pnpm build:scanner` auto-detects the host with `process.platform` and
+`process.arch` and writes into the correct slot. Commit the resulting
+binary so other contributors (and CI) don't need their own PyInstaller
+toolchain set up; the slot's mtime is what tells the pre-flight check
+the binary is fresh enough.
+
+If you forget to build it first, `pnpm package:win` / `package:linux`
+will abort BEFORE invoking electron-builder with:
+
+```
+xx scanner binary problem: binary not found
+   electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe
+
+Fix: build the Windows scanner binary on a Windows host, then commit / copy it back here.
+
+  PyInstaller cannot cross-compile: the bootloader is a C executable
+  that's specific to each OS+arch combination. Run `pnpm build:scanner`
+  on a Windows/x64 machine, then check in / scp the resulting
+  file:
+    electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe
+```
+
+### Recommended workflow for shipping all three OSes
+
+Until we have proper CI matrices:
+
+1. macOS contributor runs `pnpm package:mac` locally → publishes the .dmg.
+2. Windows contributor runs `pnpm build:scanner` on their machine, commits
+   `electron/resources/scanner-bin/win32-x64/edge-agent-scanner.exe`,
+   then runs `pnpm package:win` → publishes the installer.
+3. Linux contributor does the equivalent for `linux-x64`.
+
+The committed binaries are tracked in git so any contributor's host
+machine can package any platform whose binary is already in the tree —
+they only need a native host to *regenerate* a stale binary.
+
+Practical size note: each binary is ~14 MB, so the repo grows ~42 MB
+once all three are committed. That's fine for a desktop-app repo and
+preferable to setting up cross-OS CI just for packaging.
 
 ## Install + run
 
@@ -96,14 +232,20 @@ cannot be `dlopen()`'d from inside asar.
 
 ## Limitations of the current build
 
-* macOS arm64 only. Building an Intel slice requires running PyInstaller on
-  an Intel Mac (no cross-compile) and adding `arch: x64` to the `mac.target`
-  array.
-* Unsigned, unnotarized — see above.
-* No auto-update channel wired up.
-* No app icon / .icns asset is configured yet; the default Electron icon is
-  used. Add one via `mac.icon: build/icon.icns` in `electron-builder.yml`
-  when a brand mark is ready.
+* **macOS**: arm64 only. An Intel slice requires running PyInstaller on
+  an Intel Mac (no cross-compile) and adding `arch: x64` to `mac.target`.
+* **Windows**: x64 only, unsigned. arm64 needs PyInstaller on a Windows-on-ARM
+  host. Signing needs a code-signing certificate (Step-9 work).
+* **Linux**: x64 only. arm64 needs PyInstaller on an arm64 Linux host.
+* **All platforms**: unsigned / unnotarized. macOS users see Gatekeeper,
+  Windows users see SmartScreen — both bypassable for local testing.
+* No auto-update channel wired up (`electron-updater` would consume
+  `latest.yml` / `latest-mac.yml` / `latest-linux.yml` that electron-builder
+  already emits, but the publisher target + signing key are out of scope).
+* No app icon / `.icns` / `.ico` / `.png` asset is configured yet; the
+  default Electron icon is used. Add one via `mac.icon: build/icon.icns`,
+  `win.icon: build/icon.ico`, `linux.icon: build/icon.png` (512×512) in
+  `electron-builder.yml` when brand art is ready.
 
 ## Feature inventory in the bundle
 
