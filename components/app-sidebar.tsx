@@ -15,6 +15,7 @@ import {
   Github,
   FolderPlus,
   Gauge,
+  Workflow,
 } from "lucide-react"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
@@ -34,6 +35,7 @@ export type ViewType =
   | "overview"
   | "scan-center"
   | "detected-agents"
+  | "understand-code-workflow"
   | "findings"
   | "run-traces"
   | "branch-compare"
@@ -57,6 +59,7 @@ const mainNavItems = [
   { id: "overview" as ViewType, label: "Overview", icon: LayoutDashboard },
   { id: "scan-center" as ViewType, label: "Scan Center", icon: ScanSearch },
   { id: "detected-agents" as ViewType, label: "Detected Agents", icon: Bot },
+  { id: "understand-code-workflow" as ViewType, label: "Understand Code Workflow", icon: Workflow },
   { id: "findings" as ViewType, label: "Findings", icon: AlertTriangle, badge: true },
   { id: "run-traces" as ViewType, label: "Run Traces", icon: Activity },
   { id: "branch-compare" as ViewType, label: "Branch Compare", icon: GitCompare },

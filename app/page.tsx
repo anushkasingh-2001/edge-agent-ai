@@ -6,6 +6,7 @@ import { TopBar } from "@/components/top-bar"
 import { Overview } from "@/components/views/overview"
 import { ScanCenter } from "@/components/views/scan-center"
 import { DetectedAgents } from "@/components/views/detected-agents"
+import { UnderstandCodeWorkflow } from "@/components/views/understand-code-workflow"
 import { Findings } from "@/components/views/findings"
 import { RunTraces } from "@/components/views/run-traces"
 import { BranchCompare } from "@/components/views/branch-compare"
@@ -832,6 +833,15 @@ export default function Home() {
               setSelectedAgents([agentName])
               setCurrentView("findings")
             }}
+          />
+        )
+      case "understand-code-workflow":
+        return (
+          <UnderstandCodeWorkflow
+            hasProject={hasProject}
+            projectPath={selectedProject?.path ?? null}
+            projectName={selectedProject?.name ?? null}
+            onNavigateToSettings={() => setCurrentView("settings")}
           />
         )
       case "findings":

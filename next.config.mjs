@@ -37,6 +37,13 @@ const nextConfig = {
       ".next/cache/**",
     ],
   },
+  // NOTE: `mermaid` is loaded *client-side* via `await import("mermaid")` in
+  // the Understand Code Workflow view, so it ends up in `.next/static/chunks/`
+  // (copied into the standalone bundle by `scripts/copy-standalone-assets.mjs`).
+  // It is NOT a server-side dependency, so it deliberately does NOT appear
+  // in `outputFileTracingIncludes` — adding it there would force-copy
+  // mermaid + d3 + katex + cytoscape + elkjs into every traced route and
+  // inflate the standalone bundle by hundreds of MB.
   typescript: {
     ignoreBuildErrors: true,
   },

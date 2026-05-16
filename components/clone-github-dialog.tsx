@@ -57,6 +57,26 @@ export function CloneGithubDialog({
           branch: branch.trim() || null,
         }),
       })
+      // When Turbopack / Next fails to compile the route module, the
+      // server responds with a plain-text "Internal Server Error" body
+      // (HTTP 500). Calling `res.json()` on that body produces a confusing
+      // `Unexpected token 'I'…` error — peek the content-type and fall
+      // back to a friendlier message so the user knows what to do.
+      const contentType = res.headers.get("content-type") ?? ""
+      if (!contentType.includes("application/json")) {
+        const text = (await res.text().catch(() => "")).slice(0, 200)
+        if (res.status >= 500) {
+          throw new Error(
+            "The dev server returned a non-JSON error — usually a stale Turbopack cache. " +
+              "Stop pnpm dev, run `rm -rf .next`, restart, and try again." +
+              (text ? `\n\nServer said: ${text}` : "")
+          )
+        }
+        throw new Error(
+          `Unexpected response from the clone API (HTTP ${res.status}).` +
+            (text ? ` Server said: ${text}` : "")
+        )
+      }
       const data = (await res.json()) as {
         ok?: boolean
         project?: Project

@@ -6,7 +6,7 @@
 - **Decision:** **⚠️ WARN**
 - **Policy mode:** `warn`
 - **Policy file:** `.edgeagent/policy.yaml`
-- **Timestamp:** 2026-05-15T20:39:03.958Z
+- **Timestamp:** 2026-05-15T21:54:23.516Z
 
 ## Compared States
 
@@ -16,7 +16,7 @@
 
 ### Target
 - **Branch:** `main`
-- **Commit:** `155d818`
+- **Commit:** `4094796`
 
 ## Risk and Severity Delta
 
@@ -24,9 +24,9 @@
 | --- | ---: | ---: | ---: |
 | Risk Score | — | 100 | — |
 | Critical | — | 3 | — |
-| High | — | 365 | — |
+| High | — | 450 | — |
 | Medium | — | 12 | — |
-| Low | — | 3 | — |
+| Low | — | 5 | — |
 
 ## Decision
 
@@ -37,7 +37,7 @@
 - `security.block_if_critical` — Warning: target scan has 3 critical findings.
 - `security.max_risk_score` — Warning: risk score 100 exceeds policy ceiling 70.
 - `security.max_critical_findings` — Warning: 3 critical findings exceed ceiling 0.
-- `security.max_high_findings` — Warning: 365 high findings exceed ceiling 0.
+- `security.max_high_findings` — Warning: 450 high findings exceed ceiling 0.
 - `security.block_if_secrets_found` — Warning: secret-like values were detected in source.
 - `security.block_if_user_input_to_dangerous_code` — Warning: user input can flow into dangerous code paths.
 - `security.block_if_schema_auth_gap` — Warning: OpenAPI / auth / schema quality issues were found.

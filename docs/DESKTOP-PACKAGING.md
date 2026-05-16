@@ -104,3 +104,46 @@ cannot be `dlopen()`'d from inside asar.
 * No app icon / .icns asset is configured yet; the default Electron icon is
   used. Add one via `mac.icon: build/icon.icns` in `electron-builder.yml`
   when a brand mark is ready.
+
+## Feature inventory in the bundle
+
+As of this build the packaged `.app` ships:
+
+* **Scan / Policy Gate / GitHub PR** — original Step 1–6 capabilities, backed
+  by the bundled PyInstaller scanner binary.
+* **Understand Code Workflow** — static workflow analyzer (`/api/workflow/analyze`,
+  `/api/workflow/export`), Mermaid diagram rendering, component/prompt/tool
+  inventories, deterministic Q&A from the workflow graph.
+* **LLM-backed "Ask about this repo" chat** — `/api/workflow/chat`
+  dispatches to OpenAI (GPT-5.x / GPT-4o), Anthropic (Claude 4.x), or
+  Google (Gemini 3.x / 2.5.x) via plain HTTPS. API keys are read from the
+  in-app Settings page (browser `localStorage`, scoped to this installation)
+  and forwarded with each request — never persisted on the server. Power
+  users can also set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
+  `GEMINI_API_KEY` in `.env.local` as a fallback.
+
+### Network requirements (LLM chat only)
+
+The chat feature is the only packaged surface that talks to the outside
+internet. If the host is on a restricted network, outbound HTTPS to one or
+more of the following must be reachable:
+
+* `api.openai.com` — OpenAI
+* `api.anthropic.com` — Anthropic
+* `generativelanguage.googleapis.com` — Google Gemini
+
+If none are reachable, the rest of the app (scanner, policy gate, workflow
+analysis, deterministic chat) still works fully offline.
+
+### Tracing notes for the standalone bundle
+
+* `mermaid` is imported only on the client (`await import("mermaid")` inside
+  the workflow view). Next.js bundles client-side dynamic imports into
+  `.next/static/chunks/`, which `scripts/copy-standalone-assets.mjs` then
+  mirrors into `.next/standalone/.next/static/`. The package is intentionally
+  **not** listed in `outputFileTracingIncludes` — doing so would also drag
+  mermaid + d3 + katex + cytoscape + elkjs into every server route trace
+  and roughly 10× the standalone bundle.
+* The workflow chat library (`lib/workflow-chat.ts`) only uses Node built-ins
+  (`fetch`, `AbortController`, `setTimeout`), so no additional native bindings
+  need to be packaged.

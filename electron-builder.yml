@@ -40,6 +40,15 @@ files:
   # Top-level package.json — electron-builder needs it to identify the app
   # and to find the `main` entry. Also lets the runtime read app.getVersion().
   - package.json
+  # electron-builder auto-packages every `dependencies` entry from
+  # package.json into the asar. We don't want that — `electron/main.ts`
+  # only imports Node built-ins, and all renderer-side libraries (Next.js,
+  # React, mermaid, d3, katex, cytoscape, elkjs, …) are already baked into
+  # `.next/standalone/node_modules` via extraResources. Letting them
+  # double-up in the asar inflates the .app from ~70 MB → ~400 MB and the
+  # .dmg from ~200 MB → ~850 MB. Exclude them explicitly here.
+  - "!node_modules/**"
+  - "!**/node_modules/**"
 
 # ----------------------------------------------------------------------------
 # Asar is enabled by default for everything we DO bundle (electron/dist/**),
