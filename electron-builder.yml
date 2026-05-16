@@ -19,6 +19,17 @@
 appId: ai.edgeagent.desktop
 productName: Edge Agent AI
 
+# Disable ALL auto-publishing. Without this, electron-builder reads the
+# `repository` it infers from package.json + git origin and assumes you want
+# to push artifacts to GitHub Releases — which requires a GH_TOKEN that the
+# workflow does not (and should not) provide. The CLI `--publish=never` flag
+# is the documented way to suppress this, but it's been observed to be
+# overridden in some electron-builder versions when CI=true is detected,
+# so we belt-and-braces it here. The workflow's `actions/upload-artifact`
+# step is the canonical artifact path; electron-builder just builds files
+# under `release/` and is done.
+publish: null
+
 directories:
   # Where the .dmg/.zip/.app artefacts land. Kept out of git via .gitignore.
   output: release
