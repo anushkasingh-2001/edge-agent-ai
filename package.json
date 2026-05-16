@@ -1,6 +1,8 @@
 {
-  "name": "my-project",
+  "name": "edge-agent-ai",
   "version": "0.1.0",
+  "description": "Static security and workflow scanner for AI agent repositories — desktop edition.",
+  "author": "Anushka Singh <singh434@wisc.edu>",
   "private": true,
   "main": "electron/dist/main.js",
   "scripts": {
