@@ -22,6 +22,34 @@
 
 export {}
 
+/**
+ * Mirrors `BootMode` in `electron/main.ts` — kept in sync manually because
+ * the Electron tsconfig is a separate compile target.
+ */
+export type EdgeAgentBootMode =
+  | "electron-dev"
+  | "electron-prod-unpackaged"
+  | "packaged"
+
+/**
+ * Mirrors the `RuntimeInfo` shape returned by the `edge-agent-ai:get-runtime-info`
+ * IPC handler. Treat every string as untrusted display data — never inject into
+ * `eval`, `<script>` tags, or shell commands.
+ */
+export type EdgeAgentRuntimeInfo = {
+  mode: EdgeAgentBootMode
+  appPath: string
+  resourcesPath: string
+  userDataPath: string
+  logDir: string
+  electronVersion: string
+  chromeVersion: string
+  nodeVersion: string
+  appVersion: string
+  platform: NodeJS.Platform | string
+  arch: string
+}
+
 declare global {
   interface Window {
     edgeAgentAI?: {
@@ -36,6 +64,26 @@ declare global {
        *   - "NOT_FOUND: ..."          — selection disappeared between click and resolve
        */
       readonly selectFolder?: () => Promise<string | null>
+      /**
+       * Snapshot of how this Electron process was launched: which boot mode
+       * (`electron-dev` / `electron-prod-unpackaged` / `packaged`), where
+       * `.app` / asar / standalone bundle / logs live, and which Electron /
+       * Chrome / Node versions are running. Used by System Health to render
+       * the Runtime block; the same data is embedded in "Copy diagnostics".
+       */
+      readonly getRuntimeInfo?: () => Promise<EdgeAgentRuntimeInfo>
+      /**
+       * Reveals the per-user logs directory in the OS file manager (Finder /
+       * Explorer / xdg-open). Resolves with `{ ok: true, path }` on success;
+       * `{ ok: false, error, path }` if the folder couldn't be opened (e.g.
+       * permission denied, missing default handler). Never throws — the UI
+       * decides whether to surface the failure inline.
+       */
+      readonly openLogsFolder?: () => Promise<{
+        ok: boolean
+        error?: string
+        path: string
+      }>
     }
   }
 }

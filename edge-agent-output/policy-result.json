@@ -58,11 +58,11 @@
     "summary": {
       "critical": 3,
       "high": 450,
-      "medium": 12,
-      "low": 5,
-      "total": 470
+      "medium": 11,
+      "low": 3,
+      "total": 467
     },
-    "generated_at": "2026-05-15T21:54:23.438065+00:00"
+    "generated_at": "2026-05-16T01:16:14.385125+00:00"
   },
   "base": null,
   "policyPath": "/Users/anushka/Desktop/EDGE_AGENT_AI/edge-agent-recovered/.edgeagent/policy.yaml",

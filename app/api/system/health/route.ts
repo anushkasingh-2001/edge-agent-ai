@@ -40,6 +40,7 @@
 
 import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { NextResponse } from "next/server"
 import { runGh } from "@/lib/server-github"
@@ -52,15 +53,33 @@ export const dynamic = "force-dynamic"
  *  cap for the git probe and any future subprocesses. */
 const COMMAND_TIMEOUT_MS = 10_000
 
+/**
+ * Boot mode strings — kept in sync with `electron/main.ts` and
+ * `types/preload.d.ts`. The server can never observe Electron's
+ * `app.isPackaged` directly (it runs in the spawned Next process),
+ * so we trust the EDGE_AGENT_MODE env var the Electron launcher
+ * forwards. When no env signal is present we default to "browser".
+ */
+type RuntimeMode =
+  | "browser"
+  | "electron-dev"
+  | "electron-prod-unpackaged"
+  | "packaged"
+
 type GitStatus = {
   installed: boolean
   version: string | null
+  /** Absolute path to the resolved `git` executable, or null when
+   *  not on PATH or `which`/`where` failed. */
+  path: string | null
   error: string | null
 }
 
 type GhStatus = {
   installed: boolean
   version: string | null
+  /** Absolute path to the resolved `gh` executable. */
+  path: string | null
   /** null when gh isn't installed; true/false otherwise. */
   authenticated: boolean | null
   login: string | null
@@ -76,10 +95,89 @@ type ScannerStatus = {
   error: string | null
 }
 
+/** Where the process is running and where it lives on disk. */
+type RuntimeStatus = {
+  mode: RuntimeMode
+  /** App version (from EDGE_AGENT_APP_VERSION, set by electron/main.ts). */
+  appVersion: string | null
+  /** `app.getAppPath()` snapshot from the launcher. */
+  appPath: string | null
+  /** `process.resourcesPath` snapshot from the launcher. */
+  resourcesPath: string | null
+  /** `app.getPath("userData")` snapshot from the launcher. */
+  userDataPath: string | null
+  /** Server-side `process.cwd()` — useful to spot a packaged app booted
+   *  from the wrong directory. */
+  cwd: string
+  electronVersion: string | null
+  chromeVersion: string | null
+  nodeVersion: string
+  platform: NodeJS.Platform
+  arch: string
+}
+
+type LogsStatus = {
+  /** Absolute path to the log directory the Electron launcher told us
+   *  about. Null in pure browser mode. */
+  dir: string | null
+  /** Per-file presence + size, so the UI can warn if a file is missing
+   *  or unusually large. Only populated when `dir` exists. */
+  files: { name: string; size: number; mtime: string | null }[]
+}
+
 type HealthResponse = {
+  runtime: RuntimeStatus
   git: GitStatus
   gh: GhStatus
   scanner: ScannerStatus
+  logs: LogsStatus
+}
+
+/* -------------------------------------------------------------------------- */
+/* which / where helper — resolves the absolute path of a PATH executable     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolve the absolute path of an executable on PATH. Uses `which` on
+ * POSIX, `where` on Windows; both ship with the OS and never invoke a
+ * shell here (args array, not a single string). Returns null when the
+ * executable isn't found or the probe itself failed — callers should
+ * gracefully fall back to "version known, path unknown".
+ *
+ * We DO NOT trust user-controlled input for `name`; today the only
+ * callers are hard-coded "git" / "gh" string literals.
+ */
+function resolveExecutablePath(name: string): string | null {
+  const probe = process.platform === "win32" ? "where" : "which"
+  let proc
+  try {
+    proc = spawnSync(probe, [name], {
+      encoding: "utf-8",
+      timeout: COMMAND_TIMEOUT_MS,
+      maxBuffer: 1 * 1024 * 1024,
+      env: {
+        ...process.env,
+        LANG: "C",
+        LC_ALL: "C",
+      },
+    })
+  } catch {
+    return null
+  }
+  if (proc.error || proc.status !== 0) return null
+  // `which` prints one line; `where` may print several (e.g. `git.exe` +
+  // `git.cmd` shim) — we keep the first one because it's what would
+  // actually execute under spawn-without-shell.
+  const first = (proc.stdout ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0)
+  if (!first) return null
+  try {
+    return path.resolve(first)
+  } catch {
+    return first
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -104,6 +202,7 @@ function checkGit(): GitStatus {
     return {
       installed: false,
       version: null,
+      path: null,
       error: e instanceof Error ? e.message : String(e),
     }
   }
@@ -113,12 +212,14 @@ function checkGit(): GitStatus {
       return {
         installed: false,
         version: null,
+        path: null,
         error: "git executable not found on PATH",
       }
     }
     return {
       installed: false,
       version: null,
+      path: null,
       error: proc.error.message,
     }
   }
@@ -126,6 +227,7 @@ function checkGit(): GitStatus {
     return {
       installed: false,
       version: null,
+      path: null,
       error:
         (proc.stderr ?? "").trim() ||
         `git --version exited with status ${proc.status}`,
@@ -136,6 +238,7 @@ function checkGit(): GitStatus {
   return {
     installed: true,
     version: (proc.stdout ?? "").trim() || null,
+    path: resolveExecutablePath("git"),
     error: null,
   }
 }
@@ -151,6 +254,7 @@ function checkGh(): GhStatus {
     return {
       installed: false,
       version: null,
+      path: null,
       authenticated: null,
       login: null,
       error: ver.stderr.trim() || "gh executable not found on PATH",
@@ -160,6 +264,7 @@ function checkGh(): GhStatus {
     return {
       installed: false,
       version: null,
+      path: null,
       authenticated: null,
       login: null,
       error:
@@ -172,6 +277,10 @@ function checkGh(): GhStatus {
   // release-notes URL into a one-line badge.
   const version =
     ver.stdout.trim().split("\n")[0]?.trim() || null
+  // Resolve the absolute path now — same probe as git. Cheap (single
+  // OS-builtin spawn) and saves the user from running `which gh`
+  // themselves to file a bug report.
+  const ghPath = resolveExecutablePath("gh")
 
   // gh IS installed. Check auth — but never fail the whole route
   // just because the user isn't logged in. Create-PR-in-MVP is the
@@ -184,6 +293,7 @@ function checkGh(): GhStatus {
     return {
       installed: true,
       version,
+      path: ghPath,
       authenticated: false,
       login: null,
       error: "gh disappeared between subprocess calls",
@@ -193,6 +303,7 @@ function checkGh(): GhStatus {
     return {
       installed: true,
       version,
+      path: ghPath,
       authenticated: false,
       login: null,
       error: null,
@@ -211,6 +322,7 @@ function checkGh(): GhStatus {
     return {
       installed: true,
       version,
+      path: ghPath,
       authenticated: false,
       login: null,
       error: user.stderr.trim() || null,
@@ -220,6 +332,7 @@ function checkGh(): GhStatus {
   return {
     installed: true,
     version,
+    path: ghPath,
     authenticated: true,
     login: login || null,
     error: null,
@@ -422,18 +535,117 @@ function checkScanner(): ScannerStatus {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Runtime: derive how this server was launched from EDGE_AGENT_* env vars    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Decide the runtime mode in the order that produces the most specific
+ * answer possible. `EDGE_AGENT_MODE` is the canonical source — set by
+ * `electron/main.ts` when it spawns the child Next server. If it's
+ * missing entirely we fall back to "browser" because that's the only
+ * remaining case we ship.
+ */
+function inferMode(): RuntimeMode {
+  const explicit = process.env.EDGE_AGENT_MODE?.trim()
+  if (
+    explicit === "packaged" ||
+    explicit === "electron-dev" ||
+    explicit === "electron-prod-unpackaged"
+  ) {
+    return explicit
+  }
+  // Fallback heuristic for the (currently unsupported, but possible)
+  // future case of a packaged app whose launcher forgot to set
+  // EDGE_AGENT_MODE: EDGE_AGENT_DESKTOP=1 with no renderer URL
+  // strongly implies electron-prod, with renderer URL set implies dev.
+  if (process.env.EDGE_AGENT_DESKTOP === "1") {
+    return process.env.ELECTRON_RENDERER_URL?.trim()
+      ? "electron-dev"
+      : "electron-prod-unpackaged"
+  }
+  return "browser"
+}
+
+function checkRuntime(): RuntimeStatus {
+  const nonEmpty = (s: string | undefined): string | null => {
+    const v = s?.trim()
+    return v && v.length > 0 ? v : null
+  }
+  return {
+    mode: inferMode(),
+    appVersion: nonEmpty(process.env.EDGE_AGENT_APP_VERSION),
+    appPath: nonEmpty(process.env.EDGE_AGENT_APP_PATH),
+    resourcesPath: nonEmpty(process.env.EDGE_AGENT_RESOURCES_PATH),
+    userDataPath: nonEmpty(process.env.EDGE_AGENT_USER_DATA_PATH),
+    cwd: process.cwd(),
+    electronVersion: nonEmpty(process.env.EDGE_AGENT_ELECTRON_VERSION),
+    chromeVersion: nonEmpty(process.env.EDGE_AGENT_CHROME_VERSION),
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Logs: enumerate the contents of EDGE_AGENT_LOG_DIR                         */
+/* -------------------------------------------------------------------------- */
+
+function checkLogs(): LogsStatus {
+  const dirRaw = process.env.EDGE_AGENT_LOG_DIR?.trim()
+  if (!dirRaw) {
+    return { dir: null, files: [] }
+  }
+  const dir = path.resolve(dirRaw)
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    // Directory doesn't exist yet (first launch before openLogStreams
+    // ran) or we lack read permission. Surface the configured path so
+    // the user can still open it manually.
+    return { dir, files: [] }
+  }
+  const files: LogsStatus["files"] = []
+  for (const name of entries) {
+    if (!/\.(log|txt)$/i.test(name)) continue
+    try {
+      const st = fs.statSync(path.join(dir, name))
+      if (!st.isFile()) continue
+      files.push({
+        name,
+        size: st.size,
+        mtime: st.mtime.toISOString(),
+      })
+    } catch {
+      // Ignore individual file errors; the directory listing is still
+      // useful even if one entry is stat-failing (e.g. mid-rotation).
+    }
+  }
+  // Sort by mtime descending so the freshest log shows first — that's
+  // what the user usually wants to inspect.
+  files.sort((a, b) => (b.mtime ?? "").localeCompare(a.mtime ?? ""))
+  return { dir, files }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Route entry                                                                */
 /* -------------------------------------------------------------------------- */
 
 export async function GET() {
   // Every check is spawnSync-based, so wrapping them in Promise.all
   // wouldn't actually parallelise. Run sequentially in the cheapest
-  // order: git (fast), scanner (filesystem only), gh (can take
-  // seconds when the auth probe hits the network).
+  // order: runtime (env reads only), git (fast), scanner (filesystem
+  // only), logs (filesystem only), gh (can take seconds when the auth
+  // probe hits the network).
+  const runtime = checkRuntime()
   const git = checkGit()
   const scanner = checkScanner()
+  const logs = checkLogs()
   const gh = checkGh()
-  const body: HealthResponse = { git, gh, scanner }
+  // Reserve the `os` import for future per-route diagnostics (tmpdir,
+  // free memory, etc.); silence the lint warning meanwhile.
+  void os
+  const body: HealthResponse = { runtime, git, gh, scanner, logs }
   return NextResponse.json(body, {
     headers: {
       // Don't let a stale "everything OK" response stick around in

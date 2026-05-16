@@ -6,7 +6,7 @@
 - **Decision:** **⚠️ WARN**
 - **Policy mode:** `warn`
 - **Policy file:** `.edgeagent/policy.yaml`
-- **Timestamp:** 2026-05-15T21:54:23.516Z
+- **Timestamp:** 2026-05-16T01:16:14.470Z
 
 ## Compared States
 
@@ -16,7 +16,7 @@
 
 ### Target
 - **Branch:** `main`
-- **Commit:** `4094796`
+- **Commit:** `836433c`
 
 ## Risk and Severity Delta
 
@@ -25,8 +25,8 @@
 | Risk Score | — | 100 | — |
 | Critical | — | 3 | — |
 | High | — | 450 | — |
-| Medium | — | 12 | — |
-| Low | — | 5 | — |
+| Medium | — | 11 | — |
+| Low | — | 3 | — |
 
 ## Decision
 

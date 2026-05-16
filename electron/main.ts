@@ -56,6 +56,31 @@ const IS_PRODUCTION_BOOT = !RENDERER_URL_ENV
 // and a packaged app would never set ELECTRON_RENDERER_URL.
 const IS_DEV = !IS_PRODUCTION_BOOT
 
+/**
+ * Stable, single string describing how this Electron process was launched.
+ * Mirrored to the renderer via the preload bridge AND forwarded to the
+ * spawned Next standalone server through EDGE_AGENT_MODE so /api/system/health
+ * can return it without re-deriving on the server side.
+ *
+ *   electron-dev               : launched by `pnpm dev:electron`
+ *                                (ELECTRON_RENDERER_URL points at next dev)
+ *   electron-prod-unpackaged   : launched by `pnpm start:electron-prod`
+ *                                (no renderer URL, app.isPackaged === false,
+ *                                running against .next/standalone in repo)
+ *   packaged                   : launched from a built .app / .exe / AppImage
+ *                                (app.isPackaged === true)
+ *
+ * `app.isPackaged` is the canonical Electron signal for "running inside an
+ * asar bundle" — set true when the binary path includes Electron's stock
+ * Resources directory rather than the user's checkout.
+ */
+type BootMode = "electron-dev" | "electron-prod-unpackaged" | "packaged"
+const BOOT_MODE: BootMode = RENDERER_URL_ENV
+  ? "electron-dev"
+  : app.isPackaged
+    ? "packaged"
+    : "electron-prod-unpackaged"
+
 app.setName("Edge Agent AI")
 
 // macOS dock label + About panel — keep the headline as our app name
@@ -116,6 +141,241 @@ function isPathInside(child: string, parent: string): boolean {
     return ci === "" || (!ci.startsWith("..") && !path.isAbsolute(ci))
   }
   return false
+}
+
+/* -------------------------------------------------------------------------- */
+/* PATH enrichment for Finder/launchd launches                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Augment the inherited PATH with well-known per-OS binary directories
+ * that terminal-launched processes see but Finder / launchd-launched
+ * apps don't.
+ *
+ * Background: macOS's launchd hands a packaged .app a minimal default
+ * PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) when it's opened from Finder.
+ * Homebrew installs to `/opt/homebrew/bin` (Apple Silicon) or
+ * `/usr/local/bin` (Intel) — both invisible. Result: `runGh()` / `runGit()`
+ * / `which gh` all fail with ENOENT inside the .app even though the
+ * user can run them fine from their shell. Linux has a similar gotcha
+ * for snap and `~/.local/bin`; Windows has it for GitHub CLI's
+ * default install dir.
+ *
+ * Strategy: prepend (so explicit user PATH entries still win for any
+ * already-listed dirs we'd duplicate) every well-known location that
+ * actually exists on disk. Idempotent — safe to apply in dev mode too;
+ * it'll just be a no-op when the entries are already there.
+ *
+ * We never expose the augmented PATH to the renderer or the network,
+ * so there's no privacy concern. The output is logged so the user
+ * (or a future maintainer) can confirm what was added.
+ */
+function enrichPathForPackaged(currentPath: string | undefined): {
+  path: string
+  added: string[]
+} {
+  const sep = process.platform === "win32" ? ";" : ":"
+  const existing = (currentPath ?? "").split(sep).filter(Boolean)
+  const existingSet = new Set(existing)
+
+  const candidates: string[] = []
+  if (process.platform === "darwin") {
+    // Homebrew on Apple Silicon → on Intel → MacPorts. Order matters
+    // because we prepend in this order.
+    candidates.push("/opt/homebrew/bin")
+    candidates.push("/opt/homebrew/sbin")
+    candidates.push("/usr/local/bin")
+    candidates.push("/usr/local/sbin")
+    candidates.push("/opt/local/bin")
+    // GitHub CLI also occasionally lives under ~/.local/bin via `brew bundle`
+    // or piped installers. Cheap to add.
+    candidates.push(path.join(os.homedir(), ".local", "bin"))
+  } else if (process.platform === "linux") {
+    candidates.push("/snap/bin")
+    candidates.push("/usr/local/bin")
+    candidates.push(path.join(os.homedir(), ".local", "bin"))
+  } else if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA
+    if (localAppData) {
+      // GitHub CLI default install location for the per-user MSI.
+      candidates.push(path.join(localAppData, "Programs", "GitHub CLI"))
+    }
+    // Git for Windows — both flavours that the official installer creates.
+    candidates.push("C:\\Program Files\\Git\\cmd")
+    candidates.push("C:\\Program Files\\Git\\bin")
+  }
+
+  const toPrepend: string[] = []
+  for (const dir of candidates) {
+    if (existingSet.has(dir)) continue
+    try {
+      if (fs.statSync(dir).isDirectory()) {
+        toPrepend.push(dir)
+      }
+    } catch {
+      // Directory missing — skip silently. We only want to add entries
+      // that actually resolve, otherwise `which` will just waste a stat
+      // probe per call.
+    }
+  }
+
+  if (toPrepend.length === 0) {
+    return { path: existing.join(sep), added: [] }
+  }
+  return {
+    path: [...toPrepend, ...existing].join(sep),
+    added: toPrepend,
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Log directory + child-process log redirection                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Per-OS log directory exposed by Electron via `app.getPath("logs")`:
+ *   macOS  : ~/Library/Logs/Edge Agent AI/
+ *   Linux  : ~/.config/Edge Agent AI/logs/
+ *   Windows: %APPDATA%/Edge Agent AI/logs/
+ *
+ * We resolve it lazily on first use (cannot call before app is ready in
+ * older Electron majors) and `mkdirSync` with recursive:true so first launch
+ * doesn't crash on a non-existent path.
+ *
+ * Two rotating-on-each-launch files live here:
+ *   - main.log    — every console.* from the Electron main process
+ *                   (boot decisions, IPC events, child process lifecycle)
+ *   - server.log  — stdout/stderr of the spawned Next standalone server
+ *                   (every API request line, every uncaught exception)
+ *
+ * On each launch we truncate (not append-with-rotation) — a single launch's
+ * logs is exactly what the user needs when copying diagnostics, and keeping
+ * historical logs across launches would require a cleanup policy we don't
+ * have the lifecycle hooks to enforce reliably.
+ */
+let logDirCached: string | null = null
+let mainLogStream: fs.WriteStream | null = null
+let serverLogStream: fs.WriteStream | null = null
+
+function getLogDir(): string {
+  if (logDirCached) return logDirCached
+  // app.getPath("logs") is documented as available after `app.whenReady()`
+  // resolves; we only call this from inside `whenReady` and downstream IPC
+  // handlers, so that's safe.
+  let dir: string
+  try {
+    dir = app.getPath("logs")
+  } catch {
+    // Pre-ready or platform edge case — fall back to a stable per-user
+    // location so the rest of the diagnostics block doesn't blow up.
+    dir = path.join(os.homedir(), ".edge-agent-ai", "logs")
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch {
+    /* best-effort */
+  }
+  logDirCached = dir
+  return dir
+}
+
+/** Open both log streams. Idempotent — safe to call multiple times. */
+function openLogStreams(): void {
+  const dir = getLogDir()
+  if (!mainLogStream) {
+    try {
+      mainLogStream = fs.createWriteStream(path.join(dir, "main.log"), {
+        flags: "w",
+      })
+      mainLogStream.on("error", () => {
+        // Silently drop further main-log writes; we never want logging to
+        // crash the app.
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!serverLogStream) {
+    try {
+      serverLogStream = fs.createWriteStream(path.join(dir, "server.log"), {
+        flags: "w",
+      })
+      serverLogStream.on("error", () => {
+        /* see above */
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Best-effort flush + close of the log streams, called on quit. */
+function closeLogStreams(): void {
+  try {
+    mainLogStream?.end()
+  } catch {
+    /* ignore */
+  }
+  try {
+    serverLogStream?.end()
+  } catch {
+    /* ignore */
+  }
+  mainLogStream = null
+  serverLogStream = null
+}
+
+/**
+ * Tee a single chunk of stdio output to a target stream. Used to mirror
+ * `[next]`-prefixed child stdout/stderr into server.log without losing the
+ * stdout pipe to the parent terminal (so `pnpm start:electron-prod` still
+ * shows the same output).
+ */
+function teeToStream(
+  stream: fs.WriteStream | null,
+  prefix: string,
+  chunk: Buffer
+): void {
+  if (!stream) return
+  try {
+    stream.write(prefix + chunk.toString())
+  } catch {
+    /* see openLogStreams error handler */
+  }
+}
+
+/**
+ * Monkey-patch `console.{log,info,warn,error}` so every line we already
+ * print to the terminal also lands in main.log. Done once, after streams
+ * are open. We keep the original behaviour (still writing to stdout/stderr)
+ * because attaching a debugger to the packaged .app via `Console.app` /
+ * `electron .app --inspect` still wants the original sink.
+ */
+function attachConsoleToMainLog(): void {
+  if (!mainLogStream) return
+  const stream = mainLogStream
+  const ts = () => new Date().toISOString()
+  for (const level of ["log", "info", "warn", "error"] as const) {
+    const original = console[level].bind(console)
+    console[level] = (...args: unknown[]) => {
+      try {
+        const line =
+          args
+            .map((a) =>
+              typeof a === "string"
+                ? a
+                : a instanceof Error
+                  ? a.stack ?? a.message
+                  : JSON.stringify(a)
+            )
+            .join(" ") + "\n"
+        stream.write(`[${ts()}] [${level}] ${line}`)
+      } catch {
+        /* ignore */
+      }
+      original(...args)
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -291,6 +551,13 @@ async function startStandaloneServer(): Promise<string> {
   // Compose the child env. EDGE_AGENT_SCANNER_BIN is preserved
   // when the user set it explicitly (e.g. via the start:electron-prod
   // script) — otherwise we try to auto-resolve a bundled binary.
+  //
+  // The EDGE_AGENT_* paths/mode are picked up by /api/system/health so
+  // the renderer's diagnostics card can show:
+  //   "Mode: packaged", "App: …Edge Agent AI.app", "Resources: …",
+  //   "Logs: ~/Library/Logs/Edge Agent AI/" — exactly where the user
+  //   should look when something's wrong.
+  const logDir = getLogDir()
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
@@ -299,6 +566,23 @@ async function startStandaloneServer(): Promise<string> {
     EDGE_AGENT_DESKTOP: "1",
     EDGE_AGENT_SCAN_ALLOWLIST:
       process.env.EDGE_AGENT_SCAN_ALLOWLIST?.trim() || os.homedir(),
+    // Diagnostics envelope — read by /api/system/health (and only there
+    // today; harmless to extra processes that don't recognise them).
+    EDGE_AGENT_MODE: BOOT_MODE,
+    EDGE_AGENT_APP_PATH: app.getAppPath(),
+    EDGE_AGENT_RESOURCES_PATH:
+      typeof process.resourcesPath === "string" ? process.resourcesPath : "",
+    EDGE_AGENT_USER_DATA_PATH: (() => {
+      try {
+        return app.getPath("userData")
+      } catch {
+        return ""
+      }
+    })(),
+    EDGE_AGENT_LOG_DIR: logDir,
+    EDGE_AGENT_ELECTRON_VERSION: process.versions.electron ?? "",
+    EDGE_AGENT_CHROME_VERSION: process.versions.chrome ?? "",
+    EDGE_AGENT_APP_VERSION: app.getVersion(),
   }
   if (!childEnv.EDGE_AGENT_SCANNER_BIN) {
     const auto = findScannerBin()
@@ -332,12 +616,17 @@ async function startStandaloneServer(): Promise<string> {
     detached: false,
   })
 
-  // Forward output line-prefixed so they're easy to grep in logs.
+  // Forward output line-prefixed so they're easy to grep in logs, AND tee
+  // into server.log so the user can hit "Open logs folder" later and find
+  // a complete record of what the spawned Next server did. The packaged
+  // .app has no terminal, so server.log is the only sink that survives.
   serverProcess.stdout?.on("data", (chunk: Buffer) => {
     process.stdout.write(`[next] ${chunk.toString()}`)
+    teeToStream(serverLogStream, "[next] ", chunk)
   })
   serverProcess.stderr?.on("data", (chunk: Buffer) => {
     process.stderr.write(`[next] ${chunk.toString()}`)
+    teeToStream(serverLogStream, "[next err] ", chunk)
   })
   serverProcess.on("exit", (code, signal) => {
     console.log(
@@ -452,6 +741,95 @@ function createWindow(rendererUrl: string): void {
 }
 
 /* -------------------------------------------------------------------------- */
+/* IPC: diagnostics — runtime info + open logs folder                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Renderer contract:
+ *
+ *   window.edgeAgentAI.getRuntimeInfo(): Promise<RuntimeInfo>
+ *
+ * Returns a synchronous-ish snapshot of where this Electron process is
+ * running from. Used by `components/system-health-gate.tsx` to render the
+ * "Runtime" block and as a cross-check against /api/system/health's view
+ * of the world (the API derives the same values from EDGE_AGENT_* env
+ * vars; if they disagree, the user has a misconfigured launcher).
+ */
+type RuntimeInfo = {
+  mode: BootMode
+  appPath: string
+  resourcesPath: string
+  userDataPath: string
+  logDir: string
+  electronVersion: string
+  chromeVersion: string
+  nodeVersion: string
+  appVersion: string
+  platform: NodeJS.Platform
+  arch: string
+}
+
+ipcMain.handle(
+  "edge-agent-ai:get-runtime-info",
+  async (): Promise<RuntimeInfo> => {
+    return {
+      mode: BOOT_MODE,
+      appPath: app.getAppPath(),
+      resourcesPath:
+        typeof process.resourcesPath === "string" ? process.resourcesPath : "",
+      userDataPath: (() => {
+        try {
+          return app.getPath("userData")
+        } catch {
+          return ""
+        }
+      })(),
+      logDir: getLogDir(),
+      electronVersion: process.versions.electron ?? "",
+      chromeVersion: process.versions.chrome ?? "",
+      nodeVersion: process.versions.node ?? "",
+      appVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    }
+  }
+)
+
+/**
+ * Renderer contract:
+ *
+ *   window.edgeAgentAI.openLogsFolder(): Promise<{ ok: boolean; error?: string }>
+ *
+ * Opens the per-user logs directory in the OS file manager (Finder on macOS,
+ * Explorer on Windows, default xdg handler on Linux). Returns the result
+ * shape rather than throwing because "logs folder is empty" or "user denied
+ * access" aren't UI emergencies — the SystemHealthGate will surface the
+ * failure inline.
+ */
+ipcMain.handle(
+  "edge-agent-ai:open-logs-folder",
+  async (): Promise<{ ok: boolean; error?: string; path: string }> => {
+    const dir = getLogDir()
+    try {
+      // Ensure something exists to open — `shell.openPath` against a missing
+      // directory returns a non-empty string error message.
+      fs.mkdirSync(dir, { recursive: true })
+      const result = await shell.openPath(dir)
+      if (result) {
+        return { ok: false, error: result, path: dir }
+      }
+      return { ok: true, path: dir }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        path: dir,
+      }
+    }
+  }
+)
+
+/* -------------------------------------------------------------------------- */
 /* IPC: native folder picker                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -523,6 +901,39 @@ async function resolveRendererUrl(): Promise<string> {
 }
 
 app.whenReady().then(async () => {
+  // Stand up the log streams first thing — every subsequent console.* in
+  // this process is then mirrored to ~/.../Edge Agent AI/main.log, which
+  // is what the diagnostics "Open logs folder" button leads the user to.
+  openLogStreams()
+  attachConsoleToMainLog()
+  console.log(
+    `[main] boot — mode=${BOOT_MODE} version=${app.getVersion()} ` +
+      `electron=${process.versions.electron} platform=${process.platform}/${process.arch}`
+  )
+  console.log(`[main] logDir=${getLogDir()}`)
+  console.log(`[main] appPath=${app.getAppPath()}`)
+  if (typeof process.resourcesPath === "string") {
+    console.log(`[main] resourcesPath=${process.resourcesPath}`)
+  }
+
+  // Enrich PATH so the spawned Next server's `runGh`/`runGit`/`which`
+  // calls can find Homebrew + similar tooling when the .app is launched
+  // from Finder (where launchd hands us a minimal `/usr/bin:/bin:…` PATH).
+  // We mutate `process.env.PATH` directly so the child env we build later
+  // via `...process.env` inherits the augmented value with no further
+  // plumbing. Skipped silently in dev mode — terminal-launched processes
+  // already have the right PATH, and the helper is idempotent anyway.
+  const beforePath = process.env.PATH
+  const enriched = enrichPathForPackaged(beforePath)
+  process.env.PATH = enriched.path
+  if (enriched.added.length > 0) {
+    console.log(
+      `[main] PATH enriched: prepended ${enriched.added.length} dir(s) → ${enriched.added.join(", ")}`
+    )
+  } else {
+    console.log("[main] PATH already includes all known tool dirs — no change")
+  }
+
   let url: string
   try {
     url = await resolveRendererUrl()
@@ -567,12 +978,17 @@ app.on("window-all-closed", () => {
 // to a loopback port the next launch wants.
 app.on("before-quit", () => {
   killServerProcess()
+  // Flush the log streams synchronously so the very last "[main] quit"
+  // line survives in main.log — important when the user has just hit
+  // "Open logs folder" before quitting to file a bug report.
+  closeLogStreams()
 })
 
 // Safety net for non-quit exit paths (segfault, SIGKILL on Electron
 // itself, etc.). 'exit' isn't async-safe so we keep this minimal.
 process.on("exit", () => {
   killServerProcess()
+  closeLogStreams()
 })
 
 // Forward POSIX signals from the user (Ctrl-C in a launching shell)

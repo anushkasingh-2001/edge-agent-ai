@@ -135,6 +135,92 @@ more of the following must be reachable:
 If none are reachable, the rest of the app (scanner, policy gate, workflow
 analysis, deterministic chat) still works fully offline.
 
+## Diagnosing a packaged install
+
+When a user reports "Edge Agent AI doesn't work on my machine" after
+installing the .dmg, the **System Health** card (Settings → System Health)
+is the single source of truth. It hits `GET /api/system/health` and renders
+three groups:
+
+* **Runtime** — boot mode (`packaged` vs. `electron-prod-unpackaged` vs.
+  `electron-dev`), app version, app/resources/userData/cwd paths, Electron
+  + Chrome + Node versions, platform/arch.
+* **Dependencies** — git / GitHub CLI / scanner availability, with absolute
+  executable paths (`which git`, `which gh`) and the resolved scanner source
+  (`scanner_bin` / `python_venv` / `pythonpath` / `missing`).
+* **Logs** — log directory + per-file size and mtime.
+
+### Where the diagnostics signal comes from
+
+`electron/main.ts` forwards a small envelope of `EDGE_AGENT_*` env vars to
+the spawned Next standalone server, which `app/api/system/health/route.ts`
+mirrors back out:
+
+| env var                          | value source                          |
+| -------------------------------- | -------------------------------------- |
+| `EDGE_AGENT_MODE`                | `app.isPackaged ? "packaged" : …`     |
+| `EDGE_AGENT_APP_PATH`            | `app.getAppPath()`                    |
+| `EDGE_AGENT_RESOURCES_PATH`      | `process.resourcesPath`               |
+| `EDGE_AGENT_USER_DATA_PATH`      | `app.getPath("userData")`             |
+| `EDGE_AGENT_LOG_DIR`             | `app.getPath("logs")`                 |
+| `EDGE_AGENT_APP_VERSION`         | `app.getVersion()`                    |
+| `EDGE_AGENT_ELECTRON_VERSION`    | `process.versions.electron`           |
+| `EDGE_AGENT_CHROME_VERSION`      | `process.versions.chrome`             |
+| `EDGE_AGENT_DESKTOP`             | `1` whenever launched by Electron     |
+| `EDGE_AGENT_SCANNER_BIN`         | resolved bundled scanner path         |
+| `EDGE_AGENT_SCAN_ALLOWLIST`      | `os.homedir()` by default             |
+
+The renderer ALSO calls `window.edgeAgentAI.getRuntimeInfo()` via the
+preload bridge to read the same info directly from the Electron main
+process. The two values should agree; if they disagree, the launcher's
+env forwarding is misconfigured (the "Copy diagnostics" JSON shows both
+sides so the discrepancy is obvious).
+
+### Log files
+
+On macOS the per-user log directory is
+`~/Library/Logs/Edge Agent AI/`. The card's **Open Logs Folder** button
+reveals it in Finder; from the terminal:
+
+```bash
+open "$HOME/Library/Logs/Edge Agent AI"
+```
+
+Each launch truncates and rewrites these two files:
+
+* `main.log` — every `console.{log,info,warn,error}` from the Electron
+  main process: boot decisions, port allocation, IPC events, child-process
+  lifecycle, fatal startup errors. ISO-timestamped per line.
+* `server.log` — line-buffered stdout/stderr of the spawned Next standalone
+  server. Includes every API request log, scanner spawn output, and any
+  uncaught route error.
+
+We intentionally do **not** rotate across launches — the user is almost
+always debugging the *current* session, and a stable filename makes copy-paste
+trivial. If you need an older session's log, recover it before the next
+launch overwrites it.
+
+### Copy Diagnostics
+
+Footer button on the System Health card. Serialises the full health JSON,
+the renderer-side bridge runtime info, and a tiny client envelope (user
+agent, locale, timezone) into the clipboard as pretty-printed JSON. Designed
+to be pasted directly into a bug report — and it deliberately contains no
+tokens, no API keys, no PAT scopes, no environment variable values other
+than the `EDGE_AGENT_*` paths.
+
+### "Scanner missing" is now mode-aware
+
+The hard warning that fires when `scanner.available === false` branches
+on `runtime.mode`:
+
+* `packaged` → "Scanner binary missing from the packaged app." with the
+  exact bundled path it expected (`<resourcesPath>/scanner-bin/edge-agent-scanner`)
+  and a "reinstall the .dmg" remediation. Almost always indicates a corrupt
+  copy or a `package:mac` that skipped `pnpm build:scanner`.
+* dev / unpackaged-prod → "Scanner runtime not found." with the
+  `python3.11 -m venv …` venv-creation commands as before.
+
 ### Tracing notes for the standalone bundle
 
 * `mermaid` is imported only on the client (`await import("mermaid")` inside
