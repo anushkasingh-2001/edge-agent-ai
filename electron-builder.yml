@@ -214,6 +214,12 @@ nsis:
 #     right glibc) and commit / scp the result.
 # ----------------------------------------------------------------------------
 linux:
+  # Required for the `.deb` target — electron-builder writes this verbatim
+  # into the Debian package's `Maintainer:` control field. Without it the
+  # deb build aborts with "It is required to set Linux .deb package
+  # maintainer." (AppImage doesn't need it, but listing both targets in one
+  # block forces this requirement on the whole linux: section.)
+  maintainer: Anushka Singh <singh434@wisc.edu>
   target:
     - target: AppImage
       arch: x64
