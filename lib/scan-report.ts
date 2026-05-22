@@ -1,22 +1,58 @@
 import { z } from "zod"
 
-/** rule_id values produced by edge_agent_scanner (aligns with Scan Center checks that have a backend). */
+/** rule_id values produced by edge_agent_scanner (aligns with Scan Center checks that have a backend).
+ *
+ *  This list reflects the IR-based scanner (`SCHEMA_VERSION = "2.0"`). The
+ *  removed `vague-prompts` rule was replaced by `prompt-contract`; the new
+ *  `auth-checks` and `accuracy-regression-risk` rules have backing analyzers
+ *  (`analyzers/auth_checks.py`, `analyzers/accuracy_regression.py`). Old
+ *  reports stored in localStorage with `rule_id` values not in this list
+ *  still validate because `ScannerFindingSchema.rule_id` is `z.string()`.
+ */
 export const SCANNER_RULE_IDS = [
   "dangerous-tools",
   "human-approval",
   "prompt-injection",
-  "vague-prompts",
+  "prompt-contract",
   "secrets",
   "mcp-security",
   "openapi-schema",
+  "auth-checks",
   "dependency-risks",
   "user-input-dangerous-code",
+  "accuracy-regression-risk",
 ] as const
 
 export type ScannerRuleId = (typeof SCANNER_RULE_IDS)[number]
 
+// ---------------------------------------------------------------------------
+// IR-derived structural payloads (added in SCHEMA_VERSION 2.0)
+// ---------------------------------------------------------------------------
+
+const LocationSchema = z.object({
+  file: z.string(),
+  start_line: z.number(),
+  end_line: z.number(),
+  symbol: z.string().nullable().optional(),
+})
+
+const EvidencePathNodeSchema = z.object({
+  kind: z.string(),
+  label: z.string(),
+  file: z.string().nullable().optional(),
+  line: z.number().nullable().optional(),
+})
+
+const SuggestedPatchSchema = z.object({
+  file: z.string(),
+  unified_diff: z.string(),
+  explanation: z.string(),
+})
+
 const ScannerFindingSchema = z.object({
   id: z.string(),
+  // `z.string()` (not the SCANNER_RULE_IDS enum) so old reports with
+  // historical rule ids still validate on load.
   rule_id: z.string(),
   severity: z.enum(["critical", "high", "medium", "low"]),
   category: z.string(),
@@ -29,29 +65,58 @@ const ScannerFindingSchema = z.object({
   evidence: z.string(),
   code: z.string(),
   confidence: z.number(),
+  // New IR-derived optional fields. Pre-2.0 reports do not have these.
+  primary_location: LocationSchema.nullable().optional(),
+  related_locations: z.array(LocationSchema).optional(),
+  evidence_path: z.array(EvidencePathNodeSchema).optional(),
+  suggested_patch: SuggestedPatchSchema.nullable().optional(),
+  verifier: z.record(z.string(), z.unknown()).optional(),
+  confidence_band: z.string().nullable().optional(),
+  escalation: z.string().nullable().optional(),
+  confidence_features: z.record(z.string(), z.unknown()).optional(),
 })
 
+// `kind` widened to z.string() because the IR scanner emits additional
+// kinds ("schema", "openapi", "mcp") on top of the legacy enum
+// ("decorator", "class", "filename", "directory"). New IR-only fields
+// `side_effects` and `callable_from_agent` default so v1 reports validate.
 const ToolHitSchema = z.object({
   name: z.string(),
   file: z.string(),
   line: z.number(),
-  kind: z.enum(["decorator", "class", "filename", "directory"]),
+  kind: z.string(),
   framework: z.string().nullable().optional(),
   agent: z.string().nullable().optional(),
+  side_effects: z.array(z.string()).default([]),
+  callable_from_agent: z.boolean().default(false),
 })
 
+// `kind` widened to z.string() for forward compatibility with future
+// IR-only kinds. The legacy enum values still validate as strings.
 const AgentHitSchema = z.object({
   name: z.string(),
   file: z.string(),
   line: z.number(),
-  kind: z.enum([
-    "agent_class",
-    "compiled_graph",
-    "agent_executor",
-    "agent_factory",
-    "agent_file",
-  ]),
+  kind: z.string(),
   framework: z.string().nullable().optional(),
+})
+
+const ModelHitSchema = z.object({
+  provider: z.string().nullable().optional(),
+  model: z.string(),
+  file: z.string(),
+  line: z.number(),
+  agent: z.string().nullable().optional(),
+  purpose: z.string().nullable().optional(),
+})
+
+const PromptHitSchema = z.object({
+  name: z.string(),
+  file: z.string(),
+  line: z.number(),
+  agent: z.string().nullable().optional(),
+  used_by_model: z.string().nullable().optional(),
+  text_preview: z.string().default(""),
 })
 
 /**
@@ -173,16 +238,22 @@ export const ScanReportSchema = z.object({
   schema_version: z.string(),
   scan_root: z.string(),
   generated_at: z.string(),
-  frameworks_detected: z.array(
-    z.object({
-      name: z.string(),
-      evidence: z.array(z.string()),
-    })
-  ),
+  frameworks_detected: z
+    .array(
+      z.object({
+        name: z.string(),
+        evidence: z.array(z.string()),
+      })
+    )
+    .default([]),
   // Older reports (pre-agents/tools_detected) won't have these fields;
   // default to [] so re-loading historical scans doesn't blow up the parse.
   agents_detected: z.array(AgentHitSchema).default([]),
   tools_detected: z.array(ToolHitSchema).default([]),
+  // New in SCHEMA_VERSION 2.0 — IR-derived inventories. Pre-2.0 reports
+  // simply lack these arrays; the defaults keep parsing stable.
+  models_detected: z.array(ModelHitSchema).default([]),
+  prompts_detected: z.array(PromptHitSchema).default([]),
   summary: z.object({
     critical: z.number(),
     high: z.number(),
@@ -215,6 +286,11 @@ export type ScanReport = z.infer<typeof ScanReportSchema>
 export type ScannerFinding = z.infer<typeof ScannerFindingSchema>
 export type ToolHit = z.infer<typeof ToolHitSchema>
 export type AgentHit = z.infer<typeof AgentHitSchema>
+export type ModelHit = z.infer<typeof ModelHitSchema>
+export type PromptHit = z.infer<typeof PromptHitSchema>
+export type Location = z.infer<typeof LocationSchema>
+export type EvidencePathNode = z.infer<typeof EvidencePathNodeSchema>
+export type SuggestedPatch = z.infer<typeof SuggestedPatchSchema>
 
 export function parseScanReport(data: unknown): ScanReport {
   return ScanReportSchema.parse(data)
@@ -235,6 +311,11 @@ export type UiFinding = {
   code: string
   ruleId?: string
   scannerFindingId?: string
+  // Optional IR-derived fields surfaced in the finding drawer when present.
+  evidencePath?: EvidencePathNode[]
+  suggestedPatch?: SuggestedPatch | null
+  confidenceBand?: string | null
+  escalation?: string | null
 }
 
 export function mapReportToUiFindings(report: ScanReport): UiFinding[] {
@@ -252,6 +333,10 @@ export function mapReportToUiFindings(report: ScanReport): UiFinding[] {
     code: f.code,
     ruleId: f.rule_id,
     scannerFindingId: f.id,
+    evidencePath: f.evidence_path,
+    suggestedPatch: f.suggested_patch,
+    confidenceBand: f.confidence_band,
+    escalation: f.escalation,
   }))
 }
 

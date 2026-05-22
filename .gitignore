@@ -36,3 +36,41 @@ release/
 # sees them dirty again. They're per-commit transient state, not source.
 # (CI uploads them as artifacts; that's the canonical archive.)
 edge-agent-output/
+
+# ---------------------------------------------------------------------------
+# Python bytecode + virtualenv (scanner)
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+scanner/.venv/
+
+# pip install -e regenerates this metadata on every install; tracking it
+# causes endless "modified" churn after a `pip install -e .`.
+scanner/src/*.egg-info/
+scanner/src/edge_agent_scanner.egg-info/
+
+# ---------------------------------------------------------------------------
+# Cache + transient scanner state
+# ---------------------------------------------------------------------------
+# Per-repo scan cache populated by the optional ir_cache helper. Always
+# regenerated; never source.
+.edgeagent/cache/
+
+# ---------------------------------------------------------------------------
+# TypeScript incremental build info
+# ---------------------------------------------------------------------------
+# `tsc --build` writes this on every successful typecheck; it is a per-machine
+# artifact and not a source file.
+tsconfig.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# new_changes/ staging area
+# ---------------------------------------------------------------------------
+# The `new_changes/` directory is a reference implementation that has been
+# merged into the real repo paths (scanner/, lib/, components/, app/api/).
+# It is intentionally left on-disk locally as a quick reference but must not
+# be committed: production code must not depend on it, and the
+# README_APPLY/DELETE_AFTER_MIGRATION docs inside it are migration notes,
+# not user-facing docs.
+new_changes/

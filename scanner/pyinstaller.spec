@@ -27,10 +27,30 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 
+# The new IR/analyzer pipeline introduces parser dependencies PyInstaller's
+# static analyzer cannot always discover on its own:
+#   - `libcst` is the LibCST-based Python extractor. It ships compiled native
+#     code; without listing it (and `libcst.metadata`) the bundled binary
+#     import-fails at first scan inside `ir.extract_python`.
+#   - `tree_sitter` + `tree_sitter_language_pack` load grammars dynamically
+#     from a package data directory at runtime, which PyInstaller cannot see
+#     by static analysis. Without these hidden imports the bundled scanner
+#     import-fails inside `ir.extract_ts_js`.
+# `networkx` is deliberately NOT listed: it was removed from the new analyzers
+# (replaced by lightweight BFS/adjacency in `ir.graph`) and must not be pulled
+# back in.
 hiddenimports = [
     *collect_submodules("edge_agent_scanner"),
     "pydantic",
     "pydantic_core",
+    "libcst",
+    "libcst.metadata",
+    "tree_sitter",
+    "tree_sitter_language_pack",
+    # Specific tree-sitter grammars used by `ir.extract_ts_js` ("typescript"
+    # for .ts/.tsx, "javascript" for .js/.jsx). If a future extractor adds a
+    # new language, list its grammar here as well.
+    # "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
 ]
 
 
@@ -42,11 +62,11 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    # `yaml` and `pytest` are declared in pyproject but never imported
-    # at runtime — `import yaml` does not appear anywhere in
-    # scanner/src. Excluding them trims ~5-10 MB.
-    # `tkinter` is pulled in by Python's stdlib but is unused.
-    excludes=["pytest", "yaml", "tkinter", "test", "_pytest"],
+    # `pytest` is dev-only. `tkinter` is pulled in by Python's stdlib but is
+    # unused. `yaml` IS now imported at runtime by
+    # `edge_agent_scanner.ir.sinks.load_repo_side_effect_rules` for the
+    # `.edgeagent/config.yaml` override mechanism, so it must NOT be excluded.
+    excludes=["pytest", "tkinter", "test", "_pytest"],
     noarchive=False,
 )
 pyz = PYZ(a.pure, a.zipped_data)

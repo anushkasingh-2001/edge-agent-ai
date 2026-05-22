@@ -252,7 +252,16 @@ class PythonIRVisitor(cst.CSTVisitor):
             self.ir.sources.append(src)
 
         # Sinks
-        effects = classify_side_effect(callee)
+        # Most patterns in the side-effect ontology are anchored to a literal
+        # opening paren (e.g. r"\bsubprocess\.(run|popen|...)\s*\(") because
+        # they were originally written against raw source text. The CST visitor
+        # only sees the dotted callee here ("subprocess.run") so we append the
+        # synthetic "(" — both forms classify identically for paren-less
+        # patterns, but paren-anchored patterns now match bare calls too. This
+        # is what lets the new IR flag a standalone `subprocess.run(['ls'])`
+        # at parse time without needing a regex pass over raw source.
+        call_text = f"{callee}("
+        effects = classify_side_effect(call_text)
         for effect in effects:
             sink = SinkNode(
                 id=_id("sink", self.sf.rel_path, pos.start.line, f"{effect}:{callee}"),

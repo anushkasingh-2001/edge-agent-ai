@@ -1,11 +1,9 @@
-"""Pytest fixtures."""
-
-from __future__ import annotations
-
+from pathlib import Path
 import pytest
 
 
 @pytest.fixture
-def empty_repo(tmp_path):
-    """Empty directory as scan root."""
-    return tmp_path
+def empty_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "empty_repo"
+    repo.mkdir()
+    return repo

@@ -41,65 +41,85 @@ export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
   {
     id: "dangerous-tools",
     label: "Dangerous tools",
-    description: "Identify risky tool invocations",
+    description: "Agent-callable tools that can cause real side effects",
     scannerCategories: ["Dangerous tool / side effect"],
   },
   {
     id: "human-approval",
     label: "Missing human approval",
-    description: "Flag actions requiring human review",
+    description: "High-impact tool paths without approval or policy gate",
     scannerCategories: ["Missing approval gate"],
   },
   {
     id: "prompt-injection",
     label: "Prompt injection",
-    description: "Detect injection vulnerabilities",
+    description: "Untrusted content reaching instruction-bearing prompts or tool arguments",
     scannerCategories: ["Prompt injection"],
+  },
+  {
+    id: "prompt-contract",
+    label: "Prompt contract quality",
+    description:
+      "Prompts missing role, tool policy, output schema, approval rules, or grounding constraints",
+    scannerCategories: ["Prompt contract"],
   },
   {
     id: "vague-prompts",
     label: "Vague prompts",
     description: "Find prompts that lack specificity",
-    // Scanner historically emitted "Weak prompt" for the same finding type;
-    // Scan Center now calls them "Vague prompts" so we map both.
+    // The IR-based scanner no longer emits "Weak prompt"/"Vague prompt"
+    // categories (replaced by `prompt-contract` above). The entry stays in
+    // the UI taxonomy so old reports loaded from localStorage still group
+    // correctly under the same label they were filed under.
     scannerCategories: ["Weak prompt", "Vague prompt"],
   },
   {
     id: "mcp-security",
     label: "MCP security",
-    description: "Audit Model Context Protocol security",
+    description: "Unsafe MCP tools, resources, transport, scopes, or descriptor text",
     scannerCategories: ["MCP configuration"],
   },
   {
     id: "openapi-schema",
     label: "OpenAPI/schema quality",
-    description: "Validate API schemas and specs",
+    description: "OpenAPI specs that are unsafe or too vague for agent tool use",
     scannerCategories: ["OpenAPI"],
   },
   {
     id: "auth-checks",
     label: "Auth checks",
-    description: "Verify authentication is properly enforced",
-    scannerCategories: [],
+    description: "Sensitive routes/tools without authentication or authorization guards",
+    // Now wired: the new `analyze_auth_checks` analyzer emits findings with
+    // category="Auth" for mutating routes that have no detected auth guard.
+    scannerCategories: ["Auth"],
   },
   {
     id: "secrets",
     label: "Hardcoded secrets",
-    description: "Find exposed credentials and keys",
+    description: "Exposed credentials, tokens, keys, or secret-like values",
     scannerCategories: ["Hardcoded secret"],
   },
   {
     id: "dependency-risks",
     label: "Dependency risks",
-    description: "Check for vulnerable dependencies",
+    description: "Vulnerable, unpinned, unsafe, or weakly controlled dependencies",
     scannerCategories: ["Dependencies"],
   },
   {
     id: "user-input-dangerous-code",
     label: "User input to dangerous code",
-    description: "Trace unsafe data flows",
+    description: "CodeQL-style source-to-sink flows into dangerous execution or mutation sinks",
     scannerCategories: ["Data flow"],
   },
+  {
+    id: "accuracy-regression-risk",
+    label: "Accuracy regression risk",
+    description: "Static changes that may reduce agent accuracy and should trigger evals",
+    scannerCategories: ["Accuracy risk"],
+  },
+  // ---- UI-only scaffolds: kept so the dropdown taxonomy stays stable. ----
+  // These have no backing scanner rule yet and always count to 0 findings;
+  // removing them would change the existing UI surface.
   {
     id: "accuracy",
     label: "Accuracy regression",
