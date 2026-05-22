@@ -79,8 +79,60 @@ def _compute_summary(findings: list[Finding]) -> Summary:
 
 
 def _compute_risk_score(findings: list[Finding]) -> int:
-    weights = {"critical": 25, "high": 15, "medium": 7, "low": 3}
-    return min(100, sum(weights.get(f.severity, 0) for f in findings))
+    """Project risk score in [0, 100].
+
+    Design:
+      * Critical and high agent-reachable findings dominate the score. A
+        single critical finding pushes the project into the "high risk"
+        band; two criticals saturate.
+      * Medium and low findings contribute lightly and are individually
+        capped so a long tail of advisory findings can't push the project
+        to 100. A repo with 30 lows used to score 90+ under the old flat
+        weights; that misled users into thinking presence warnings were
+        as urgent as confirmed exploits.
+      * "Soft" findings — presence warnings (no agent path) and accuracy/
+        quality signals — contribute at half weight. Accuracy-regression
+        findings are not security bugs and were responsible for inflating
+        the score on otherwise-clean projects.
+      * Hard cap: if there are 0 critical and 0 high findings, the score
+        cannot exceed 39. That keeps the project below the typical
+        "critical risk" threshold (>=70) when only presence warnings
+        and quality signals exist.
+    """
+
+    def _is_soft(f: Finding) -> bool:
+        cat = (f.category or "").lower()
+        return (
+            "presence warning" in cat
+            or cat == "dangerous code present"
+            or cat == "accuracy / quality risk"
+            or cat == "accuracy risk"
+            or f.rule_id == "accuracy-regression-risk"
+        )
+
+    crit_n = sum(1 for f in findings if f.severity == "critical")
+    high_n = sum(1 for f in findings if f.severity == "high")
+    soft_med = sum(1 for f in findings if f.severity == "medium" and _is_soft(f))
+    hard_med = sum(1 for f in findings if f.severity == "medium" and not _is_soft(f))
+    soft_low = sum(1 for f in findings if f.severity == "low" and _is_soft(f))
+    hard_low = sum(1 for f in findings if f.severity == "low" and not _is_soft(f))
+
+    # Per-bucket point caps prevent any single severity from saturating
+    # the score on its own.
+    crit_pts = min(100, crit_n * 35)
+    high_pts = min(60, high_n * 18)
+    med_pts = min(20, hard_med * 4 + soft_med * 2)
+    low_pts = min(10, hard_low * 1 + soft_low * 0)  # soft_low (e.g. accuracy) → 0
+
+    score = crit_pts + high_pts + med_pts + low_pts
+
+    # Hard cap when no confirmed high-impact agent-reachable findings exist:
+    # presence-only and quality signals must not push the project into the
+    # "critical risk" band (UIs commonly treat >=70 as critical).
+    if crit_n == 0 and high_n == 0:
+        score = min(score, 39)
+
+    return max(0, min(100, score))
 
 
 def _framework_hits(ir, files: list) -> list[FrameworkHit]:
@@ -177,6 +229,56 @@ def _prompt_hits(ir) -> list[PromptHit]:
     ]
 
 
+def _attribute_findings_to_agents(findings: list[Finding], ir) -> list[Finding]:
+    """Fill in ``Finding.agent`` for findings that the analyzer left as
+    ``"unknown"``.
+
+    Most analyzers operate file-by-line (e.g. accuracy_regression,
+    secrets, openapi_quality) and have no way to know which Agent in
+    the IR "owns" the line they flagged. That made the Findings table
+    show a column full of em-dashes for every Low / Medium severity
+    coming out of those analyzers, even when the file clearly belonged
+    to a specific agent.
+
+    Heuristic, in order of preference:
+      1. If exactly one agent is declared in the same file, attribute
+         to it.
+      2. If multiple agents are declared in the same file, pick the
+         closest one whose declaration starts at or before the
+         finding's line (the enclosing one). If none qualifies, fall
+         back to the closest by absolute line distance.
+      3. Otherwise leave ``"unknown"`` so the UI can render a sentinel
+         (em-dash). We intentionally do NOT guess across files — a
+         finding in ``utils/helpers.py`` shouldn't be blamed on an
+         agent declared in ``agents/router.py``.
+
+    Pure helper; no IO. Safe to run before dedupe so we don't drop a
+    "better-attributed" duplicate.
+    """
+    if not ir.agents:
+        return findings
+    by_file: dict[str, list] = {}
+    for a in ir.agents:
+        by_file.setdefault(a.location.file, []).append(a)
+
+    for f in findings:
+        if f.agent and f.agent != "unknown":
+            continue
+        candidates = by_file.get(f.file)
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            f.agent = candidates[0].name
+            continue
+        enclosing = [a for a in candidates if a.location.start_line <= f.line]
+        if enclosing:
+            best = max(enclosing, key=lambda a: a.location.start_line)
+        else:
+            best = min(candidates, key=lambda a: abs(a.location.start_line - f.line))
+        f.agent = best.name
+    return findings
+
+
 def run_scan(
     repo_path: Path,
     enabled_rule_ids: frozenset[str] | None = None,
@@ -200,6 +302,7 @@ def run_scan(
     findings.extend(analyze_accuracy_regression(ir, files, root))
 
     findings = verify_findings_if_enabled(findings, ir, files)
+    findings = _attribute_findings_to_agents(findings, ir)
     findings = _dedupe_findings(findings)
     findings = _filter_by_rules(findings, enabled_rule_ids)
     findings = _cap_findings_per_rule(findings)
