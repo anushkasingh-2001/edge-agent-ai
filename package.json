@@ -25,6 +25,7 @@
     "lint": "eslint .",
     "policy-gate": "tsx scripts/policy-gate.ts",
     "policy-gate-setup": "tsx scripts/policy-gate-setup.ts",
+    "test:explain": "tsx --test tests/finding-explain.test.ts",
     "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {

@@ -41,7 +41,13 @@ export type ModelProviderConfig = {
   label: string
   /** Default model id (e.g. "gpt-4o", "gpt-4o-mini"). */
   model: string
-  /** API key — never logged, only sent to /api/playground/run. */
+  /**
+   * API key — never logged. Forwarded only to the configured provider or
+   * to a local Edge Agent API route for the duration of a single request
+   * (Prompt Playground, Chat Assistant, and the finding-explanation
+   * endpoint). It is never persisted server-side, never written to the
+   * explanation cache, and never included in error messages or telemetry.
+   */
   apiKey: string
   /** Optional override for OpenAI-compatible endpoints (Together, Groq, Ollama, etc). */
   baseUrl?: string
@@ -162,7 +168,11 @@ export const SLOT_META: Record<
   openai: {
     label: "OpenAI",
     type: "openai_compatible",
-    defaultModel: "gpt-4o-mini",
+    // gpt-4.1-mini is the Edge Agent AI default for finding explanations
+    // (cheap, strong, widely entitled). Settings shows it as the placeholder
+    // so a user who hasn't picked an explicit model lands on the same model
+    // the server-side default would use.
+    defaultModel: "gpt-4.1-mini",
     runnerImplemented: true,
   },
   anthropic: {
