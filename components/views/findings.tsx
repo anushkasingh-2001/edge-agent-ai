@@ -532,21 +532,38 @@ function CodeAnalysisPanel({
       </Card>
 
       <Card className="bg-card border-border">
-        <Table>
+        {/* table-fixed + per-cell `truncate` keeps every column visible
+            inside the card width. Without it the Title column would
+            stretch to fit long accuracy-regression titles and push
+            File/Line/Agent off the right edge, so users (esp. on the
+            Low filter) thought those columns were missing. */}
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow className="hover:bg-transparent border-border">
-              <TableHead className="w-24">Severity</TableHead>
-              <TableHead className="w-40">Category</TableHead>
+              <TableHead className="w-[88px]">Severity</TableHead>
+              <TableHead className="w-[180px]">Category</TableHead>
               <TableHead>Title</TableHead>
-              <TableHead className="w-48">File</TableHead>
-              <TableHead className="w-24">Line</TableHead>
-              <TableHead className="w-32">Agent</TableHead>
-              <TableHead className="w-12"></TableHead>
+              <TableHead className="w-[200px]">File</TableHead>
+              <TableHead className="w-[64px] text-right">Line</TableHead>
+              <TableHead className="w-[120px]">Agent</TableHead>
+              <TableHead className="w-[36px]"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredFindings.map((finding) => (
-              <TableRow 
+            {filteredFindings.map((finding) => {
+              // Some analyzers (accuracy-regression, secrets-on-file)
+              // are file-level only and have no owning agent — show an
+              // em dash instead of "unknown"/empty so the row layout is
+              // identical across severities.
+              const agentLabel =
+                !finding.agent || finding.agent.trim() === "" || finding.agent === "unknown"
+                  ? "—"
+                  : finding.agent
+              const fileLabel = finding.file?.trim() ? finding.file : "—"
+              const lineLabel =
+                typeof finding.line === "number" && finding.line > 0 ? String(finding.line) : "—"
+              return (
+              <TableRow
                 key={finding.scannerFindingId ?? finding.id}
                 className="cursor-pointer hover:bg-secondary/50 border-border"
                 onClick={() => {
@@ -562,24 +579,30 @@ function CodeAnalysisPanel({
                     {finding.severity}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="text-muted-foreground truncate" title={displayCategory(finding.category)}>
                   {displayCategory(finding.category)}
                 </TableCell>
-                <TableCell className="font-medium">{finding.title}</TableCell>
-                <TableCell className="font-mono text-sm text-muted-foreground">
-                  {finding.file}
+                <TableCell className="font-medium truncate" title={finding.title}>
+                  {finding.title}
                 </TableCell>
-                <TableCell className="font-mono text-sm text-muted-foreground">
-                  {finding.line}
+                <TableCell
+                  className="font-mono text-xs text-muted-foreground truncate"
+                  title={fileLabel}
+                >
+                  {fileLabel}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {finding.agent}
+                <TableCell className="font-mono text-xs text-muted-foreground text-right">
+                  {lineLabel}
+                </TableCell>
+                <TableCell className="text-muted-foreground truncate" title={agentLabel}>
+                  {agentLabel}
                 </TableCell>
                 <TableCell>
                   <ChevronRight className="h-4 w-4 text-muted-foreground" />
                 </TableCell>
               </TableRow>
-            ))}
+              )
+            })}
           </TableBody>
         </Table>
       </Card>

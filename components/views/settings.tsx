@@ -153,10 +153,13 @@ export function Settings({
             LLM Providers
           </CardTitle>
           <CardDescription>
-            Add at least one provider to use Prompt Playground and Chat
-            Assistant. Keys are stored locally in your browser only — never
-            sent to our servers — and only forwarded to the provider you
-            configured.
+            Add at least one provider to use Prompt Playground, Chat
+            Assistant, and AI finding explanations. Keys are stored locally
+            in your browser only — never sent to our servers — and are
+            forwarded to the configured provider (or to a local Edge Agent
+            API route) only for the duration of the request that needs them.
+            They are never written to the explanation cache, logged, or
+            included in error messages.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

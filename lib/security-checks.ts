@@ -42,7 +42,11 @@ export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
     id: "dangerous-tools",
     label: "Dangerous tools",
     description: "Agent-callable tools that can cause real side effects",
-    scannerCategories: ["Dangerous tool / side effect"],
+    scannerCategories: [
+      "Dangerous tool / side effect",
+      "Presence warning (agent unknown)",
+      "Dangerous code present",
+    ],
   },
   {
     id: "human-approval",
@@ -115,7 +119,7 @@ export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
     id: "accuracy-regression-risk",
     label: "Accuracy regression risk",
     description: "Static changes that may reduce agent accuracy and should trigger evals",
-    scannerCategories: ["Accuracy risk"],
+    scannerCategories: ["Accuracy risk", "Accuracy / quality risk"],
   },
   // ---- UI-only scaffolds: kept so the dropdown taxonomy stays stable. ----
   // These have no backing scanner rule yet and always count to 0 findings;
