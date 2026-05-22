@@ -115,6 +115,7 @@ class DockerSandbox:
         )
 
     def _wait_for_startup(self) -> None:
+        import urllib.error
         import urllib.request
 
         deadline = time.time() + self.config.sandbox.startup_timeout_seconds
@@ -134,12 +135,20 @@ class DockerSandbox:
                 try:
                     with urllib.request.urlopen(url, timeout=2):
                         return
+                except urllib.error.HTTPError:
+                    # The server responded (e.g. 404/405 because the chat route
+                    # is POST-only). It is listening and accepting connections,
+                    # which is all "ready" means here.
+                    return
                 except Exception as exc:
                     last_error = exc
             time.sleep(1)
 
-        if self.config.app.chat_url:
-            return
-
+        # Deadline exceeded with no HTTP response at all. Do NOT fake success
+        # just because chat_url is configured — surface the real failure.
         logs = _run(["docker", "logs", self.container_name], timeout=10, check=False)
-        raise DockerSandboxError(f"App did not become healthy. Last error: {last_error}\nLogs:\n{logs.stdout}\n{logs.stderr}")
+        raise DockerSandboxError(
+            f"App did not become reachable on {urls} within "
+            f"{self.config.sandbox.startup_timeout_seconds}s. Last error: {last_error}\n"
+            f"Logs:\n{logs.stdout}\n{logs.stderr}"
+        )

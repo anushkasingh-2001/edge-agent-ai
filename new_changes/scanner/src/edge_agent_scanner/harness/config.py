@@ -24,7 +24,11 @@ class SandboxConfig(BaseModel):
     startup_timeout_seconds: int = 30
     memory: str = "1g"
     cpus: str = "1.0"
-    mock_dangerous_tools: bool = True
+    mock_dangerous_tools: bool = False
+    # Per-category opt-in: categories the operator asserts are mocked/intercepted
+    # in the target app (e.g. ["email_send", "payment"]). When mock_dangerous_tools
+    # is true, all categories are considered mocked regardless of this list.
+    mocked_categories: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
 
 

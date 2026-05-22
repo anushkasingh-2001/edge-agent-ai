@@ -39,3 +39,12 @@ GITLEAKS_BINARY = "gitleaks"
 TRUFFLEHOG_BINARY = "trufflehog"
 OSV_SCANNER_BINARY = "osv-scanner"
 SEMGREP_BINARY = "semgrep"
+
+# ---------------------------------------------------------------------------
+# Backwards-compatibility aliases.
+# The existing walker.py imports `SKIP_DIR_NAMES`; the legacy approval-gate
+# rule imports `APPROVAL_CONTEXT_LINES`. Keep both names exported so dropping
+# this config in place does not break unmodified modules during migration.
+# ---------------------------------------------------------------------------
+SKIP_DIR_NAMES = IGNORED_DIRS
+APPROVAL_CONTEXT_LINES = 15

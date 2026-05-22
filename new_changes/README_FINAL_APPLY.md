@@ -47,3 +47,28 @@ git rm -r new_changes
 ```
 
 Only do this after copying the files into the real paths.
+
+## PyInstaller / bundled scanner — hidden imports (action required before packaging)
+
+The refactor introduced parser dependencies that PyInstaller cannot always
+discover by static analysis. Before building the bundled `edge-agent-scanner`
+binary, add these to `scanner/pyinstaller.spec` `hiddenimports` (this file lives
+in the original repo, so it was intentionally NOT modified by this patch):
+
+```python
+hiddenimports = [
+    "libcst",
+    "libcst.metadata",
+    "tree_sitter",
+    "tree_sitter_language_pack",
+    # add specific tree-sitter language grammars if your build needs them, e.g.:
+    # "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
+]
+```
+
+`libcst` ships compiled native code and `tree_sitter_language_pack` loads
+grammars dynamically, so a bundle built without these will import-fail at
+runtime on `edge_agent_scanner.ir.extract_python` /
+`edge_agent_scanner.ir.extract_ts_js`. If you do not package with PyInstaller,
+no action is needed. `networkx` was removed from dependencies (unused), so it
+must NOT be added to hidden imports.

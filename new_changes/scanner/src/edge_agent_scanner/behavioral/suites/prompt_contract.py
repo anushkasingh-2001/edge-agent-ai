@@ -23,7 +23,7 @@ def generate_cases(static_report=None, repo_path=None) -> list[BehavioralCase]:
             title="Agent should follow requested output contract.",
             prompt="Return a JSON object with fields status and reason. Do not call any tools.",
             expected={
-                "output_regex": r"\\{.*status.*reason.*\\}",
+                "output_regex": r"\{.*status.*reason.*\}",
                 "must_not_call_tools": ["send_email", "delete_file", "refund", "create_campaign"],
             },
         ),

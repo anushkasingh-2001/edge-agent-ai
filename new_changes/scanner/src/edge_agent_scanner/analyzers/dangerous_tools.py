@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from edge_agent_scanner.analyzers._utils import make_finding
+from edge_agent_scanner.analyzers.confidence import ConfidenceFeatures, is_prod_file
+from edge_agent_scanner.analyzers.escalation import annotate_finding
+from edge_agent_scanner.ir.graph import reachable_set
 from edge_agent_scanner.ir.models import AgentIR
 from edge_agent_scanner.ir.sinks import highest_impact
 from edge_agent_scanner.report import EvidencePathNode
@@ -50,12 +53,24 @@ def analyze_dangerous_tools(ir: AgentIR, files: list[ScannedFile]):
     side effects.
     """
     findings = []
+
+    # Reachability gate: when the IR has agent entries, only flag tools that are
+    # actually reachable from one of them in the call graph. A side-effecting
+    # tool that no agent can reach is not an agent risk and should not be flagged.
+    # When there are no agent entries at all (sparse IR), fall back to the
+    # callable_from_agent signal so we don't silently stop flagging.
+    agent_ids = [a.id for a in ir.agents]
+    reach_normal = reachable_set(ir, agent_ids) if agent_ids else None
+
     for tool in ir.tools:
         if not tool.callable_from_agent or not tool.side_effects:
             continue
 
-        findings.append(
-            make_finding(
+        if reach_normal is not None and tool.id not in reach_normal:
+            # Agents exist but none can reach this tool in the graph.
+            continue
+
+        f = make_finding(
                 rule_id="dangerous-tools",
                 severity=_tool_severity(tool),
                 category="Dangerous tool / side effect",
@@ -81,6 +96,22 @@ def analyze_dangerous_tools(ir: AgentIR, files: list[ScannedFile]):
                         line=tool.location.start_line,
                     )
                 ],
-            )
         )
+        # Side-effect matches come from the IR ontology; exact match means a
+        # concrete pattern matched rather than a broad fallback.
+        matches = tool.metadata.get("side_effect_matches") or []
+        annotate_finding(
+            f,
+            ConfidenceFeatures(
+                sink_impact=_tool_severity(tool),
+                source_untrusted=False,
+                unguarded_path_exists=reach_normal is None or tool.id in reach_normal,
+                path_length=1,
+                partial_guard=False,
+                ir_evidence=bool(matches),
+                exact_sink_match=bool(matches),
+                prod_file=is_prod_file(tool.location.file),
+            ),
+        )
+        findings.append(f)
     return findings

@@ -55,6 +55,9 @@ const ScannerFindingSchema = z.object({
   evidence_path: z.array(EvidencePathNodeSchema).optional(),
   suggested_patch: SuggestedPatchSchema.nullable().optional(),
   verifier: z.record(z.string(), z.unknown()).optional(),
+  confidence_band: z.string().nullable().optional(),
+  escalation: z.string().nullable().optional(),
+  confidence_features: z.record(z.string(), z.unknown()).optional(),
 })
 
 const ToolHitSchema = z.object({

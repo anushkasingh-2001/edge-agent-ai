@@ -131,6 +131,12 @@ class Finding(BaseModel):
     suggested_patch: SuggestedPatch | None = None
     verifier: dict[str, Any] = Field(default_factory=dict)
 
+    # Tier 2 (optional, backward compatible): deterministic confidence band and
+    # escalation recommendation. Old reports without these still validate.
+    confidence_band: str | None = None
+    escalation: str | None = None
+    confidence_features: dict[str, Any] = Field(default_factory=dict)
+
 
 class ScanReport(BaseModel):
     schema_version: str = SCHEMA_VERSION

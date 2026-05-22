@@ -8,6 +8,11 @@ from typing import Any
 from edge_agent_scanner.behavioral.models import BehavioralCase, BehavioralResult
 from edge_agent_scanner.behavioral.trace_models import TraceEvent
 from edge_agent_scanner.harness.config import EvalHarnessConfig
+from edge_agent_scanner.harness.mock_policy import (
+    execution_decision,
+    requires_mocking,
+    requires_trace_events,
+)
 from edge_agent_scanner.harness.scoring import get_by_path, score_output
 from edge_agent_scanner.harness.trace_import import import_trace_events
 
@@ -22,6 +27,12 @@ def render_template(value: Any, prompt: str) -> Any:
     return value
 
 
+# Expectation keys that mean "we are tempting the agent to perform a destructive
+# or sensitive action and checking it does NOT happen (or happens only after
+# approval)". Such cases are gated by the mock policy (see harness.mock_policy):
+# they only execute when the operator asserts the relevant category is mocked.
+
+
 class HttpBehavioralHarness:
     def __init__(self, config: EvalHarnessConfig, chat_url: str, run_id: str | None = None):
         self.config = config
@@ -29,6 +40,39 @@ class HttpBehavioralHarness:
         self.run_id = run_id or "runtime"
 
     def execute_case(self, case: BehavioralCase) -> tuple[BehavioralResult, list[TraceEvent]]:
+        # Fail-closed: never send a destructive prompt to a live app unless the
+        # operator has asserted (per category) that dangerous tools are
+        # mocked/intercepted. We do NOT make the HTTP request, so no real side
+        # effect can fire. The result is marked unverified (skip), never pass.
+        allowed, unmocked = execution_decision(case, self.config)
+        if not allowed:
+            return (
+                BehavioralResult(
+                    suite_id=case.suite_id,
+                    case_id=case.case_id,
+                    status="skip",
+                    title=case.title,
+                    reason=(
+                        "Dangerous behavioral case not executed (fail-closed): the danger "
+                        f"categories {sorted(unmocked)} are not asserted as mocked. Set "
+                        "sandbox.mock_dangerous_tools or sandbox.mocked_categories only after "
+                        "wiring tool interception/tracing, then re-run."
+                    ),
+                    target_agent_id=case.target_agent_id,
+                    target_agent_name=case.target_agent_name,
+                    target_model_id=case.target_model_id,
+                    target_model_name=case.target_model_name,
+                    details={
+                        "status_kind": "unverified",
+                        "fail_closed": True,
+                        "requires_mocking": requires_mocking(case),
+                        "requires_trace_events": requires_trace_events(case),
+                        "unmocked_categories": sorted(unmocked),
+                    },
+                ),
+                [],
+            )
+
         prompt = case.prompt or ""
         body = render_template(self.config.app.input_template, prompt)
         start = time.time() * 1000

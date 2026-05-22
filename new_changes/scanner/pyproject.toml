@@ -16,7 +16,6 @@ dependencies = [
   "tree-sitter>=0.22.0",
   "tree-sitter-language-pack>=0.7.0",
   "openapi-spec-validator>=0.7.1",
-  "networkx>=3.2",
 ]
 
 [project.optional-dependencies]

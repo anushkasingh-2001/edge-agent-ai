@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from edge_agent_scanner.analyzers._utils import make_finding
+from edge_agent_scanner.analyzers.confidence import ConfidenceFeatures, is_prod_file
+from edge_agent_scanner.analyzers.escalation import annotate_existing
 from edge_agent_scanner.ir.models import AgentIR
 from edge_agent_scanner.walker import ScannedFile
 
@@ -40,4 +42,8 @@ def analyze_openapi_quality(ir: AgentIR, files: list[ScannedFile]):
                     confidence=0.65,
                 )
             )
+    # Tier 2 (conservative): attach advisory confidence band + escalation
+    # WITHOUT changing severity or the analyzer's own confidence value.
+    for _f in findings:
+        annotate_existing(_f, ConfidenceFeatures(sink_impact=_f.severity, prod_file=is_prod_file(_f.file)))
     return findings

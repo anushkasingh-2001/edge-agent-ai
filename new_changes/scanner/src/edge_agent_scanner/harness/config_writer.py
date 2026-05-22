@@ -43,7 +43,11 @@ sandbox:
   startup_timeout_seconds: 30
   memory: "1g"
   cpus: "1.0"
-  mock_dangerous_tools: true
+  # Fail-closed by default: dangerous behavioral suites (must_not_call_tools,
+  # requires_approval_before, ...) are SKIPPED unless this is true. Set to true
+  # only after wiring tool interception/mocking so destructive prompts cannot
+  # trigger real side effects against the running app.
+  mock_dangerous_tools: false
 
 behavioral:
   suites:

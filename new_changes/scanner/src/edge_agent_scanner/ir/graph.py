@@ -54,6 +54,129 @@ def find_paths(
     return paths
 
 
+GUARD_KINDS_ALL: set[str] = {"approval", "auth", "validation"}
+
+
+def _adjacency(ir: AgentIR) -> dict[str, list[str]]:
+    """Build a forward adjacency map once. O(E)."""
+    adj: dict[str, list[str]] = {}
+    for e in ir.edges:
+        adj.setdefault(e.src, []).append(e.dst)
+    return adj
+
+
+def guard_cut_ids(ir: AgentIR, guard_kinds: set[str] | None = None) -> set[str]:
+    """Node ids to delete to test for an *unguarded bypass* path.
+
+    Two ways a guard appears in this IR:
+      (a) an inline guard node sitting on a path (source -> guard -> sink) — the
+          guard's own id is removed, which cuts that path; and
+      (b) a `guarded_by` edge annotating some checkpoint node with a guard (the
+          guard is an attribute, not a traversal node) — we remove the *annotated*
+          node, because traversing that checkpoint counts as passing a guard.
+
+    Removing both means: any path that still reaches the sink after the cut is a
+    genuinely unguarded path. This is the cut-set test, NOT single-node
+    dominance — so `src -> guard_A -> sink` and `src -> guard_B -> sink` (two
+    different valid guards, no single dominator) is correctly treated as safe.
+    """
+    guard_kinds = guard_kinds or GUARD_KINDS_ALL
+    guard_ids = {g.id for g in ir.guards if g.kind in guard_kinds}
+    cut: set[str] = set(guard_ids)
+    for e in ir.edges:
+        if e.kind == "guarded_by" and e.dst in guard_ids:
+            cut.add(e.src)
+    return cut
+
+
+def reachable_set(ir: AgentIR, start_ids: list[str], blocked_ids: set[str] | None = None) -> set[str]:
+    """Multi-source forward reachability. O(V + E).
+
+    `blocked_ids` are treated as removed from the graph (used to model
+    guard removal). A blocked start is dropped; a blocked destination is
+    never traversed and never marked reachable.
+    """
+    blocked = blocked_ids or set()
+    adj = _adjacency(ir)
+    seen: set[str] = set()
+    stack = [s for s in start_ids if s not in blocked]
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        for dst in adj.get(n, ()):
+            if dst in blocked or dst in seen:
+                continue
+            stack.append(dst)
+    return seen
+
+
+def is_reachable(ir: AgentIR, start_ids: list[str], target_id: str, blocked_ids: set[str] | None = None) -> bool:
+    if not start_ids:
+        return False
+    return target_id in reachable_set(ir, start_ids, blocked_ids)
+
+
+def shortest_unguarded_path(
+    ir: AgentIR,
+    start_ids: list[str],
+    target_id: str,
+    blocked_ids: set[str] | None = None,
+) -> list[str] | None:
+    """Shortest path to `target_id` in the (optionally guard-removed) graph.
+
+    BFS, O(V + E). Used ONLY to build evidence after a finding is already
+    confirmed — never to decide whether a finding exists.
+    """
+    blocked = blocked_ids or set()
+    adj = _adjacency(ir)
+    prev: dict[str, str | None] = {}
+    q: deque[str] = deque()
+    for s in start_ids:
+        if s in blocked or s in prev:
+            continue
+        prev[s] = None
+        q.append(s)
+    while q:
+        n = q.popleft()
+        if n == target_id:
+            path: list[str] = []
+            cur: str | None = n
+            while cur is not None:
+                path.append(cur)
+                cur = prev[cur]
+            return list(reversed(path))
+        for dst in adj.get(n, ()):
+            if dst in blocked or dst in prev:
+                continue
+            prev[dst] = n
+            q.append(dst)
+    return None
+
+
+def node_label_index(ir: AgentIR) -> dict[str, tuple[str, str, str, int]]:
+    """Map node id -> (kind, label, file, line) for human-readable evidence paths."""
+    idx: dict[str, tuple[str, str, str, int]] = {}
+    for a in ir.agents:
+        idx[a.id] = ("agent", a.name, a.location.file, a.location.start_line)
+    for t in ir.tools:
+        idx[t.id] = ("tool", t.name, t.location.file, t.location.start_line)
+    for g in ir.guards:
+        idx[g.id] = ("guard", g.label, g.location.file, g.location.start_line)
+    for s in ir.sources:
+        idx[s.id] = ("source", s.label, s.location.file, s.location.start_line)
+    for s in ir.sinks:
+        idx[s.id] = ("sink", s.label, s.location.file, s.location.start_line)
+    for m in ir.models:
+        idx[m.id] = ("model", m.model_name or "model", m.location.file, m.location.start_line)
+    for p in ir.prompts:
+        idx[p.id] = ("prompt", p.name, p.location.file, p.location.start_line)
+    for r in ir.routes:
+        idx[r.id] = ("route", r.path, r.location.file, r.location.start_line)
+    return idx
+
+
 def path_has_guard(ir: AgentIR, path: list[str], guard_kinds: set[str] | None = None) -> bool:
     """Return true when the path itself or a guarded_by edge contains a guard."""
     guard_kinds = guard_kinds or {"approval", "auth", "validation"}

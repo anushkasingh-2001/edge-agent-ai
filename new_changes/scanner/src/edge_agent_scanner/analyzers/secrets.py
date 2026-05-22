@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 from edge_agent_scanner.analyzers._utils import make_finding
+from edge_agent_scanner.analyzers.confidence import ConfidenceFeatures, is_prod_file
+from edge_agent_scanner.analyzers.escalation import annotate_existing
 from edge_agent_scanner.ir.models import CodeLocation
 from edge_agent_scanner.walker import ScannedFile
 
@@ -74,4 +76,8 @@ def analyze_secrets(repo_root: Path, files: list[ScannedFile]):
                             confidence=0.72,
                         )
                     )
+    # Tier 2 (conservative): attach advisory confidence band + escalation
+    # WITHOUT changing severity or the analyzer's own confidence value.
+    for _f in findings:
+        annotate_existing(_f, ConfidenceFeatures(sink_impact=_f.severity, prod_file=is_prod_file(_f.file)))
     return findings
