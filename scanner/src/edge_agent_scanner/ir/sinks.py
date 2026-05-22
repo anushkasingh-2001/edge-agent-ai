@@ -266,6 +266,14 @@ BUILTIN_SIDE_EFFECT_RULES: tuple[SideEffectRule, ...] = (
             r"\b(requests|httpx|axios|fetch|superagent)\.(post|put|patch|delete)\b",
             r"\bfetch\s*\([^)]*method\s*:\s*[\"'](POST|PUT|PATCH|DELETE)[\"']",
             r"\b(client|api|http)\.(post|put|patch|delete)\s*\(",
+            # Bare ``await fetch('/x', { ... })`` whose ``method`` may
+            # live on a later line. Without this pattern a multi-line
+            # ``await fetch('/query', {\n  method: 'POST',\n  body: ...
+            # })`` produces no finding because none of the patterns
+            # above match the first line by itself. Pairing this with
+            # the runtime-call gate (``fetch(`` looks like a call)
+            # keeps it from firing on plain text.
+            r"\bawait\s+fetch\s*\(",
         ),
         verbs=("post", "put", "patch", "delete"),
         targets=("api", "http", "endpoint", "request", "webhook"),
@@ -441,14 +449,167 @@ def load_repo_side_effect_rules(repo_root: str | Path) -> tuple[SideEffectRule, 
 # Classification
 # ---------------------------------------------------------------------------
 
+# Lines whose entire shape is TS/JS module syntax — `export type`,
+# `import …`, `export default Foo`, `type X = …`, JSX usage `<MessageList />` —
+# must never produce a side-effect match no matter what verbs they contain.
+# This is a defense-in-depth net behind the same check at the TS/JS extractor;
+# the classifier itself is also called from other paths (Python extractor,
+# tests, custom analyzers) and we want the rule to hold there too.
+_DECLARATION_LIKE_RX: tuple[re.Pattern[str], ...] = (
+    # TS/JS module syntax (handled at TS extractor too, kept as defense
+    # in depth so the classifier is safe when called directly).
+    re.compile(r"^\s*export\s+(type|interface|enum|namespace|default)\b"),
+    re.compile(r"^\s*export\s*\{[^}]*\}\s*(from\s+['\"][^'\"]+['\"])?\s*;?\s*$"),
+    re.compile(r"^\s*export\s+\*\s+(as\s+\w+\s+)?from\b"),
+    re.compile(r"^\s*import\s+(type\s+)?[\w*{}\s,]+\s+from\s+['\"]"),
+    re.compile(r"^\s*import\s+['\"][^'\"]+['\"]\s*;?\s*$"),
+    re.compile(r"^\s*(type|interface)\s+[A-Za-z_$][\w$]*\b"),
+    re.compile(r"^\s*declare\s+"),
+    re.compile(r"^\s*<\s*[A-Za-z][\w.]*[^>(]*/?>\s*;?\s*$"),  # JSX element usage
+    # Comment-only lines. The classifier is called from custom paths
+    # (Python extractor, repo-side rules, tests) that pass raw lines —
+    # mask single-line and block-comment shapes so a sentence like
+    # ``// Create a type for the API response data — side-effect call``
+    # does not classify just because it contains "export"/"upload".
+    re.compile(r"^\s*(//|/\*|\*[^/]?|\*/)"),
+)
+
+# Object/JSX-attribute property assignments with a non-call right-hand
+# side: ``message: msg.content``, ``mt: 0.1``, ``sender: "user"``.
+# These trip the verb_target classifier (``message`` verb +
+# ``content``/``message`` target → outbound-message finding) even
+# though they're declarative data. Only fire when the RHS contains no
+# call shape (paren / template literal / arrow) so legitimate inline
+# calls (``onClick: () => sendEmail()``) still classify.
+_PROPERTY_ASSIGNMENT_RX = re.compile(
+    r"^\s*[A-Za-z_$][\w$]*\s*:\s*[^(){};`\n]+,?\s*$"
+)
+
+# JSX text-content line: a child whose entire body is a string literal.
+_JSX_TEXT_LITERAL_RX = re.compile(r"^\s*['\"`][^'\"`]*['\"`]\s*,?\s*$")
+
+# SQL statements are call-shape even without an obvious `(`; keep them
+# eligible for verb_target matching against database_mutation patterns.
+_SQL_STMT_RX = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|TRUNCATE)\b")
+
+
+def _looks_like_runtime_call(text: str) -> bool:
+    """Heuristic: does the text look like an actual runtime operation
+    rather than a pure declaration / identifier / natural-language line?
+
+    Used to gate both the regex-pattern pass and verb_target matching.
+    Without this gate, natural-language JSX text like
+    ``Submit! (to know the summary of this content)`` would classify
+    via the ``submit`` regex / verb because the line contains a paren.
+
+    True when:
+      * the text contains a function-call shape — an identifier
+        immediately followed by ``(`` (covers ``os.system(``,
+        ``axios.post(``, ``formData.append(``), OR
+      * the text contains a SQL keyword (explicit action), OR
+      * the text contains a method-chain dot followed by an identifier
+        (covers ``db.users.delete`` style references that the Python
+        extractor passes in).
+
+    NOT enough on its own:
+      * any ``(`` anywhere — a parenthesised English clause inside a
+        JSX text label has parens but no callable.
+    """
+    if re.search(r"[A-Za-z_$][\w$]*\s*\(", text):
+        return True
+    if _SQL_STMT_RX.search(text):
+        return True
+    if re.search(r"\.[A-Za-z_]\w*\b", text):
+        return True
+    return False
+
+
+_IDENTIFIER_ONLY_RX = re.compile(r"^\s*[A-Za-z_$][\w$]*\s*$")
+
+
+def _is_identifier_only(text: str) -> bool:
+    """True for a single identifier-shaped token (``refund_payment``,
+    ``launchCampaign``, ``MessageList``).
+
+    The classifier is called from two contexts:
+      1. Code-line context (TS/JS extractor passes the full line).
+      2. Identifier-name context (Python extractor passes a class name
+         like ``PaymentAgent``; analyzers pass tool names like
+         ``refund_customer``).
+
+    In context 2 the text never has call shape, so we exempt it from
+    the runtime-call gate — otherwise legitimate tool-name
+    classification (``refund_payment`` → payment) would stop working.
+    Bare React component names like ``MessageList`` pass through this
+    exemption too, but they don't match any regex pattern in the
+    builtin rule set, so they still produce no finding.
+    """
+    return bool(_IDENTIFIER_ONLY_RX.match(text))
+
+
+def _is_declaration_only(text: str) -> bool:
+    """True for lines that are pure TS/JS module syntax — the classifier
+    should never produce a side-effect match for these.
+
+    An opening paren on the line disables the short-circuit so embedded
+    calls (e.g. ``export default sendEmail(payload)``) still classify.
+
+    Three other categories are also short-circuited regardless of paren
+    presence because their semantic meaning is "no call here, even if
+    text looks call-shaped":
+
+      * Comment lines (``// ...``, ``/* ... */``, ``* ...``). Comments
+        may legitimately contain a function call inside their text
+        (``// example: subprocess.run(...)``) and we never want the
+        classifier to flag that as a real sink.
+      * Pure JSX text literals on their own line
+        (``"Upload audio or video file",`` as a button label).
+      * Plain object-property / sx-style assignments
+        (``message: msg.content``, ``mt: 0.1``) — declarative data,
+        not a callable.
+    """
+    # Comments always short-circuit, even when they contain a paren.
+    if re.match(r"^\s*(//|/\*|\*[^/]?|\*/)", text):
+        return True
+    # JSX text literal lines short-circuit (the comma may make them
+    # look like an argument list, but they are still data).
+    if _JSX_TEXT_LITERAL_RX.match(text):
+        return True
+    if _PROPERTY_ASSIGNMENT_RX.match(text) and "=>" not in text:
+        return True
+    if "(" in text:
+        return False
+    for rx in _DECLARATION_LIKE_RX:
+        if rx.search(text):
+            return True
+    return False
+
+
 def _match_rule(text: str, rule: SideEffectRule) -> list[SideEffectMatch]:
     matches: list[SideEffectMatch] = []
     normalized = normalize_identifier(text)
     tokens = token_set(text)
 
+    # Regex patterns are deliberately loose so they match across
+    # naming conventions, but on a multi-token CODE line the match
+    # only counts when the line is actually call-shaped. Without this
+    # gate, JSX text like ``1. Upload audio or video file`` triggers
+    # the ``\b(upload|...)\b`` pattern and emits a data-export
+    # finding even though no upload code exists.
+    #
+    # The single-identifier carve-out keeps tool-name classification
+    # working: ``classify_side_effect("refund_customer")`` is called
+    # by the Python extractor and analyzers with bare identifiers,
+    # which never have call shape but legitimately need to classify.
+    line_callable = _looks_like_runtime_call(text) or _is_identifier_only(text)
+
     for pattern in rule.patterns:
         rx = re.compile(pattern, re.I)
         if rx.search(text) or rx.search(normalized):
+            if not line_callable:
+                # Plain prose / JSX text: pattern accidentally matched
+                # an English word like "upload" or "submit". Drop it.
+                continue
             matches.append(
                 SideEffectMatch(
                     effect=rule.effect,
@@ -461,7 +622,13 @@ def _match_rule(text: str, rule: SideEffectRule) -> list[SideEffectMatch]:
             )
             break
 
-    if rule.verbs and rule.targets:
+    if rule.verbs and rule.targets and _looks_like_runtime_call(text):
+        # verb_target matching is intentionally call-gated: many verbs in the
+        # ontology ("message", "type", "post", "share") are also common nouns,
+        # type names, and React component names, and would otherwise turn
+        # `<MessageList />` or `export type { Foo }` into bogus side-effect
+        # findings. Requiring call/SQL/method-chain shape eliminates those FPs
+        # without losing genuine calls like `sendMessage(...)`.
         verb_hit = next((v for v in rule.verbs if v.lower() in tokens), None)
         target_hit = next((t for t in rule.targets if t.lower() in tokens), None)
         if verb_hit and target_hit:
@@ -484,6 +651,13 @@ def classify_side_effect_details(
     extra_rules: Iterable[SideEffectRule] = (),
 ) -> list[SideEffectMatch]:
     """Return detailed side-effect matches for a tool/function/code snippet."""
+    # Hard short-circuit for pure TS/JS module syntax. The TS/JS extractor
+    # already filters these at the source, but this layer makes the guarantee
+    # universal: anything that goes through classify_side_effect — including
+    # custom analyzers and tests — gets the same protection.
+    if _is_declaration_only(name_or_code):
+        return []
+
     matches: list[SideEffectMatch] = []
     seen: set[tuple[str, str]] = set()
 

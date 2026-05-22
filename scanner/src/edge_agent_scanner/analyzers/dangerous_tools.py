@@ -3,6 +3,12 @@ from __future__ import annotations
 from edge_agent_scanner.analyzers._utils import make_finding
 from edge_agent_scanner.analyzers.confidence import ConfidenceFeatures, is_prod_file
 from edge_agent_scanner.analyzers.escalation import annotate_finding
+from edge_agent_scanner.analyzers.finding_explanations import (
+    agent_callable_tool_explanation,
+    format_reason,
+    standalone_sink_explanation,
+    standalone_sink_title,
+)
 from edge_agent_scanner.ir.graph import reachable_set
 from edge_agent_scanner.ir.models import AgentIR
 from edge_agent_scanner.ir.sinks import highest_impact, impact_for_effect
@@ -82,21 +88,19 @@ def analyze_dangerous_tools(ir: AgentIR, files: list[ScannedFile]):
             # Agents exist but none can reach this tool in the graph.
             continue
 
+        tool_expl = agent_callable_tool_explanation(
+            tool_name=tool.name,
+            side_effects=list(tool.side_effects),
+            evidence=_evidence(tool),
+        )
         f = make_finding(
                 rule_id="dangerous-tools",
                 severity=_tool_severity(tool),
                 category="Dangerous tool / side effect",
-                title=f"Agent-callable tool has side effects: {tool.name}",
+                title=tool_expl.title or f"Agent-callable tool has side effects: {tool.name}",
                 location=tool.location,
-                reason=(
-                    "This is not a keyword-only match. The capability is represented as an "
-                    "agent-callable tool and the side-effect ontology classified it as mutating, "
-                    "external, privileged, or otherwise high-impact."
-                ),
-                suggested_fix=(
-                    "Restrict tool permissions, narrow its input schema, add approval gates for "
-                    "high-impact actions, and document expected safe usage."
-                ),
+                reason=format_reason(tool_expl),
+                suggested_fix=tool_expl.suggested_fix,
                 evidence=_evidence(tool),
                 code=str(tool.metadata.get("code", "")),
                 confidence=_confidence(tool),
@@ -181,25 +185,38 @@ def _analyze_standalone_sinks(ir: AgentIR, reach_normal: set[str] | None) -> lis
             continue
         seen.add(key)
 
+        sink_expl = standalone_sink_explanation(sink_kind=sink.kind, label=sink.label)
+        # Prefer the verbatim call expression captured by the extractor
+        # (e.g. ``os.system("rm -rf " + user_input)``) over the bare
+        # normalized label (``os.system``). The label is still the
+        # source-of-truth for classification / title / evidence and
+        # remains available as ``sink.label`` for the analyzer logic
+        # above. When the extractor couldn't recover an expression we
+        # fall back to the source line, then finally to the label.
+        finding_code = sink.call_expression or sink.source_line or sink.label
+
+        # If the extractor attached upload-flow context (e.g. a
+        # FormData variable's appended field names) include it on
+        # the evidence so the developer can see WHAT is being
+        # uploaded, not just the bare call. Keeps the finding
+        # actionable while still being a single deduplicated entry.
+        form_data_fields = sink.metadata.get("form_data_fields") if isinstance(sink.metadata, dict) else None
+        evidence_lines = [
+            f"Presence scan: {sink.kind} at {sink.label} (no agent reachability path in IR)"
+        ]
+        if form_data_fields:
+            evidence_lines.append(f"triggered_by=form_submit fields={form_data_fields}")
+
         f = make_finding(
             rule_id="dangerous-tools",
             severity=downgraded,
-            category="Dangerous code present",
-            title=f"Dangerous {sink.kind.replace('_', ' ')} call: {sink.label}",
+            category="Presence warning (agent unknown)",
+            title=standalone_sink_title(sink_kind=sink.kind, label=sink.label),
             location=sink.location,
-            reason=(
-                "A dangerous sink was detected in source code but no agent in the IR is "
-                "currently known to reach it. Treated as a presence signal (low/medium) "
-                "rather than an active risk — promote it to high/critical if the call "
-                "later becomes agent-callable."
-            ),
-            suggested_fix=(
-                "Audit the call site. If it is genuinely required, validate its inputs, "
-                "drop privileges, and add explicit approval/policy gates before any "
-                "agent or untrusted input can reach it."
-            ),
-            evidence=f"sink={sink.kind} label={sink.label}",
-            code=sink.label,
+            reason=format_reason(sink_expl),
+            suggested_fix=sink_expl.suggested_fix,
+            evidence="\n".join(evidence_lines),
+            code=finding_code,
             confidence=0.55 if downgraded == "medium" else 0.4,
         )
         annotate_finding(

@@ -4,7 +4,7 @@ The IR-based pipeline distinguishes two situations:
 
   1. A dangerous CALL site that is NOT reachable from any agent. The
      ``dangerous-tools`` analyzer emits a *low/medium* presence-only
-     finding under category "Dangerous code present" (see
+     finding under a presence-warning category (see
      ``_analyze_standalone_sinks`` in ``analyzers/dangerous_tools.py``).
      This keeps the old "warn when subprocess shows up in a module"
      behaviour without elevating every build script to critical.
@@ -40,9 +40,126 @@ def test_subprocess_finding(tmp_path):
     assert all(f.severity in {"low", "medium"} for f in dangerous), (
         "non-agent-reachable dangerous calls must stay at low/medium severity"
     )
-    assert all(f.category == "Dangerous code present" for f in dangerous), (
-        'non-agent fallback uses category "Dangerous code present"'
+    assert all("presence warning" in f.category.lower() for f in dangerous), (
+        'non-agent fallback uses a presence-warning category (not agent-confirmed)'
     )
+    assert any("What was detected:" in f.reason for f in dangerous), (
+        "standalone findings should use structured explanations"
+    )
+
+
+def test_finding_code_carries_full_os_system_call_expression(tmp_path):
+    """``Finding.code`` should be the verbatim call expression
+    (``os.system("rm -rf " + user_input)``) rather than just the
+    normalized callee (``os.system``). The standalone-sink title still
+    uses the bare label, but the developer-facing code block now
+    surfaces exactly what was written.
+    """
+    (tmp_path / "danger.py").write_text(
+        "import os\n"
+        "\n"
+        "def delete_all_meeting_records(user_input):\n"
+        "    os.system(\"rm -rf \" + user_input)\n",
+        encoding="utf-8",
+    )
+    report = run_scan(tmp_path)
+    dangerous = [
+        f for f in report.findings
+        if f.rule_id == "dangerous-tools" and "os.system" in f.title
+    ]
+    assert dangerous, "expected a dangerous-tools finding for the os.system call"
+    f = dangerous[0]
+    # The title still carries the normalized callee for classification
+    # / scoring; this is the value standalone_sink_title() builds.
+    assert "os.system" in f.title
+    # The code field carries the VERBATIM expression — the whole
+    # ``os.system("rm -rf " + user_input)`` slice.
+    assert "os.system(" in f.code, f"expected full os.system(...) in Finding.code, got: {f.code!r}"
+    assert "rm -rf" in f.code, f"argument literal must survive into Finding.code, got: {f.code!r}"
+    assert "user_input" in f.code, (
+        "the user-controlled variable name must appear in Finding.code so the "
+        f"developer can see the data flow; got: {f.code!r}"
+    )
+    # Evidence still names the sink label (unchanged behaviour).
+    assert "label=" in f.evidence.lower() or "at os.system" in f.evidence
+
+
+def test_finding_code_carries_full_subprocess_check_output_call(tmp_path):
+    """``subprocess.check_output(["ffmpeg", "-i", input_path, out])``
+    should round-trip into ``Finding.code`` verbatim, so the AI
+    explainer (and the UI) can see that this is an ffmpeg invocation
+    rather than a generic OS command.
+    """
+    (tmp_path / "transcribe.py").write_text(
+        "import subprocess\n"
+        "\n"
+        "def encode(input_path, output_path):\n"
+        "    subprocess.check_output([\"ffmpeg\", \"-i\", input_path, output_path])\n",
+        encoding="utf-8",
+    )
+    report = run_scan(tmp_path)
+    dangerous = [
+        f for f in report.findings
+        if f.rule_id == "dangerous-tools" and "subprocess.check_output" in f.title
+    ]
+    assert dangerous, "expected a dangerous-tools finding for subprocess.check_output"
+    f = dangerous[0]
+    assert "subprocess.check_output(" in f.code
+    assert "ffmpeg" in f.code, f"ffmpeg arg must survive into Finding.code, got: {f.code!r}"
+    assert "input_path" in f.code
+    assert "output_path" in f.code
+
+
+def test_finding_code_redacts_inline_secrets(tmp_path):
+    """If the verbatim call expression happens to contain a credential
+    (an OpenAI key, Stripe key, GitHub PAT, …), it must be replaced
+    with a placeholder before storage in ``Finding.code``. The raw
+    secret never leaves the extractor.
+    """
+    (tmp_path / "leak.py").write_text(
+        "import os\n"
+        "\n"
+        "def call_with_key():\n"
+        "    os.system(\"curl -H 'Authorization: Bearer sk-proj-AAAAbbbbCCCCddddEEEEffffGGGG' https://x\")\n",
+        encoding="utf-8",
+    )
+    report = run_scan(tmp_path)
+    sink_findings = [
+        f for f in report.findings
+        if f.rule_id == "dangerous-tools" and "os.system" in f.title
+    ]
+    assert sink_findings, "expected the os.system call to be flagged"
+    f = sink_findings[0]
+    assert "sk-proj-AAAAbbbbCCCCddddEEEEffffGGGG" not in f.code, (
+        "raw OpenAI project key must not appear in Finding.code"
+    )
+    assert "REDACTED_OPENAI_KEY" in f.code or "REDACTED" in f.code, (
+        f"redacted placeholder should be visible instead, got: {f.code!r}"
+    )
+    # The normalized sink label is unaffected — analyzers still group
+    # by `os.system`.
+    assert "os.system" in f.title
+
+
+def test_sink_node_label_preserved_even_when_call_expression_present(tmp_path):
+    """The IR-level normalized label must remain ``os.system`` (or the
+    equivalent for other sinks) even after we add ``call_expression``.
+    Analyzers / scoring / fingerprinting key off it.
+    """
+    from edge_agent_scanner.ir.extract_python import extract_python_ir
+    from edge_agent_scanner.ir.models import AgentIR
+    from edge_agent_scanner.walker import ScannedFile
+
+    src = "import os\n\ndef f():\n    os.system(\"rm -rf /tmp/x\")\n"
+    sf = ScannedFile(rel_path="t.py", lines=src.splitlines(), full_path=tmp_path / "t.py")
+    ir = AgentIR()
+    extract_python_ir(sf, ir)
+    os_sinks = [s for s in ir.sinks if s.label == "os.system"]
+    assert os_sinks, "normalized label `os.system` should still be present on SinkNode"
+    s = os_sinks[0]
+    assert s.call_expression is not None
+    assert "os.system(" in s.call_expression
+    assert "rm -rf" in s.call_expression
 
 
 def test_human_approval_when_no_gate(tmp_path):

@@ -55,6 +55,16 @@ class RouteNode(BaseModel):
     path: str
     location: CodeLocation
     auth_guards: list[str] = Field(default_factory=list)
+    #: Extracted snippet that the auth analyzer renders as
+    #: ``Finding.code``. Usually decorator + function signature for
+    #: FastAPI routes (e.g. ``@app.post("/chat")\nasync def
+    #: chat_endpoint(req: ChatRequest):``); empty string if extraction
+    #: failed. Storing it here avoids re-reading the file from the
+    #: analyzer layer.
+    code: str = ""
+    #: Free-form metadata: framework, query/path params, etc. Reserved
+    #: for analyzers that need richer route context without growing
+    #: the schema.
     metadata: dict = Field(default_factory=dict)
 
 
@@ -69,9 +79,30 @@ class SourceNode(BaseModel):
 class SinkNode(BaseModel):
     id: str
     kind: str
+    #: Normalized callee / sink identifier (e.g. ``os.system``,
+    #: ``subprocess.check_output``). Stable across argument changes so
+    #: analyzers, scoring, and the standalone-sink title generator can
+    #: keep matching against the same logical sink.
     label: str
     location: CodeLocation
     impact: Literal["low", "medium", "high", "critical"] = "medium"
+    #: Verbatim source of the call expression that triggered the sink,
+    #: e.g. ``os.system("rm -rf " + user_input)`` or
+    #: ``subprocess.check_output(["ffmpeg", "-i", input_path, out])``.
+    #: Captured from the parse tree (Python via LibCST
+    #: ``Module.code_for_node``; TS/JS via the source line).
+    #: Secrets are redacted before storage. ``None`` when the extractor
+    #: couldn't recover the expression (e.g. broken parse) — callers
+    #: should fall back to ``source_line`` or ``label``.
+    call_expression: str | None = None
+    #: The raw, redacted source line the sink lives on. Used as a fallback
+    #: when ``call_expression`` couldn't be reconstructed.
+    source_line: str | None = None
+    #: Free-form metadata attached by extractors. Reserved keys today:
+    #:   * ``form_data_fields`` — comma-separated list of fields
+    #:     appended to a FormData/URLSearchParams variable that was
+    #:     passed into this sink (used for upload-flow finding evidence).
+    metadata: dict = Field(default_factory=dict)
 
 
 class GuardNode(BaseModel):
