@@ -33,6 +33,16 @@ def _copy_repo(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst, ignore=ignore)
 
 
+def _docker_safe_start_command(cmd: str) -> str:
+    return (
+        cmd.replace("--host 127.0.0.1", "--host 0.0.0.0")
+        .replace("--host localhost", "--host 0.0.0.0")
+        .replace("127.0.0.1:8000", "0.0.0.0:8000")
+        .replace("localhost:8000", "0.0.0.0:8000")
+    )
+
+
+
 class DockerSandbox:
     def __init__(self, repo_path: Path, config: EvalHarnessConfig):
         self.repo_path = repo_path.resolve()
@@ -52,6 +62,9 @@ class DockerSandbox:
         self.workspace = tmp_root / "workspace"
         _copy_repo(self.repo_path, self.workspace)
 
+        if self.config.sandbox.network == "none":
+            raise DockerSandboxError('HTTP behavioral tests require sandbox.network != "none" so the harness can reach the app.')
+
         image = choose_image(self.repo_path, self.config)
         self.host_port = find_free_port()
 
@@ -65,8 +78,6 @@ class DockerSandbox:
             "-p", f"127.0.0.1:{self.host_port}:{self.container_port}",
         ]
 
-        if self.config.sandbox.network == "none":
-            docker_run.extend(["--network", "none"])
 
         for key, value in self.config.sandbox.env.items():
             docker_run.extend(["-e", f"{key}={value}"])
@@ -81,7 +92,8 @@ class DockerSandbox:
         if not self.config.app.start_command:
             raise DockerSandboxError("No start_command configured.")
 
-        _run(["docker", "exec", "-d", self.container_name, "sh", "-lc", self.config.app.start_command], timeout=15)
+        start_command = _docker_safe_start_command(self.config.app.start_command)
+        _run(["docker", "exec", "-d", self.container_name, "sh", "-lc", start_command], timeout=15)
 
         self._wait_for_startup()
         chat_url = self._rewrite_url(self.config.app.chat_url or f"http://127.0.0.1:{self.container_port}/chat")

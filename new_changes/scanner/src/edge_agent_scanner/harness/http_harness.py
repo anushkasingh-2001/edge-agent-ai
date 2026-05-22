@@ -37,32 +37,19 @@ class HttpBehavioralHarness:
             payload = self._request(body)
             end = time.time() * 1000
             runtime_ms = end - start
+
             output = get_by_path(payload, self.config.app.output_path)
             traces = import_trace_events(payload, run_id=self.run_id, case_id=case.case_id, suite_id=case.suite_id)
+
             status, score, reason, details = score_output(
                 output,
                 case.expected,
                 trace_events=traces,
                 runtime_ms=runtime_ms,
             )
-            traces.append(
-                TraceEvent(
-                    run_id=self.run_id,
-                    case_id=case.case_id,
-                    suite_id=case.suite_id,
-                    agent_id=case.target_agent_id,
-                    agent_name=case.target_agent_name,
-                    model_id=case.target_model_id,
-                    model_name=case.target_model_name,
-                    model_purpose=case.target_model_purpose,
-                    event_type="case_end",
-                    start_ms=start,
-                    end_ms=end,
-                    latency_ms=runtime_ms,
-                    status=status,
-                    metadata={"http_status": 200},
-                )
-            )
+
+            # Do not append case_end here. runner.py owns case lifecycle traces
+            # to avoid double-counting runtime in aggregate metrics.
             return (
                 BehavioralResult(
                     suite_id=case.suite_id,

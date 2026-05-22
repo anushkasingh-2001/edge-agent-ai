@@ -1,8 +1,9 @@
-# Add to scanner/pyproject.toml dependencies
+# pyproject update
 
-```toml
-"PyYAML>=6.0.1"
+This final `new_changes` bundle includes a complete replacement file at:
+
+```text
+new_changes/scanner/pyproject.toml
 ```
 
-No Python Docker SDK is required. This patch uses the Docker CLI through subprocess.
-Docker must be installed on the machine running behavioral tests.
+It includes PyYAML plus the parser/scanner dependencies needed by the LibCST + Tree-sitter + OpenAPI refactor.

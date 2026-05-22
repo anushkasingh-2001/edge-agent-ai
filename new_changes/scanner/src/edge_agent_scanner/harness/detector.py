@@ -51,7 +51,7 @@ def detect_project(repo_path: Path) -> DetectedProject:
             detected.candidate_start_commands.append("streamlit run app.py")
         if (repo / "main.py").exists():
             detected.candidate_start_commands.append("python main.py")
-            detected.candidate_start_commands.append("uvicorn main:app --host 127.0.0.1 --port 8000")
+            detected.candidate_start_commands.append("uvicorn main:app --host 0.0.0.0 --port 8000")
         detected.candidate_ports.extend([8000, 8501, 5000])
 
     if (repo / "Dockerfile").exists():
