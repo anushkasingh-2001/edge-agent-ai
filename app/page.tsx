@@ -859,6 +859,7 @@ export default function Home() {
             probeStoreVersion={probeStoreVersion}
             projectId={selectedProject?.id ?? null}
             onActiveSuiteChange={setActiveSuite}
+            onRerunScan={handleRunScan}
           />
         )
       case "run-traces":

@@ -42,6 +42,11 @@ interface FindingDrawerProps {
   /** Called after a successful apply so the parent can re-scan / refresh
    *  the findings list. */
   onFixApplied?: (result: RunFixesResult) => void
+  /** Hand the user off to the VS Code/Cursor-style workspace view
+   *  (file tree + Monaco editor) with this finding pinned. When set,
+   *  the drawer renders an "Open in editor" button next to the title.
+   *  No-op when a projectPath or finding.file is missing. */
+  onOpenInEditor?: (finding: Finding) => void
 }
 
 export function FindingDrawer({
@@ -50,6 +55,7 @@ export function FindingDrawer({
   onOpenChange,
   projectPath = null,
   onFixApplied,
+  onOpenInEditor,
 }: FindingDrawerProps) {
   // AI explanation state. Lives at the drawer level so it resets whenever
   // the user closes the drawer or opens a different finding — we never
@@ -205,6 +211,11 @@ export function FindingDrawer({
                 </p>
               )}
             </div>
+            {/* "Open in editor" was previously rendered here. Clicking
+                any finding row now opens the workspace view directly,
+                so the button is redundant. The prop is kept for the
+                rare callers that still surface the drawer (e.g.
+                projectPath-less flows) — see `onOpenInEditor` above. */}
           </div>
 
           <Separator className="bg-border" />

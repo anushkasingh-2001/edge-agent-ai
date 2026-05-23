@@ -54,6 +54,7 @@ import {
 } from "lucide-react"
 import { FindingDrawer } from "@/components/finding-drawer"
 import { FindingFixButton } from "@/components/finding-fix-button"
+import { WorkspaceView } from "@/components/workspace/workspace-view"
 import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
 import type { ScanReport, UiFinding } from "@/lib/scan-report"
 import type { TestSuite } from "@/lib/test-cases"
@@ -128,6 +129,10 @@ interface FindingsProps {
    *  `activeSuite` state so the Scan Center chip / narrowing stays
    *  consistent across views. */
   onActiveSuiteChange?: (suite: TestSuite | null) => void
+  /** Re-trigger the scan from the workspace view's "Re-run scan"
+   *  button. Optional — when omitted the button is hidden. Same
+   *  callback the TopBar's Run Scan button calls. */
+  onRerunScan?: () => void
 }
 
 /**
@@ -161,6 +166,7 @@ export function Findings({
   activeSuite = null,
   projectId = null,
   onActiveSuiteChange,
+  onRerunScan,
 }: FindingsProps) {
   const [tab, setTab] = useState<"code" | "behavioral">(initialTab)
 
@@ -306,6 +312,7 @@ export function Findings({
           <CodeAnalysisPanel
             findings={findings}
             projectPath={projectPath}
+            onRerunScan={onRerunScan}
           />
         </TabsContent>
 
@@ -333,15 +340,23 @@ export function Findings({
 function CodeAnalysisPanel({
   findings,
   projectPath,
+  onRerunScan,
 }: {
   findings: Finding[]
   projectPath: string | null
+  /** When set, the workspace view's "Re-run scan" button fires this
+   *  (same callback wired to the global TopBar Run Scan button). */
+  onRerunScan?: () => void
 }) {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
+  // When set, the in-app workspace (file tree + Monaco editor) takes
+  // over the panel. The findings table is hidden until the user clicks
+  // "Back to findings" inside the workspace view.
+  const [workspaceFinding, setWorkspaceFinding] = useState<Finding | null>(null)
 
   /**
    * Session-local set of finding ref_ids that the fix engine successfully
@@ -460,6 +475,24 @@ function CodeAnalysisPanel({
     }
   }
 
+  // VS Code-style workspace takes over the panel when a finding is
+  // opened in the editor. Rendering it here (rather than as a global
+  // route) means the existing project + scan state is implicitly in
+  // scope, and "Back to findings" simply unsets `workspaceFinding`
+  // without any router round-trip.
+  if (workspaceFinding && projectPath) {
+    return (
+      <div className="-mx-6 -mb-6 h-[calc(100vh-12rem)] min-h-[600px] border-t border-border">
+        <WorkspaceView
+          projectPath={projectPath}
+          finding={workspaceFinding}
+          onClose={() => setWorkspaceFinding(null)}
+          onRerunScan={onRerunScan}
+        />
+      </div>
+    )
+  }
+
   return (
     <>
       <Card className="bg-card border-border">
@@ -567,8 +600,18 @@ function CodeAnalysisPanel({
                 key={finding.scannerFindingId ?? finding.id}
                 className="cursor-pointer hover:bg-secondary/50 border-border"
                 onClick={() => {
-                  setSelectedFinding(finding)
-                  setDrawerOpen(true)
+                  // VS Code-style workspace is the primary detail
+                  // surface now: click a row → drop straight into the
+                  // file tree + editor with the finding's file pinned.
+                  // Falls back to the legacy drawer when projectPath
+                  // is unknown (rare; only when the project lookup
+                  // hasn't resolved yet).
+                  if (projectPath) {
+                    setWorkspaceFinding(finding)
+                  } else {
+                    setSelectedFinding(finding)
+                    setDrawerOpen(true)
+                  }
                 }}
               >
                 <TableCell>
@@ -607,12 +650,16 @@ function CodeAnalysisPanel({
         </Table>
       </Card>
 
-      <FindingDrawer 
-        finding={selectedFinding} 
-        open={drawerOpen} 
+      <FindingDrawer
+        finding={selectedFinding}
+        open={drawerOpen}
         onOpenChange={setDrawerOpen}
         projectPath={projectPath}
         onFixApplied={handleApplied}
+        onOpenInEditor={(f) => {
+          setDrawerOpen(false)
+          setWorkspaceFinding(f)
+        }}
       />
     </>
   )
