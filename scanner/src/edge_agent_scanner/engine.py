@@ -15,6 +15,7 @@ from edge_agent_scanner.analyzers.prompt_injection import analyze_prompt_injecti
 from edge_agent_scanner.analyzers.secrets import analyze_secrets
 from edge_agent_scanner.analyzers.taint_user_input import analyze_user_input_to_dangerous_code
 from edge_agent_scanner.analyzers.root_causes import analyze_root_causes
+from edge_agent_scanner.analyzers.supply_chain import analyze_supply_chain
 from edge_agent_scanner.analyzers.finding_grouping import apply_intelligence_grouping
 from edge_agent_scanner.ir.builder import build_agent_ir
 from edge_agent_scanner.report import (
@@ -336,6 +337,7 @@ def run_scan(
     findings.extend(analyze_dependencies(root, files))
     findings.extend(analyze_user_input_to_dangerous_code(ir, files))
     findings.extend(analyze_root_causes(ir, files))
+    findings.extend(analyze_supply_chain(ir, files))
     findings.extend(analyze_accuracy_regression(ir, files, root))
 
     findings = verify_findings_if_enabled(findings, ir, files)

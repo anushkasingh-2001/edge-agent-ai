@@ -1,0 +1,373 @@
+diff --git a/app/api/finding/explain/route.ts b/app/api/finding/explain/route.ts
+index 0214bc0..1735e41 100644
+--- a/app/api/finding/explain/route.ts
++++ b/app/api/finding/explain/route.ts
+@@ -22,6 +22,7 @@
+ 
+ import path from "node:path"
+ import { NextResponse } from "next/server"
++import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+ 
+ import {
+   ExplanationError,
+@@ -53,6 +54,12 @@ interface RouteBody {
+    * the cost-control default so we don't try to call a gpt-5 model that
+    * the user's key may not be entitled to. */
+   model?: string
++  /** Intelligence mode + AI provider mode (Hosted vs BYOK). The server
++   *  resolves the actual provider/model/key via resolveAiProviderForRequest;
++   *  Hosted keys never come from or go to the client. */
++  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++  aiProviderMode?: "hosted" | "byok"
++  manualModelSelection?: Record<string, string>
+ }
+ 
+ function clampCodeSnippet(input: unknown): string {
+@@ -149,12 +156,44 @@ export async function POST(req: Request) {
+   const bodyModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined
+   const modelForCall = bodyApiKey ? bodyModel : undefined
+ 
++  // ---- Hosted-AI / BYOK resolution + plan/quota enforcement ----------
++  // When an intelligence mode is supplied, route through the central
++  // resolver. It enforces plan limits + quota BEFORE the model call and
++  // chooses the provider/model/key (Hosted keys stay server-side).
++  const intelligenceMode = body.intelligenceMode ?? "auto"
++  const aiProviderMode = body.aiProviderMode ?? "hosted"
++  let resolvedApiKey: string | undefined = bodyApiKey
++  let resolvedBaseUrl: string | undefined = typeof body.baseUrl === "string" ? body.baseUrl : undefined
++  let resolvedModel: string | undefined = modelForCall
++  if (body.intelligenceMode) {
++    const resolution = resolveAiProviderForRequest({
++      userId: "local-user",
++      workspaceId: "local-workspace",
++      aiProviderMode,
++      intelligenceMode,
++      task: "explain",
++      manualModelSelection: body.manualModelSelection,
++      byokApiKey: aiProviderMode === "byok" ? bodyApiKey ?? null : null,
++      byokBaseUrl: aiProviderMode === "byok" ? (typeof body.baseUrl === "string" ? body.baseUrl : null) : null,
++    })
++    if (!resolution.ok) {
++      // Blocked by plan or quota — return BEFORE any model call.
++      return NextResponse.json(
++        { error: resolution.reason, code: resolution.code, upgrade: resolution.upgrade ?? false, quotaStatus: resolution.quotaStatus },
++        { status: resolution.code === "quota_exceeded" ? 402 : 403 }
++      )
++    }
++    resolvedApiKey = resolution.apiKey ?? undefined
++    resolvedBaseUrl = resolution.baseUrl ?? undefined
++    resolvedModel = resolution.model
++  }
++
+   let payload
+   try {
+     payload = await explainOneFinding(finding, project, {
+-      apiKey: bodyApiKey,
+-      baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
+-      model: modelForCall,
++      apiKey: resolvedApiKey,
++      baseUrl: resolvedBaseUrl,
++      model: resolvedModel,
+     })
+   } catch (e) {
+     // Defensive: never let an unexpected error block the UI — fall back so
+diff --git a/app/api/finding/patch/route.ts b/app/api/finding/patch/route.ts
+index 11bbcb8..f850ee5 100644
+--- a/app/api/finding/patch/route.ts
++++ b/app/api/finding/patch/route.ts
+@@ -29,6 +29,7 @@
+ import path from "node:path"
+ import fs from "node:fs"
+ import { NextResponse } from "next/server"
++import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+ 
+ import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
+ import { planFix, type PlannerFinding } from "@/lib/fix-planner"
+@@ -62,6 +63,9 @@ interface PatchBody {
+   baseUrl?: string | null
+   provider?: ProviderKind
+   privateCodeMode?: boolean
++  /** Hosted vs BYOK. Hosted resolves the key server-side. */
++  aiProviderMode?: "hosted" | "byok"
++  manualModelSelection?: Record<string, string>
+   /** apply only: the previewId the user reviewed. */
+   previewId?: string
+ }
+@@ -210,17 +214,35 @@ export async function POST(req: Request) {
+   }
+ 
+   /* --------------------------- PREVIEW --------------------------- */
+-  // Provider config required for an LLM patch (template path handles its own).
+-  const provider = (body.provider ?? "openai_compatible") as ProviderKind
+-  const apiKey = body.apiKey ?? process.env.OPENAI_API_KEY ?? null
+-
+-  // Complexity drives Auto's cheap→strong choice (Pro/Max ignore it).
++  // Resolve provider/model/key via the central resolver (Hosted vs BYOK).
++  // Enforces plan + quota BEFORE the model call; Hosted keys stay server-side.
++  const aiProviderMode = body.aiProviderMode ?? "hosted"
+   const complexity = scoreComplexity({
+     rule_id: finding.rule_id,
+     severity: finding.severity,
+     evidencePathFiles: finding.evidence_path_files,
+     evidencePathLen: finding.evidence_path_len,
+   })
++  const resolution = resolveAiProviderForRequest({
++    userId: "local-user",
++    workspaceId: "local-workspace",
++    aiProviderMode,
++    intelligenceMode,
++    task: "patch",
++    complexity,
++    manualModelSelection: body.manualModelSelection,
++    byokApiKey: aiProviderMode === "byok" ? body.apiKey ?? null : null,
++    byokBaseUrl: aiProviderMode === "byok" ? body.baseUrl ?? null : null,
++    byokProvider: body.provider,
++  })
++  if (!resolution.ok) {
++    return NextResponse.json(
++      { status: "refused", reason: resolution.reason, code: resolution.code, upgrade: resolution.upgrade ?? false, quotaStatus: resolution.quotaStatus },
++      { status: resolution.code === "quota_exceeded" ? 402 : 403 }
++    )
++  }
++  const provider = resolution.provider
++  const apiKey = resolution.apiKey
+ 
+   const plan = planFix(finding)
+ 
+@@ -241,7 +263,7 @@ export async function POST(req: Request) {
+     plan,
+     provider,
+     apiKey,
+-    baseUrl: body.baseUrl ?? null,
++    baseUrl: resolution.baseUrl ?? null,
+     privateCodeMode: !!body.privateCodeMode,
+   })
+ 
+diff --git a/app/api/findings/fix-filtered/route.ts b/app/api/findings/fix-filtered/route.ts
+index 8377525..71adc30 100644
+--- a/app/api/findings/fix-filtered/route.ts
++++ b/app/api/findings/fix-filtered/route.ts
+@@ -23,6 +23,7 @@
+ import path from "node:path"
+ import fs from "node:fs"
+ import { NextResponse } from "next/server"
++import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+ 
+ import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
+ import { planFix, type PlannerFinding } from "@/lib/fix-planner"
+@@ -65,6 +66,10 @@ interface BulkBody {
+   baseUrl?: string | null
+   provider?: ProviderKind
+   privateCodeMode?: boolean
++  /** Hosted vs BYOK. Same resolver as single-patch so estimate and
++   *  execution agree on provider/model. */
++  aiProviderMode?: "hosted" | "byok"
++  manualModelSelection?: Record<string, string>
+   /** When true, persist suppressions for `needs_user_decision` clusters
+    *  marked as "user accepts this as a known FP". Default: false — UI
+    *  must explicitly opt in (we never auto-suppress). */
+@@ -159,7 +164,29 @@ export async function POST(req: Request) {
+ 
+   const intelligenceMode: IntelligenceMode = body.intelligenceMode ?? "auto"
+   const policy = MODE_POLICIES[intelligenceMode]
+-  const provider = (body.provider ?? "openai_compatible") as ProviderKind
++  const aiProviderMode = body.aiProviderMode ?? "hosted"
++  // Same resolver as single-patch so the estimate and execution agree on
++  // provider/model, and plan/quota are enforced before any model call.
++  const bulkResolution = resolveAiProviderForRequest({
++    userId: "local-user",
++    workspaceId: "local-workspace",
++    aiProviderMode,
++    intelligenceMode,
++    task: "bulk",
++    manualModelSelection: body.manualModelSelection,
++    byokApiKey: aiProviderMode === "byok" ? body.apiKey ?? null : null,
++    byokBaseUrl: aiProviderMode === "byok" ? body.baseUrl ?? null : null,
++    byokProvider: body.provider,
++  })
++  // A blocked resolution only matters when this mode would actually call
++  // an LLM (Save is templates-only and still succeeds below).
++  if (!bulkResolution.ok && policy.allowPatchGeneration) {
++    return NextResponse.json(
++      { error: bulkResolution.reason, code: bulkResolution.code, upgrade: bulkResolution.upgrade ?? false, quotaStatus: bulkResolution.quotaStatus },
++      { status: bulkResolution.code === "quota_exceeded" ? 402 : 403 }
++    )
++  }
++  const provider = bulkResolution.ok ? bulkResolution.provider : ((body.provider ?? "openai_compatible") as ProviderKind)
+ 
+   const planned: { finding: PlannerFinding; plan: ReturnType<typeof planFix> }[] = []
+   for (const raw of body.findings) {
+@@ -294,8 +321,8 @@ export async function POST(req: Request) {
+           finding: representative,
+           plan,
+           provider,
+-          apiKey: body.apiKey ?? process.env.OPENAI_API_KEY ?? null,
+-          baseUrl: body.baseUrl ?? null,
++          apiKey: bulkResolution.ok ? bulkResolution.apiKey : (body.apiKey ?? process.env.OPENAI_API_KEY ?? null),
++          baseUrl: (bulkResolution.ok ? bulkResolution.baseUrl : body.baseUrl) ?? null,
+           privateCodeMode: !!body.privateCodeMode,
+         })
+         return {
+diff --git a/app/api/findings/fix/route.ts b/app/api/findings/fix/route.ts
+index 168aa18..6a77d2e 100644
+--- a/app/api/findings/fix/route.ts
++++ b/app/api/findings/fix/route.ts
+@@ -28,6 +28,9 @@ export async function POST(request: Request) {
+     projectPath?: string
+     mode?: FixMode
+     targets?: unknown
++    intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++    aiProviderMode?: "hosted" | "byok"
++    manualModelSelection?: Record<string, string>
+   } = {}
+   try {
+     body = await request.json()
+diff --git a/app/api/scan/estimate/route.ts b/app/api/scan/estimate/route.ts
+index 913b9ec..758934e 100644
+--- a/app/api/scan/estimate/route.ts
++++ b/app/api/scan/estimate/route.ts
+@@ -36,6 +36,8 @@ interface EstimateBody {
+   projectPath?: string
+   findings?: Array<Partial<PlannerFinding>>
+   intelligenceMode?: IntelligenceMode
++  aiProviderMode?: "hosted" | "byok"
++  manualModelSelection?: Record<string, string>
+   provider?: ProviderKind
+   privateCodeMode?: boolean
+ }
+diff --git a/app/api/scan/route.ts b/app/api/scan/route.ts
+index 957b861..737b2d1 100644
+--- a/app/api/scan/route.ts
++++ b/app/api/scan/route.ts
+@@ -37,6 +37,13 @@ export async function POST(request: Request) {
+      *  for branches they aren't currently checked out on (the fix
+      *  for "select gt in dropdown → still see main's findings"). */
+     branch?: string
++    /** Intelligence-mode + AI-provider metadata for this scan. The
++     *  scanner itself is deterministic and does NOT call an LLM; these
++     *  are accepted so the server can echo them into scan metadata and
++     *  the Findings tab can show the mode/provider the scan ran under. */
++    intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++    aiProviderMode?: "hosted" | "byok"
++    manualModelSelection?: Record<string, string>
+   } = {}
+   try {
+     body = await request.json()
+diff --git a/app/page.tsx b/app/page.tsx
+index f983392..387364c 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -37,6 +37,7 @@ import {
+   loadScanHistory,
+   scanHistoryForProject,
+   scanItemFromReport,
++  MODE_LABELS,
+   type ScanHistoryItem,
+ } from "@/lib/scan-history"
+ import { loadSavedSuites, type TestSuite } from "@/lib/test-cases"
+@@ -185,6 +186,14 @@ export default function Home() {
+     useState<"code" | "behavioral">("code")
+   const [currentBranch, setCurrentBranch] = useState("main")
+   const [selectedAgents, setSelectedAgents] = useState<string[]>(["all"])
++  // Intelligence mode + AI provider mode selected before a scan. Default
++  // Auto + Hosted (per spec). Threaded into the scan body and reused as
++  // the re-scan default via scan metadata.
++  const [intelligenceMode, setIntelligenceMode] = useState<
++    "save" | "auto" | "pro" | "max" | "manual"
++  >("auto")
++  const [aiProviderMode, setAiProviderMode] = useState<"hosted" | "byok">("hosted")
++  const [manualModelSelection, setManualModelSelection] = useState<Record<string, string>>({})
+   const [scanReport, setScanReport] = useState<ScanReport | null>(null)
+   const [scanning, setScanning] = useState(false)
+   const [scanError, setScanError] = useState<string | null>(null)
+@@ -456,6 +465,13 @@ export default function Home() {
+             // The API no-ops the worktree path when this matches the
+             // current HEAD branch.
+             branch: currentBranch || undefined,
++            // Intelligence-mode + AI-provider metadata (scanner stays
++            // deterministic; these drive AI explain/fix routing + the
++            // Findings-tab display and re-scan default).
++            intelligenceMode,
++            aiProviderMode,
++            manualModelSelection:
++              intelligenceMode === "manual" ? manualModelSelection : undefined,
+           }),
+           // Wiring the AbortSignal here is what makes the Stop button
+           // actually do something: aborting the controller rejects the
+@@ -509,7 +525,13 @@ export default function Home() {
+         // beyond a single "Latest scan" entry.
+         const branchAtScan =
+           target.branch?.trim() || currentBranch || "main"
+-        const item = scanItemFromReport(report, target, branchAtScan)
++        const item = scanItemFromReport(report, target, branchAtScan, {
++          intelligenceMode,
++          modeLabel: MODE_LABELS[intelligenceMode],
++          aiProviderMode,
++          manualModelSelection:
++            intelligenceMode === "manual" ? manualModelSelection : undefined,
++        })
+         const next = appendScanToHistory(item)
+         setScanHistory(next)
+         return {
+diff --git a/lib/scan-history.ts b/lib/scan-history.ts
+index b9b6682..607c35c 100644
+--- a/lib/scan-history.ts
++++ b/lib/scan-history.ts
+@@ -1,6 +1,22 @@
+ import type { Project } from "./projects"
+ import type { ScanReport } from "./scan-report"
+ 
++export type ScanIntelligenceMode = "save" | "auto" | "pro" | "max" | "manual"
++export type ScanAiProviderMode = "hosted" | "byok"
++
++/** Mode/provider metadata stamped onto each scan, surfaced in the
++ *  Findings tab and reused as the re-scan default. Optional so legacy
++ *  entries still load. */
++export interface ScanModeMetadata {
++  intelligenceMode: ScanIntelligenceMode
++  modeLabel: string
++  aiProviderMode: ScanAiProviderMode
++  manualModelSelection?: Record<string, string>
++  estimatedCost?: number
++  actualCost?: number
++  creditsUsed?: number
++}
++
+ export type ScanHistoryItem = {
+   id: string
+   projectId: string
+@@ -12,6 +28,16 @@ export type ScanHistoryItem = {
+   summary: ScanReport["summary"]
+   findingCount: number
+   report: ScanReport
++  /** Intelligence-mode + AI-provider metadata for this scan. */
++  meta?: ScanModeMetadata
++}
++
++export const MODE_LABELS: Record<ScanIntelligenceMode, string> = {
++  save: "Save / Deterministic+Explain",
++  auto: "Auto / Smart Routing",
++  pro: "Pro / High Accuracy",
++  max: "Max / Deep Review",
++  manual: "Manual / Select Model",
+ }
+ 
+ const STORAGE_KEY = "edge-agent-ai.scanHistory"
+@@ -122,7 +148,8 @@ export function scanHistoryForProject(
+ export function scanItemFromReport(
+   report: ScanReport,
+   project: Project,
+-  branch: string
++  branch: string,
++  meta?: ScanModeMetadata
+ ): ScanHistoryItem {
+   return {
+     id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+@@ -135,6 +162,7 @@ export function scanItemFromReport(
+     summary: report.summary,
+     findingCount: report.summary.total,
+     report,
++    meta,
+   }
+ }
+ 

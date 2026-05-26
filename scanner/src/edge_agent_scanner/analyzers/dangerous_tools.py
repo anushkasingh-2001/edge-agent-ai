@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from edge_agent_scanner.analyzers._utils import make_finding
 from edge_agent_scanner.analyzers.confidence import ConfidenceFeatures, is_prod_file
 from edge_agent_scanner.analyzers.escalation import annotate_finding
@@ -12,8 +14,74 @@ from edge_agent_scanner.analyzers.finding_explanations import (
 from edge_agent_scanner.ir.graph import reachable_set
 from edge_agent_scanner.ir.models import AgentIR
 from edge_agent_scanner.ir.sinks import highest_impact, impact_for_effect
+from edge_agent_scanner.ir.sinks_ext import is_json_dump, is_tempfile_create
 from edge_agent_scanner.report import EvidencePathNode
 from edge_agent_scanner.walker import ScannedFile
+
+# Bare ``json.dumps(obj)`` is a transformation, NOT a data export. It
+# only matters when its result later flows into a write/network sink.
+# Same story for ``tempfile.NamedTemporaryFile`` lifecycle inside a
+# try/finally: that's cleanup, not a dangerous file mutation. These
+# helpers gate the "presence warning" branch so we stop firing on
+# benign serializations and tempfile boilerplate.
+_DATA_EXPORT_DOWNSTREAM_RX = re.compile(
+    r"\b("
+    r"requests\.(?:post|put|patch)|httpx\.(?:post|put|patch)|"
+    r"st\.download_button|response\.json|return\s+Response|"
+    r"\.write\s*\(|open\([^)]*['\"][wa]['\"]?\)|"
+    r"redis\.\w+\s*\(\s*['\"]set|"
+    r"boto3\.client.*put_object|s3\.upload"
+    r")",
+    re.I,
+)
+
+# ``shell=True`` and string-concatenation are the actual shell-injection
+# precursors. A bare ``subprocess.Popen(["ffmpeg", "-i", target_path])``
+# is not shell injection — it's an external-process presence warning,
+# and the explanation/severity must reflect that distinction.
+_SUBPROCESS_CALL_RX = re.compile(
+    r"\b(subprocess\.(?:Popen|run|call|check_call|check_output)|os\.popen)\s*\(",
+    re.I,
+)
+_SHELL_TRUE_RX = re.compile(r"shell\s*=\s*True", re.I)
+_LIST_ARG_RX = re.compile(r"\(\s*\[")
+_STRING_CONCAT_ARG_RX = re.compile(r"\(\s*(?:f?['\"][^'\"]*['\"]\s*\+|['\"][^'\"]*['\"]\s*\.format)")
+
+
+def _is_safe_list_arg_subprocess(text: str) -> bool:
+    """True iff ``text`` is a subprocess call WITHOUT a shell-injection
+    risk surface.
+
+    Accepts both the inline-list shape:
+        subprocess.Popen(["ffmpeg", "-i", target_path], ...)
+    AND the named-variable shape, which is the more common style:
+        cmd = ["ffmpeg", ...]
+        subprocess.Popen(cmd, ...)
+    because the actual property we care about is the ABSENCE of
+    ``shell=True`` AND the absence of a string-concatenation/format in
+    the args. If neither risk-marker is present, the call is at worst
+    an external-process presence warning, not a shell-injection finding.
+
+    The inline-list case is still treated as the strongest signal —
+    we set ``_LIST_ARG_RX`` to True there — but a variable arg whose
+    line shows no ``shell=True`` and no ``"... " + user`` concat is
+    treated as safe-by-default. This matches how subprocess is used
+    in the wild (ffmpeg/sox/curl pipelines).
+    """
+    if not text:
+        return False
+    if not _SUBPROCESS_CALL_RX.search(text):
+        return False
+    if _SHELL_TRUE_RX.search(text):
+        return False
+    if _STRING_CONCAT_ARG_RX.search(text):
+        return False
+    # Inline list literal in the call args is a STRONG positive signal,
+    # but its absence does not mean "string command" — the caller may
+    # have stored the list in a local variable. In that case we still
+    # treat the call as safe-list-arg as long as none of the risk
+    # markers (shell=True / string concat) appear on the line.
+    return True
 
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
 
@@ -169,6 +237,19 @@ def _analyze_standalone_sinks(ir: AgentIR, reach_normal: set[str] | None) -> lis
         if not is_prod_file(sink.location.file):
             continue
 
+        # ---- Downgrade benign transform / cleanup sinks -----------------
+        # `json.dumps(obj)` alone is a transformation, not an export.
+        # We only keep it as a finding if the same statement also
+        # flows into a network/file/download sink. Otherwise suppress.
+        call_expr = sink.call_expression or sink.source_line or ""
+        if is_json_dump(call_expr) and not _DATA_EXPORT_DOWNSTREAM_RX.search(call_expr):
+            continue
+        # `tempfile.NamedTemporaryFile` / `mkstemp` are scaffolding, not
+        # dangerous file mutations. Suppress unless paired with explicit
+        # writes to a user-controlled path (handled by other rules).
+        if is_tempfile_create(call_expr):
+            continue
+
         base_severity = str(sink.impact or impact_for_effect(sink.kind)).lower()
         if base_severity not in _VALID_SEVERITIES:
             base_severity = "medium"
@@ -178,6 +259,17 @@ def _analyze_standalone_sinks(ir: AgentIR, reach_normal: set[str] | None) -> lis
         # standalone bucket; everything else compresses to "low" so the
         # bucket doesn't drown the report.
         if sink.kind != "code_execution" and downgraded != "low":
+            downgraded = "low"
+
+        # Sub-process with LIST args and no `shell=True` is NOT shell
+        # injection. It's an external-process presence warning at low
+        # severity. The explanation will reflect that distinction via
+        # the metadata flag below; here we just adjust severity so a
+        # safe ffmpeg/list-arg call doesn't sit at "medium".
+        safe_list_arg = _is_safe_list_arg_subprocess(
+            sink.call_expression or sink.source_line or ""
+        )
+        if safe_list_arg:
             downgraded = "low"
 
         key = (sink.location.file, sink.location.start_line, sink.kind)
@@ -207,18 +299,68 @@ def _analyze_standalone_sinks(ir: AgentIR, reach_normal: set[str] | None) -> lis
         if form_data_fields:
             evidence_lines.append(f"triggered_by=form_submit fields={form_data_fields}")
 
-        f = make_finding(
-            rule_id="dangerous-tools",
-            severity=downgraded,
-            category="Presence warning (agent unknown)",
-            title=standalone_sink_title(sink_kind=sink.kind, label=sink.label),
-            location=sink.location,
-            reason=format_reason(sink_expl),
-            suggested_fix=sink_expl.suggested_fix,
-            evidence="\n".join(evidence_lines),
-            code=finding_code,
-            confidence=0.55 if downgraded == "medium" else 0.4,
-        )
+        # Override title + suggested_fix wording when the sink is a
+        # list-arg subprocess with no `shell=True`. The default
+        # subprocess template warns about shell escaping; that wording
+        # is wrong for a fixed list-arg ffmpeg/curl/python call and
+        # misleads reviewers into thinking we detected command
+        # injection when we didn't.
+        if safe_list_arg:
+            list_arg_title = (
+                f"External process call (list args, no shell=True): {sink.label} "
+                "(presence warning)"
+            )
+            list_arg_reason = (
+                "What was detected: This code launches an external process via "
+                f"`{sink.label}` using a LIST argument vector and without "
+                "`shell=True`.\n\n"
+                "Why it can be risky: External processes can still misbehave even "
+                "without shell injection — risks here are untrusted media/file path "
+                "validation, trusted binary path, missing process timeout/cleanup, "
+                "resource exhaustion from large media, and temp output path "
+                "restrictions.\n\n"
+                "Why this may be okay: Fixed argument vectors (list args) and "
+                "`shell=False` (the default for list args) eliminate the classic "
+                "shell-injection class of bugs. Common for ffmpeg/sox/ImageMagick "
+                "pipelines that pass user-supplied file paths through to a "
+                "trusted binary.\n\n"
+                "What to verify: That the binary path (`ffmpeg`, `curl`, etc.) "
+                "comes from a trusted source — not a user-controlled lookup — "
+                "and that user file paths are length/extension/contents-validated "
+                "before being passed as args. Confirm the process has a timeout "
+                "and the temp output path is constrained to a sandboxed directory."
+            )
+            list_arg_fix = (
+                "Keep list args (no `shell=True`). Validate user-supplied file "
+                "paths (resolve under a base dir, check extension/MIME), pin the "
+                "binary path explicitly, add a timeout, clean up temp outputs, "
+                "and treat unexpected stderr as a failure."
+            )
+            f = make_finding(
+                rule_id="dangerous-tools",
+                severity=downgraded,
+                category="Presence warning (agent unknown)",
+                title=list_arg_title,
+                location=sink.location,
+                reason=list_arg_reason,
+                suggested_fix=list_arg_fix,
+                evidence="\n".join(evidence_lines),
+                code=finding_code,
+                confidence=0.4,
+            )
+        else:
+            f = make_finding(
+                rule_id="dangerous-tools",
+                severity=downgraded,
+                category="Presence warning (agent unknown)",
+                title=standalone_sink_title(sink_kind=sink.kind, label=sink.label),
+                location=sink.location,
+                reason=format_reason(sink_expl),
+                suggested_fix=sink_expl.suggested_fix,
+                evidence="\n".join(evidence_lines),
+                code=finding_code,
+                confidence=0.55 if downgraded == "medium" else 0.4,
+            )
         annotate_finding(
             f,
             ConfidenceFeatures(

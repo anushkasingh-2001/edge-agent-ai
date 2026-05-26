@@ -1,0 +1,1013 @@
+diff --git a/app/api/finding/explain/route.ts b/app/api/finding/explain/route.ts
+index 0214bc0..d773df1 100644
+--- a/app/api/finding/explain/route.ts
++++ b/app/api/finding/explain/route.ts
+@@ -53,6 +53,12 @@ interface RouteBody {
+    * the cost-control default so we don't try to call a gpt-5 model that
+    * the user's key may not be entitled to. */
+   model?: string
++  /** Step 5: intelligence mode (save/auto/pro/max/manual). Forwarded to
++   *  explainOneFinding so the explainer model tier follows the mode. The
++   *  scanner-owned fields (severity/category/file/line/evidence) are
++   *  still NEVER taken from the model regardless of mode. */
++  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++  manualModels?: Record<string, string>
+ }
+ 
+ function clampCodeSnippet(input: unknown): string {
+@@ -155,6 +161,12 @@ export async function POST(req: Request) {
+       apiKey: bodyApiKey,
+       baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
+       model: modelForCall,
++      intelligenceMode:
++        typeof body.intelligenceMode === "string" ? body.intelligenceMode : undefined,
++      manualModels:
++        body.manualModels && typeof body.manualModels === "object"
++          ? body.manualModels
++          : undefined,
+     })
+   } catch (e) {
+     // Defensive: never let an unexpected error block the UI — fall back so
+diff --git a/app/api/finding/patch/route.ts b/app/api/finding/patch/route.ts
+index 11bbcb8..be57a07 100644
+--- a/app/api/finding/patch/route.ts
++++ b/app/api/finding/patch/route.ts
+@@ -62,6 +62,10 @@ interface PatchBody {
+   baseUrl?: string | null
+   provider?: ProviderKind
+   privateCodeMode?: boolean
++  /** Manual mode: per-task model overrides (explanation/root_cause/
++   *  suggest/patch/bulk/verify → tier). Threaded to the pipeline now;
++   *  honoured by routeForMode in Step 2. */
++  manualModels?: import("@/lib/intelligence-mode").ManualOverrides
+   /** apply only: the previewId the user reviewed. */
+   previewId?: string
+ }
+@@ -243,6 +247,13 @@ export async function POST(req: Request) {
+     apiKey,
+     baseUrl: body.baseUrl ?? null,
+     privateCodeMode: !!body.privateCodeMode,
++    // Step 1: thread the mode + complexity (+ manual overrides) into the
++    // pipeline. Behaviour is unchanged until Step 2 swaps routeModel for
++    // routeForMode; these fields are accepted and folded into the cache
++    // key now so the wiring is in place and callers are stable.
++    intelligenceMode,
++    complexity,
++    manualModels: body.manualModels,
+   })
+ 
+   if ("refused" in preview && preview.refused) {
+diff --git a/app/api/findings/fix-filtered/route.ts b/app/api/findings/fix-filtered/route.ts
+index 8377525..c0b687a 100644
+--- a/app/api/findings/fix-filtered/route.ts
++++ b/app/api/findings/fix-filtered/route.ts
+@@ -65,6 +65,9 @@ interface BulkBody {
+   baseUrl?: string | null
+   provider?: ProviderKind
+   privateCodeMode?: boolean
++  /** Manual mode: per-task model overrides. Threaded into the cluster
++   *  execution call so estimate and execution agree (Step 1). */
++  manualModels?: import("@/lib/intelligence-mode").ManualOverrides
+   /** When true, persist suppressions for `needs_user_decision` clusters
+    *  marked as "user accepts this as a known FP". Default: false — UI
+    *  must explicitly opt in (we never auto-suppress). */
+@@ -289,6 +292,16 @@ export async function POST(req: Request) {
+           needs_graph_context: true,
+           reason: c.reason,
+         }
++        // Step 1: compute the SAME complexity the estimate loop uses, and
++        // thread mode + complexity (+ manual) into execution so the model
++        // the estimate priced matches the model execution will run once
++        // Step 2 wires routeForMode inside the pipeline.
++        const clusterComplexity = scoreComplexity({
++          rule_id: representative.rule_id,
++          severity: representative.severity,
++          evidencePathFiles: representative.evidence_path_files,
++          evidencePathLen: representative.evidence_path_len,
++        })
+         const preview = await generatePatchPreview({
+           projectPath: resolved,
+           finding: representative,
+@@ -297,6 +310,9 @@ export async function POST(req: Request) {
+           apiKey: body.apiKey ?? process.env.OPENAI_API_KEY ?? null,
+           baseUrl: body.baseUrl ?? null,
+           privateCodeMode: !!body.privateCodeMode,
++          intelligenceMode,
++          complexity: clusterComplexity,
++          manualModels: body.manualModels,
+         })
+         return {
+           cluster_id: c.cluster_id,
+diff --git a/app/api/findings/fix/route.ts b/app/api/findings/fix/route.ts
+index 168aa18..4181f33 100644
+--- a/app/api/findings/fix/route.ts
++++ b/app/api/findings/fix/route.ts
+@@ -7,6 +7,16 @@ import {
+   type FixTarget,
+   type FixMode,
+ } from "@/lib/server-finding-fixes"
++// Step 2: mode-aware LLM delegation. When the mode allows LLM patches
++// and the deterministic engine couldn't fix a target, we upgrade that
++// target via the graph-routed pipeline (suggest only — apply still goes
++// through the deterministic safe-write path).
++import { planFix, type PlannerFinding } from "@/lib/fix-planner"
++import { generatePatchPreview, type PatchPreview } from "@/lib/server-patch-pipeline"
++import { MODE_POLICIES, scoreComplexity } from "@/lib/intelligence-mode"
++import type { IntelligenceMode } from "@/lib/context-bundle"
++import type { ProviderKind } from "@/lib/server-model-router"
++import type { FixProposal } from "@/lib/finding-fixes-client"
+ 
+ /**
+  * POST /api/findings/fix
+@@ -28,6 +38,20 @@ export async function POST(request: Request) {
+     projectPath?: string
+     mode?: FixMode
+     targets?: unknown
++    /** Step 1: intelligence mode threaded from the UI. The current
++     *  deterministic engine ignores it; Step 2+ will route the LLM
++     *  patch path by this value. Captured here so the end-to-end wiring
++     *  is provable (the value reaches the server) without changing
++     *  behaviour yet. */
++    intelligenceMode?: string
++    manualModels?: Record<string, string>
++    /** Provider config for the LLM upgrade path (BYOK). Optional —
++     *  when absent, the LLM delegation is skipped and the deterministic
++     *  result is returned unchanged. */
++    provider?: ProviderKind
++    apiKey?: string | null
++    baseUrl?: string | null
++    privateCodeMode?: boolean
+   } = {}
+   try {
+     body = await request.json()
+@@ -35,6 +59,9 @@ export async function POST(request: Request) {
+     body = {}
+   }
+ 
++  const intelligenceMode = body.intelligenceMode ?? "auto"
++  void intelligenceMode
++
+   if (!body.projectPath || typeof body.projectPath !== "string") {
+     return NextResponse.json(
+       { error: "projectPath is required." },
+@@ -112,6 +139,74 @@ export async function POST(request: Request) {
+       targets,
+       mode: body.mode,
+     })
++
++    // ---- Step 2: mode-aware LLM upgrade -----------------------------
++    // Deterministic-first stays the source of truth. We only invoke the
++    // graph-routed pipeline for targets the deterministic engine could
++    // NOT fix (no template / comment-marker-only), and only when:
++    //   - mode allows patch generation (Save does not), and
++    //   - we're in "suggest" mode (apply keeps the deterministic safe
++    //     write path; the LLM preview is reviewed, then applied via
++    //     /api/finding/patch?mode=apply), and
++    //   - a provider key is available.
++    const mode = (body.intelligenceMode ?? "auto") as IntelligenceMode
++    const policy = MODE_POLICIES[mode] ?? MODE_POLICIES.auto
++    const provider = (body.provider ?? "openai_compatible") as ProviderKind
++    const apiKey = body.apiKey ?? process.env.OPENAI_API_KEY ?? null
++
++    if (policy.allowPatchGeneration && body.mode === "suggest" && apiKey) {
++      const unfixed = result.proposals.filter(
++        (p) => !p.applied && (p.error_kind !== null || !p.diff || p.diff.trim() === ""),
++      )
++      for (const proposal of unfixed) {
++        const target = targets.find((t) => t.ref_id === proposal.ref_id)
++        if (!target) continue
++        // secrets never goes to an LLM — leave the deterministic result.
++        if (target.rule_id === "secrets") continue
++
++        const finding: PlannerFinding = {
++          id: target.ref_id,
++          rule_id: target.rule_id,
++          severity: "high", // conservative; real severity carried by scanner elsewhere
++          category: "",
++          file: target.file,
++          line: target.line,
++        }
++        const complexity = scoreComplexity({
++          rule_id: finding.rule_id,
++          severity: finding.severity,
++        })
++        const preview = await generatePatchPreview({
++          projectPath: requested,
++          finding,
++          plan: planFix(finding),
++          provider,
++          apiKey,
++          baseUrl: body.baseUrl ?? null,
++          privateCodeMode: !!body.privateCodeMode,
++          intelligenceMode: mode,
++          complexity,
++          manualModels: body.manualModels,
++        })
++        if ("refused" in preview && preview.refused) continue
++        const pv = preview as PatchPreview
++        // Convert the PatchPreview into the FixProposal shape the UI
++        // already renders. Marked not-applied (suggest); the user
++        // promotes to a real write via the patch route.
++        const upgraded: Partial<FixProposal> = {
++          title: `${proposal.title} (AI ${mode})`,
++          description: pv.reason,
++          before: pv.patches[0]?.beforeFileHash ? proposal.before : proposal.before,
++          after: pv.patches[0]?.newContents ?? proposal.after,
++          diff: pv.unifiedDiff || proposal.diff,
++          risk: pv.resolved ? "edits-line" : "no-op",
++          error: pv.resolved ? null : "LLM patch did not clear the finding on re-scan",
++          error_kind: pv.resolved ? null : proposal.error_kind,
++        }
++        Object.assign(proposal, upgraded)
++      }
++    }
++
+     return NextResponse.json(result)
+   } catch (e) {
+     return NextResponse.json(
+diff --git a/components/finding-drawer.tsx b/components/finding-drawer.tsx
+index 8267733..186911f 100644
+--- a/components/finding-drawer.tsx
++++ b/components/finding-drawer.tsx
+@@ -42,6 +42,10 @@ interface FindingDrawerProps {
+   /** Called after a successful apply so the parent can re-scan / refresh
+    *  the findings list. */
+   onFixApplied?: (result: RunFixesResult) => void
++  /** Step 1: selected intelligence mode from the Findings view,
++   *  forwarded to the Fix button → dialog → API. */
++  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++  manualModels?: Record<string, string>
+   /** Hand the user off to the VS Code/Cursor-style workspace view
+    *  (file tree + Monaco editor) with this finding pinned. When set,
+    *  the drawer renders an "Open in editor" button next to the title.
+@@ -55,6 +59,8 @@ export function FindingDrawer({
+   onOpenChange,
+   projectPath = null,
+   onFixApplied,
++  intelligenceMode,
++  manualModels,
+   onOpenInEditor,
+ }: FindingDrawerProps) {
+   // AI explanation state. Lives at the drawer level so it resets whenever
+@@ -76,7 +82,7 @@ export function FindingDrawer({
+     if (!open || !finding || !projectPath) {
+       return
+     }
+-    const key = `${projectPath}::${finding.scannerFindingId ?? finding.id}`
++    const key = `${projectPath}::${finding.scannerFindingId ?? finding.id}::${intelligenceMode ?? "auto"}`
+     if (lastRequestKey.current === key && (aiExplanation || aiError)) {
+       return
+     }
+@@ -90,6 +96,8 @@ export function FindingDrawer({
+     fetchFindingExplanation({
+       projectPath,
+       finding,
++      intelligenceMode,
++      manualModels,
+       signal: controller.signal,
+     })
+       .then((res) => {
+@@ -107,7 +115,7 @@ export function FindingDrawer({
+     // We intentionally do NOT re-fetch when projectPath/finding identity
+     // is stable — only on real open transitions or finding switches.
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [open, finding?.scannerFindingId, finding?.id, projectPath])
++  }, [open, finding?.scannerFindingId, finding?.id, projectPath, intelligenceMode])
+ 
+   // Reset when drawer fully closes so a future open re-fetches cleanly.
+   useEffect(() => {
+@@ -328,6 +336,8 @@ export function FindingDrawer({
+               size="default"
+               variant="default"
+               className="justify-start w-full"
++              intelligenceMode={intelligenceMode}
++              manualModels={manualModels}
+               onApplied={onFixApplied}
+             />
+             <Button variant="outline" className="justify-start text-muted-foreground">
+diff --git a/components/finding-fix-button.tsx b/components/finding-fix-button.tsx
+index 2b5a0ad..65b98bb 100644
+--- a/components/finding-fix-button.tsx
++++ b/components/finding-fix-button.tsx
+@@ -29,6 +29,10 @@ interface FindingFixButtonProps {
+   /** Disable when the caller has no targets. */
+   disabled?: boolean
+   className?: string
++  /** Step 1: selected intelligence mode, forwarded to the fix dialog →
++   *  runFindingFixesApi → server. */
++  intelligenceMode?: string
++  manualModels?: Record<string, string>
+   onApplied?: (result: RunFixesResult) => void
+ }
+ 
+@@ -52,6 +56,8 @@ export function FindingFixButton({
+   variant = "outline",
+   disabled = false,
+   className,
++  intelligenceMode,
++  manualModels,
+   onApplied,
+ }: FindingFixButtonProps) {
+   const [dialogOpen, setDialogOpen] = useState(false)
+@@ -123,6 +129,8 @@ export function FindingFixButton({
+         mode={dialogMode}
+         projectPath={projectPath}
+         title={dialogTitle ?? label}
++        intelligenceMode={intelligenceMode}
++        manualModels={manualModels}
+         onApplied={onApplied}
+       />
+     </>
+diff --git a/components/finding-fix-dialog.tsx b/components/finding-fix-dialog.tsx
+index 4eeef63..7c06171 100644
+--- a/components/finding-fix-dialog.tsx
++++ b/components/finding-fix-dialog.tsx
+@@ -43,6 +43,11 @@ interface FindingFixDialogProps {
+   projectPath: string | null
+   /** Friendly title shown in the dialog header. */
+   title: string
++  /** Step 1: selected intelligence mode, threaded from the Findings
++   *  view → drawer → button → here → runFindingFixesApi. Optional so
++   *  existing callers keep working; defaults handled server-side. */
++  intelligenceMode?: string
++  manualModels?: Record<string, string>
+   /** Optional after-apply callback so callers can refresh state (e.g.
+    *  re-run a scan after auto-fixing all findings). */
+   onApplied?: (result: RunFixesResult) => void
+@@ -69,6 +74,8 @@ export function FindingFixDialog({
+   mode,
+   projectPath,
+   title,
++  intelligenceMode,
++  manualModels,
+   onApplied,
+ }: FindingFixDialogProps) {
+   const [result, setResult] = useState<RunFixesResult | null>(null)
+@@ -104,6 +111,8 @@ export function FindingFixDialog({
+           projectPath,
+           mode: m,
+           targets,
++          intelligenceMode,
++          manualModels,
+         })
+         setResult(r)
+         setLastMode(m)
+@@ -114,7 +123,7 @@ export function FindingFixDialog({
+         setBusy(false)
+       }
+     },
+-    [projectPath, targets, onApplied]
++    [projectPath, targets, onApplied, intelligenceMode, manualModels]
+   )
+ 
+   // Auto-run on first open. Closing + reopening re-runs so we always
+diff --git a/components/views/findings.tsx b/components/views/findings.tsx
+index 0a56b7e..58f32de 100644
+--- a/components/views/findings.tsx
++++ b/components/views/findings.tsx
+@@ -686,6 +686,7 @@ function CodeAnalysisPanel({
+         onOpenChange={setDrawerOpen}
+         projectPath={projectPath}
+         onFixApplied={handleApplied}
++        intelligenceMode={intelligenceMode}
+         onOpenInEditor={(f) => {
+           setDrawerOpen(false)
+           setWorkspaceFinding(f)
+diff --git a/lib/finding-explanation-client.ts b/lib/finding-explanation-client.ts
+index 528b81f..0142b8d 100644
+--- a/lib/finding-explanation-client.ts
++++ b/lib/finding-explanation-client.ts
+@@ -78,6 +78,10 @@ export interface ExplanationRequest {
+   /** Caller-supplied model id. Honoured by the server only when paired
+    * with a caller-supplied apiKey (i.e. the browser-settings flow). */
+   model?: string | null
++  /** Step 5: intelligence mode, forwarded so the explainer model tier
++   *  follows the selected mode (Save→cheap, Pro/Max→deep). */
++  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++  manualModels?: Record<string, string>
+   signal?: AbortSignal
+ }
+ 
+@@ -151,6 +155,8 @@ export async function fetchFindingExplanation(req: ExplanationRequest): Promise<
+     apiKey,
+     baseUrl,
+     model,
++    intelligenceMode: req.intelligenceMode,
++    manualModels: req.manualModels,
+     finding: {
+       finding_id: req.finding.scannerFindingId ?? String(req.finding.id),
+       rule_id: req.finding.ruleId ?? "unknown",
+diff --git a/lib/finding-fixes-client.ts b/lib/finding-fixes-client.ts
+index 1abe379..af08c79 100644
+--- a/lib/finding-fixes-client.ts
++++ b/lib/finding-fixes-client.ts
+@@ -57,6 +57,12 @@ export async function runFindingFixesApi(args: {
+   projectPath: string
+   mode: FixMode
+   targets: FixTarget[]
++  /** Step 1: the selected intelligence mode is forwarded to the server
++   *  so the deterministic engine (today) and the mode-aware patch
++   *  pipeline (Step 2+) receive it. Accepted-and-ignored by the current
++   *  /api/findings/fix handler; threaded now so the value arrives. */
++  intelligenceMode?: string
++  manualModels?: Record<string, string>
+   signal?: AbortSignal
+ }): Promise<RunFixesResult> {
+   const res = await fetch("/api/findings/fix", {
+@@ -66,6 +72,8 @@ export async function runFindingFixesApi(args: {
+       projectPath: args.projectPath,
+       mode: args.mode,
+       targets: args.targets,
++      intelligenceMode: args.intelligenceMode,
++      manualModels: args.manualModels,
+     }),
+     signal: args.signal,
+   })
+diff --git a/lib/server-finding-explanations.ts b/lib/server-finding-explanations.ts
+index 03a39c3..34c35ee 100644
+--- a/lib/server-finding-explanations.ts
++++ b/lib/server-finding-explanations.ts
+@@ -163,6 +163,14 @@ export interface ExplainOptions {
+   now?: () => number
+   /** Total request budget in ms (default 25_000). */
+   timeoutMs?: number
++  /** Step 5: intelligence mode. When set (and no explicit `model` is
++   *  forwarded), the explainer model is chosen by mode rather than only
++   *  by severity — Save/Auto → cheap explainer, Pro/Max → deep. An
++   *  explicit `opts.model` (user Settings choice) still wins. */
++  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
++  /** Manual mode: per-task model overrides. Only `explanation` is read
++   *  here. Honoured when `intelligenceMode === "manual"`. */
++  manualModels?: Record<string, string>
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -207,6 +215,47 @@ export function pickModel(finding: Pick<FindingInput, "severity" | "agent_reacha
+   return base
+ }
+ 
++/**
++ * Step 5: mode-aware explainer model.
++ *
++ * When an intelligence mode is supplied we let it influence the tier on
++ * top of the severity heuristic:
++ *   - save / auto  → the cheap base explainer (cost-first; explanation
++ *                    is the only LLM use in Save).
++ *   - pro / max    → the deep explainer for high/critical/reachable
++ *                    findings, base otherwise (accuracy-first).
++ *   - manual       → the user's `manualModels.explanation` id, if set.
++ *
++ * Returns null when no mode-specific override applies, so the caller
++ * falls back to `pickModel(finding)` (pure back-compat for callers that
++ * don't pass a mode).
++ */
++export function pickModelForMode(
++  finding: Pick<FindingInput, "severity" | "agent_reachable">,
++  mode: string | undefined,
++  manualModels?: Record<string, string>,
++): string | null {
++  if (!mode) return null
++  const deep = envModel("EDGE_AGENT_EXPLAINER_DEEP_MODEL", DEFAULT_EXPLAINER_DEEP_MODEL)
++  const base = envModel("EDGE_AGENT_EXPLAINER_MODEL", DEFAULT_EXPLAINER_MODEL)
++  switch (mode) {
++    case "save":
++    case "auto":
++      // Cost-first: cheap explainer regardless of severity.
++      return base
++    case "pro":
++    case "max":
++      // Accuracy-first: deep on the cases that matter.
++      return pickModel(finding) === base ? deep : pickModel(finding)
++    case "manual": {
++      const chosen = manualModels?.explanation
++      return typeof chosen === "string" && chosen.trim() ? chosen.trim() : null
++    }
++    default:
++      return null
++  }
++}
++
+ // Per-process counter. Resets on dev-server reload. We still track it
+ // so an operator who explicitly sets EDGE_AGENT_EXPLAINER_SESSION_CAP
+ // gets a working ceiling — but by default there is no cap, so a user
+@@ -1274,7 +1323,10 @@ export async function explainOneFinding(
+   // requiring an env restart, while the default stays cheap and predictable.
+   const callerModel =
+     typeof opts.model === "string" && opts.model.trim() ? opts.model.trim() : null
+-  const model = callerModel ?? pickModel(finding)
++  const model =
++    callerModel ??
++    pickModelForMode(finding, opts.intelligenceMode, opts.manualModels) ??
++    pickModel(finding)
+ 
+   // Build the redacted local code context BEFORE computing the cache
+   // fingerprint so that edits to the surrounding function invalidate the
+diff --git a/lib/server-patch-pipeline.ts b/lib/server-patch-pipeline.ts
+index 286baa7..1005382 100644
+--- a/lib/server-patch-pipeline.ts
++++ b/lib/server-patch-pipeline.ts
+@@ -62,10 +62,20 @@ import {
+   parseJsonReply,
+ } from "./server-llm-client"
+ import {
+-  routeModel,
+   type ProviderKind,
+   type FixTask,
++  type ModelTier,
+ } from "./server-model-router"
++// Step 2: mode-aware routing. routeForMode delegates to routeModel
++// internally, so env overrides + the provider tier→id table still apply.
++import { routeForMode } from "./server-model-router-ext"
++import type { ManualOverrides } from "./intelligence-mode"
++import type { IntelligenceMode } from "./context-bundle"
++// Step 4: graph-bounded context. buildContextBundle replaces sending the
++// whole file; only the explicit, capped `max-patch` mode is allowed to
++// carry full-file content.
++import { buildContextBundle } from "./server-context-bundle"
++import { bundleHasNoFullFiles, bundleInputTokens } from "./context-bundle"
+ import {
+   scorePatch,
+   type ValidationSignals,
+@@ -164,6 +174,25 @@ export interface PipelineContext {
+    *  finding-resolved check still runs against the patched file's
+    *  bounded scan; only the project-wide pass is skipped. */
+   skipFullRescan?: boolean
++
++  /* ---- Intelligence-mode plumbing (Step 1) ----------------------- *
++   * These are THREADED through now so every caller can pass them; the
++   * model-selection behaviour still uses `routeModel` until Step 2
++   * swaps it for `routeForMode`. They are optional so existing callers
++   * (and tests) keep compiling. Defaults: mode "auto", complexity 0.
++   * `intelligenceMode` + `complexity` are folded into the cache key so
++   * that once Step 2 lands, switching mode/complexity correctly
++   * invalidates a cached preview. */
++  intelligenceMode?: IntelligenceMode
++  /** 0..1 complexity score from scoreComplexity(); drives Auto's
++   *  cheap→strong choice once Step 2 wires routeForMode. */
++  complexity?: number
++  /** Manual mode: per-task model overrides. Passed through to
++   *  routeForMode in Step 2; ignored by routeModel today. */
++  manualModels?: ManualOverrides
++  /** Escalation target tier when re-running after a failed validation
++   *  (Step 2+). Accepted now so the signature is stable. */
++  forceTier?: ModelTier
+ }
+ 
+ export async function generatePatchPreview(
+@@ -210,17 +239,21 @@ export async function generatePatchPreview(
+     }
+   }
+ 
+-  // ---- 2. Pick model + budget.
+-  const task = ctx.forceTask
+-    ? ctx.forceTask
+-    : ctx.plan.fix_class === "llm_complex_patch"
+-      ? "patch_complex"
+-      : "patch_simple"
+-  const decision = routeModel({
+-    task,
+-    fixClass: ctx.plan.fix_class,
++  // ---- 2. Pick model + budget (Step 2: mode-aware routing).
++  // The mode + complexity now drive model selection via routeForMode,
++  // which delegates to the existing routeModel under the hood (so env
++  // overrides + the tier→id table are unchanged). `bundleMode` and
++  // `twoStep` are carried for the ContextBundle (Step 4) and the Max
++  // plan-then-patch branch (Step 6); `escalatedModel` is the target if
++  // a later validation-failure escalation is wired.
++  const decision = routeForMode({
++    mode: ctx.intelligenceMode ?? "auto",
++    task: "patch",
++    complexity: typeof ctx.complexity === "number" ? ctx.complexity : 0,
+     provider: ctx.provider,
+     privateCodeMode: ctx.privateCodeMode,
++    manual: ctx.manualModels,
++    forceTier: ctx.forceTier,
+   })
+ 
+   // ---- 3. Read the source file. (Single-file path — complex patches
+@@ -263,20 +296,90 @@ export async function generatePatchPreview(
+     return cached
+   }
+ 
+-  // ---- 5. Build redacted prompt. Every byte of code that goes to the
+-  //          model passes through `redactSecrets`.
+-  const promptUser = buildPatchPrompt({
+-    finding: ctx.finding,
+-    fileContents: redactSecrets(original),
+-    file: ctx.finding.file,
+-  })
++  // ---- 5. Build the prompt. Step 4: for every mode EXCEPT max-patch
++  //          we send a graph-bounded ContextBundle (redacted slices),
++  //          NOT the whole file, and ask for anchored edits. max-patch
++  //          is the single explicit, capped full-file path.
++  const allowFullFile = decision.bundleMode === "max-patch"
++  let promptUser: string
++  let systemPrompt: string
++
++  if (allowFullFile) {
++    systemPrompt = PATCH_SYSTEM_PROMPT
++    promptUser = buildPatchPrompt({
++      finding: ctx.finding,
++      fileContents: redactSecrets(original),
++      file: ctx.finding.file,
++    })
++  } else {
++    const bundle = buildContextBundle({
++      projectPath: ctx.projectPath,
++      mode: decision.bundleMode,
++      finding: {
++        id: ctx.finding.id,
++        rule_id: ctx.finding.rule_id,
++        severity: ctx.finding.severity,
++        title: ctx.finding.rule_id,
++        file: ctx.finding.file,
++        line: ctx.finding.line,
++        confidence: ctx.finding.confidence,
++        // evidence_path enrichment (callers/callees, related nodes) is
++        // wired from /api/ir in a later step; today the bundle is the
++        // primary + surrounding slices, already far smaller than the
++        // whole file.
++        evidence_path: [],
++      },
++      irHash: SCANNER_VERSION,
++    })
++    // Hard guarantee: no full-file slice leaked into a non-max bundle.
++    if (!bundleHasNoFullFiles(bundle)) {
++      return {
++        refused: true,
++        findingId: ctx.finding.id,
++        reason: "internal: context bundle exceeded slice bounds for this mode",
++        stage: "internal_error",
++      }
++    }
++    systemPrompt = PATCH_SYSTEM_PROMPT_BUNDLE
++    promptUser = renderBundlePrompt(bundle)
++    void bundleInputTokens // budget already enforced inside buildContextBundle
++  }
++
++  // ---- 5b. Step 6: Max plan-then-patch. When the route decided this is
++  //          a two-step task (Max, or high-complexity Auto patch), do a
++  //          PLAN call first, validate the JSON, and prepend the approved
++  //          plan to the patch prompt. A failed/invalid plan is NOT fatal
++  //          — we fall back to the single-shot patch so the feature
++  //          degrades gracefully rather than refusing.
++  if (decision.twoStep) {
++    const planLlm = await callLlm({
++      model: decision.model,
++      apiKey: provGuard.config.apiKey,
++      baseUrl: provGuard.config.baseUrl,
++      system: PLAN_SYSTEM_PROMPT,
++      user: promptUser,
++      json: true,
++      temperature: 0.1,
++      maxTokens: Math.min(decision.maxTokens, 700),
++    })
++    if (planLlm.ok) {
++      const parsedPlan = parseJsonReply(planLlm.text)
++      const planCheck = validatePatchPlan(parsedPlan)
++      if (planCheck.ok) {
++        // Prepend the approved plan; the patch phase must follow it.
++        promptUser = `${renderPlanForPatch(planCheck.plan)}${promptUser}`
++      }
++      // invalid plan → proceed single-shot (graceful degrade)
++    }
++    // plan call failed → proceed single-shot
++  }
+ 
+-  // ---- 6. Call the model.
++  // ---- 6. Call the model (patch phase).
+   const llm = await callLlm({
+     model: decision.model,
+     apiKey: provGuard.config.apiKey,
+     baseUrl: provGuard.config.baseUrl,
+-    system: PATCH_SYSTEM_PROMPT,
++    system: systemPrompt,
+     user: promptUser,
+     json: true,
+     temperature: 0.1,
+@@ -292,21 +395,33 @@ export async function generatePatchPreview(
+   }
+ 
+   const parsed = parseJsonReply<ModelPatchReply>(llm.text)
+-  if (!parsed || typeof parsed.new_contents !== "string") {
++  if (!parsed) {
++    return {
++      refused: true,
++      findingId: ctx.finding.id,
++      reason: "model reply was not valid JSON",
++      stage: "model_call",
++    }
++  }
++  // Resolve full new file contents: max-patch uses new_contents; bundle
++  // modes apply anchored edits to the real on-disk file.
++  const resolved = resolveNewContents(parsed, original, allowFullFile)
++  if (!resolved.ok) {
+     return {
+       refused: true,
+       findingId: ctx.finding.id,
+-      reason: "model reply missing new_contents",
++      reason: `could not build patch: ${resolved.error}`,
+       stage: "model_call",
+     }
+   }
++  const newContents = resolved.text
+ 
+   // ---- 7. Build the temp workspace, write the patched file, validate.
+   const workspace = makeTempWorkspace(ctx.projectPath)
+   try {
+     const tmpFile = path.join(workspace.path, ctx.finding.file)
+     fs.mkdirSync(path.dirname(tmpFile), { recursive: true })
+-    fs.writeFileSync(tmpFile, parsed.new_contents, "utf8")
++    fs.writeFileSync(tmpFile, newContents, "utf8")
+ 
+     const parses = await parseFile(tmpFile)
+     if (!parses) {
+@@ -335,12 +450,12 @@ export async function generatePatchPreview(
+       ctx,
+       report,
+       parses,
+-      diffLines: countDiffLines(original, parsed.new_contents),
+-      matchesStyle: matchesIndentStyle(original, parsed.new_contents),
++      diffLines: countDiffLines(original, newContents),
++      matchesStyle: matchesIndentStyle(original, newContents),
+     })
+ 
+     const conf = scorePatch(sigs)
+-    const previewFileHash = hashFileContents(parsed.new_contents)
++    const previewFileHash = hashFileContents(newContents)
+     const previewId = makePreviewId(cacheKey, previewFileHash)
+ 
+     const preview: PatchPreview = {
+@@ -349,12 +464,12 @@ export async function generatePatchPreview(
+       fixClass: ctx.plan.fix_class,
+       modelUsed: decision.model,
+       patches: [
+-        { file: ctx.finding.file, newContents: parsed.new_contents, beforeFileHash },
++        { file: ctx.finding.file, newContents: newContents, beforeFileHash },
+       ],
+       unifiedDiff: simpleUnifiedDiff(
+         ctx.finding.file,
+         original,
+-        parsed.new_contents,
++        newContents,
+       ),
+       confidence: conf,
+       signals: sigs,
+@@ -703,6 +818,15 @@ function hashContext(ctx: PipelineContext): string {
+         line: ctx.finding.line,
+         plan: ctx.plan.fix_class,
+         private: !!ctx.privateCodeMode,
++        // Step 1: part of the key so a cached preview generated under
++        // one mode/complexity is not reused under another once Step 2
++        // makes those affect model + context selection.
++        mode: ctx.intelligenceMode ?? "auto",
++        complexity:
++          typeof ctx.complexity === "number"
++            ? Math.round(ctx.complexity * 100) / 100
++            : 0,
++        manual: ctx.manualModels ?? null,
+       }),
+     )
+     .digest("hex")
+@@ -717,8 +841,20 @@ function makePreviewId(cacheKey: string, previewFileHash: string): string {
+  *  Prompts                                                            *
+  * ------------------------------------------------------------------ */
+ 
++interface ModelEdit {
++  /** Exact existing snippet to replace. Must occur EXACTLY ONCE in the
++   *  file (else the edit is rejected as ambiguous). */
++  old_str: string
++  /** Replacement snippet. */
++  new_str: string
++}
++
+ interface ModelPatchReply {
+-  new_contents: string
++  /** Full-file path (max-patch mode only): the entire new file. */
++  new_contents?: string
++  /** Bundle path (all other modes): anchored search/replace edits the
++   *  pipeline applies to the real on-disk file. */
++  edits?: ModelEdit[]
+   reason?: string
+ }
+ 
+@@ -763,3 +899,219 @@ function buildPatchPrompt(args: {
+       .join("\n"),
+   ].join("\n")
+ }
++
++/* ------------------------------------------------------------------ *
++ *  Step 4: graph-bounded prompting (bundle path)                      *
++ * ------------------------------------------------------------------ */
++
++/**
++ * System prompt for the bundle path. The model sees ONLY graph-bounded
++ * slices (taint path + neighborhood), never the whole file, so it must
++ * return anchored search/replace edits rather than full file contents.
++ */
++const PATCH_SYSTEM_PROMPT_BUNDLE = `You are a precise security code-fix assistant. You are given a static-scanner
++finding plus a GRAPH-BOUNDED CONTEXT BUNDLE: the taint path (source→sink),
++redacted code slices, and the relevant neighborhood. You do NOT see the whole
++file.
++
++Return a single JSON object with anchored edits:
++
++  { "edits": [ { "old_str": "<exact snippet to replace, copied verbatim from a
++                              slice — include enough surrounding text that it
++                              appears EXACTLY ONCE in the file>",
++                 "new_str": "<replacement snippet>" } ],
++    "reason": "<one short sentence>" }
++
++Hard rules:
++  - Output ONLY valid JSON. No prose, no markdown fences.
++  - Each old_str MUST be copied verbatim from a provided slice and must be
++    unique in the file. If unsure it's unique, include more surrounding lines.
++  - Make the SMALLEST change that resolves the finding. Prefer one edit.
++  - Preserve indentation style (tabs vs spaces) exactly.
++  - Never invent imports that don't exist; if a helper is needed, add it via an
++    edit near the top of the relevant slice.
++  - Never reintroduce a literal secret; use os.getenv / process.env.`
++
++/** Render a ContextBundle into a compact prompt body (redacted slices
++ *  only). Pure + exported for tests. */
++export function renderBundlePrompt(bundle: {
++  finding: { rule_id: string; severity: string; title: string; line?: number }
++  evidence: { primarySlice: { file: string; startLine: number; endLine: number; text: string } }
++  taintPath: {
++    nodes: Array<{ kind: string; subkind?: string; file: string; line: number; label?: string }>
++    slices: Array<{ file: string; startLine: number; endLine: number; text: string }>
++    guardsMissing: string[]
++  }
++  neighborhood: {
++    callers: Array<{ file: string; startLine: number; endLine: number; text: string }>
++    callees: Array<{ file: string; startLine: number; endLine: number; text: string }>
++  }
++}): string {
++  const slice = (s: { file: string; startLine: number; endLine: number; text: string }) =>
++    `--- ${s.file}:${s.startLine}-${s.endLine}\n${s.text}`
++  const lines: string[] = [
++    `FINDING: ${bundle.finding.rule_id} (${bundle.finding.severity}) — ${bundle.finding.title}`,
++    ``,
++    `PRIMARY LOCATION:`,
++    slice(bundle.evidence.primarySlice),
++  ]
++  if (bundle.taintPath.nodes.length) {
++    lines.push(
++      ``,
++      `TAINT PATH (source→sink):`,
++      bundle.taintPath.nodes
++        .map((n) => `  ${n.kind}${n.subkind ? `/${n.subkind}` : ""} @ ${n.file}:${n.line}${n.label ? ` (${n.label})` : ""}`)
++        .join("\n"),
++    )
++  }
++  if (bundle.taintPath.slices.length) {
++    lines.push(``, `TAINT PATH SLICES:`, ...bundle.taintPath.slices.map(slice))
++  }
++  if (bundle.neighborhood.callers.length) {
++    lines.push(``, `CALLERS:`, ...bundle.neighborhood.callers.map(slice))
++  }
++  if (bundle.neighborhood.callees.length) {
++    lines.push(``, `CALLEES:`, ...bundle.neighborhood.callees.map(slice))
++  }
++  if (bundle.taintPath.guardsMissing.length) {
++    lines.push(``, `MISSING GUARDS: ${bundle.taintPath.guardsMissing.join(", ")}`)
++  }
++  return lines.join("\n")
++}
++
++/**
++ * Apply anchored search/replace edits to the original file text.
++ * Each old_str must occur EXACTLY ONCE (ambiguous or missing → error).
++ * Pure + exported for tests. Returns the new file text or an error.
++ */
++export function applySearchReplace(
++  original: string,
++  edits: ModelEdit[],
++): { ok: true; text: string } | { ok: false; error: string } {
++  if (!Array.isArray(edits) || edits.length === 0) {
++    return { ok: false, error: "no edits provided" }
++  }
++  let text = original
++  for (const [i, edit] of edits.entries()) {
++    if (typeof edit?.old_str !== "string" || typeof edit?.new_str !== "string") {
++      return { ok: false, error: `edit ${i}: old_str/new_str must be strings` }
++    }
++    if (edit.old_str === "") {
++      return { ok: false, error: `edit ${i}: old_str is empty` }
++    }
++    const first = text.indexOf(edit.old_str)
++    if (first === -1) {
++      return { ok: false, error: `edit ${i}: old_str not found in file` }
++    }
++    const second = text.indexOf(edit.old_str, first + edit.old_str.length)
++    if (second !== -1) {
++      return { ok: false, error: `edit ${i}: old_str is ambiguous (matches >1 location)` }
++    }
++    text = text.slice(0, first) + edit.new_str + text.slice(first + edit.old_str.length)
++  }
++  return { ok: true, text }
++}
++
++/* ------------------------------------------------------------------ *
++ *  Step 6: Max plan-then-patch                                        *
++ * ------------------------------------------------------------------ */
++
++export interface PatchPlan {
++  /** One-sentence statement of the underlying problem. */
++  problem_statement: string
++  /** The root cause (where the fix should land — may differ from the
++   *  finding line). */
++  root_cause: string
++  /** Invariants the patch must NOT break (behaviour to preserve). */
++  invariants_to_preserve: string[]
++  /** The concrete guard/mitigation the patch will add. */
++  guard_to_add: string
++  /** Project-relative files the patch is expected to touch. */
++  files_to_change: string[]
++}
++
++const PLAN_SYSTEM_PROMPT = `You are a senior security engineer doing the PLANNING phase of a fix.
++You are given a static-scanner finding plus a graph-bounded context bundle.
++Do NOT write code yet. Produce a concise JSON plan:
++
++  { "problem_statement": "<one sentence>",
++    "root_cause": "<where the fix must land and why>",
++    "invariants_to_preserve": ["<behaviour that must keep working>", ...],
++    "guard_to_add": "<the concrete mitigation, e.g. parameterize the query>",
++    "files_to_change": ["<project-relative path>", ...] }
++
++Hard rules:
++  - Output ONLY valid JSON. No prose, no markdown fences.
++  - files_to_change must be real paths visible in the bundle.
++  - Keep it short; this plan is fed back to the patch phase.`
++
++/** Validate a parsed PatchPlan. Pure + exported for tests. */
++export function validatePatchPlan(
++  plan: unknown,
++): { ok: true; plan: PatchPlan } | { ok: false; error: string } {
++  if (!plan || typeof plan !== "object") return { ok: false, error: "plan not an object" }
++  const p = plan as Record<string, unknown>
++  if (typeof p.problem_statement !== "string" || !p.problem_statement.trim()) {
++    return { ok: false, error: "missing problem_statement" }
++  }
++  if (typeof p.root_cause !== "string" || !p.root_cause.trim()) {
++    return { ok: false, error: "missing root_cause" }
++  }
++  if (typeof p.guard_to_add !== "string" || !p.guard_to_add.trim()) {
++    return { ok: false, error: "missing guard_to_add" }
++  }
++  const invariants = Array.isArray(p.invariants_to_preserve)
++    ? p.invariants_to_preserve.filter((x): x is string => typeof x === "string")
++    : []
++  const files = Array.isArray(p.files_to_change)
++    ? p.files_to_change.filter((x): x is string => typeof x === "string")
++    : []
++  if (files.length === 0) return { ok: false, error: "files_to_change empty" }
++  return {
++    ok: true,
++    plan: {
++      problem_statement: p.problem_statement,
++      root_cause: p.root_cause,
++      invariants_to_preserve: invariants,
++      guard_to_add: p.guard_to_add,
++      files_to_change: files,
++    },
++  }
++}
++
++/** Render a validated plan as a prefix block for the patch prompt. Pure. */
++export function renderPlanForPatch(plan: PatchPlan): string {
++  return [
++    `APPROVED PATCH PLAN (follow it):`,
++    `  problem : ${plan.problem_statement}`,
++    `  root    : ${plan.root_cause}`,
++    `  guard   : ${plan.guard_to_add}`,
++    `  preserve: ${plan.invariants_to_preserve.join("; ") || "(none stated)"}`,
++    `  files   : ${plan.files_to_change.join(", ")}`,
++    ``,
++  ].join("\n")
++}
++
++/**
++ * Resolve the full new file contents from a model reply. Full-file path
++ * (max-patch) uses `new_contents`; bundle path applies `edits` to the
++ * original. Pure + exported for tests.
++ */
++export function resolveNewContents(
++  parsed: ModelPatchReply,
++  original: string,
++  allowFullFile: boolean,
++): { ok: true; text: string } | { ok: false; error: string } {
++  if (allowFullFile && typeof parsed.new_contents === "string") {
++    return { ok: true, text: parsed.new_contents }
++  }
++  if (Array.isArray(parsed.edits) && parsed.edits.length > 0) {
++    return applySearchReplace(original, parsed.edits)
++  }
++  // Tolerate a full-file reply even on the bundle path (some models
++  // ignore the edits instruction) ONLY if it's non-empty.
++  if (typeof parsed.new_contents === "string" && parsed.new_contents.length > 0) {
++    return { ok: true, text: parsed.new_contents }
++  }
++  return { ok: false, error: "model reply had neither edits nor new_contents" }
++}

@@ -36,6 +36,7 @@ from edge_agent_scanner.ir.models import AgentIR, CodeLocation
 from edge_agent_scanner.ir.redact import redact_secrets
 from edge_agent_scanner.ir.sinks_ext import (
     classify_sink_ext,
+    env_key_category,
     env_key_in_expression,
     is_cypher_parameterized,
 )
@@ -90,9 +91,53 @@ _AUTH_TUPLE_RX = re.compile(r"""auth\s*=\s*\(\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"
 _PASSWORD_KW_RX = re.compile(r"""(password|passwd|pwd)\s*=\s*['"]([^'"]*)['"]""", re.I)
 
 # Prompt construction patterns (where a tainted value could be injected).
+# Notice: the bare f-string match is INTENTIONALLY broad here — it gates
+# the cheap "could this even be a prompt build site?" check. The
+# follow-up _PROMPT_SINK_RX requirement is what prevents diagnostic
+# `print(f"...")` / logging / status messages from being labelled a
+# prompt-injection sink.
 _PROMPT_BUILD_RX = re.compile(
     r"(f['\"].*\{.*\}.*['\"]|\.format\s*\(|PromptTemplate|ChatPromptTemplate|"
     r"\.from_template\s*\(|render\s*\(|Template\s*\()", re.I
+)
+
+# Concrete LLM/prompt sinks. A prompt-injection finding requires the
+# constructed string to FLOW INTO one of these on the same line or via
+# an assignment within the local lookback window. `print(...)`,
+# `logger.info(...)`, status banners, and similar diagnostic emitters
+# are deliberately NOT in this set.
+_PROMPT_SINK_RX = re.compile(
+    r"\b("
+    r"(?:client\.|openai\.|self\.client\.)?(?:chat\.completions\.create|completions\.create|responses\.create)"
+    r"|\.messages\.create"
+    r"|\.generate_content"
+    r"|\.(?:invoke|predict|complete|chat|run|stream)\s*\("
+    r"|PromptTemplate\b|ChatPromptTemplate\b|\.from_template\b"
+    r"|\bSystemMessage\b|\bHumanMessage\b|\bAIMessage\b|\bChatMessage\b"
+    r"|\bSystemMessagePromptTemplate\b|\bHumanMessagePromptTemplate\b"
+    r"|tokenizer\.\w*encode|\.apply_chat_template"
+    r"|model\.generate\s*\("
+    r"|pipeline\s*\(\s*['\"](?:text-generation|text2text-generation|conversational)"
+    r"|messages\s*=\s*\["
+    r"|prompt\s*=\s*"
+    r")",
+    re.I,
+)
+
+# Callers that consume the string but DO NOT pass it to an LLM. If the
+# f-string is wrapped in any of these on the same line and no LLM sink
+# is reachable, the finding must be suppressed — these are diagnostic
+# emitters, not prompt sinks.
+_NON_LLM_CONSUMER_RX = re.compile(
+    r"\b("
+    r"print|sys\.stdout\.write|sys\.stderr\.write"
+    r"|logger\.\w+|logging\.\w+|log\.\w+"
+    r"|raise\b|warnings\.warn|warn\b"
+    r"|tqdm\b|click\.echo|typer\.echo"
+    r"|st\.(?:write|info|warning|error|success|text|caption|markdown|code|metric|toast)"
+    r"|f-?string|assert\b"
+    r")\s*\(",
+    re.I,
 )
 
 
@@ -149,12 +194,99 @@ def _emit(
 # --------------------------------------------------------------------------- #
 # 1. Prompt injection via user/config/LLM-controlled placeholder
 # --------------------------------------------------------------------------- #
+# How many lines AFTER the candidate to scan when looking for the
+# downstream LLM sink. Most prompts are built and then immediately
+# passed into an LLM call within a few lines.
+_FORWARD_WINDOW = 12
+
+
+def _line_assigns_to(raw: str) -> str | None:
+    """Return the bare LHS variable name if ``raw`` is a simple
+    assignment like ``prompt = f"..."`` / ``messages = [...]``. None
+    otherwise. Used to track whether the constructed string flows into
+    a later LLM sink call.
+    """
+    m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*", raw)
+    return m.group(1) if m else None
+
+
+def _flows_to_llm_sink(
+    lines: list[str], start_idx: int, var_name: str | None
+) -> bool:
+    """True iff the constructed string reaches an LLM/prompt sink.
+
+    The sink can be on the same line (``client.chat.completions.create(messages=[{"role":"user","content":f"...{x}..."}])``)
+    OR within ``_FORWARD_WINDOW`` lines after an assignment to
+    ``var_name`` (``prompt = f"..."; client.chat.completions.create(prompt=prompt)``).
+
+    We deliberately do NOT do full inter-procedural taint. The forward
+    window catches the overwhelmingly common pattern of "build then
+    immediately send to model" while keeping false-positive rate low.
+    """
+    same_line = lines[start_idx]
+    if _PROMPT_SINK_RX.search(same_line):
+        return True
+
+    if not var_name:
+        return False
+
+    # Walk forward looking for `<var_name>` referenced near an LLM sink.
+    end = min(len(lines), start_idx + 1 + _FORWARD_WINDOW)
+    name_rx = re.compile(rf"\b{re.escape(var_name)}\b")
+    for j in range(start_idx + 1, end):
+        nxt = lines[j]
+        if name_rx.search(nxt) and _PROMPT_SINK_RX.search(nxt):
+            return True
+    return False
+
+
 def _detect_prompt_injection_placeholder(sf: ScannedFile) -> list:
+    """Flag user/config/LLM-controlled values that ACTUALLY flow into
+    an LLM/prompt sink.
+
+    Why the sink requirement is non-negotiable
+    ------------------------------------------
+    A previous version of this rule fired on any f-string + tainted
+    token in the local window. That painted diagnostic
+    ``print(f"Loading models with providers={_providers}")`` as a
+    prompt injection — but `_providers` is locally computed from
+    platform capability checks and the string is never sent to a
+    model. Without a real sink edge, the finding is a noisy false
+    positive.
+
+    This rewritten detector enforces taint → sink:
+      1. The line must look like a prompt-construction site
+         (f-string / .format / PromptTemplate / message dict).
+      2. The same line, or a forward window after a same-name
+         assignment, must contain a real LLM/prompt sink call.
+      3. The window around the construction must contain an untrusted
+         source (user/config/LLM output).
+      4. If a non-LLM consumer (``print``/``log``/``raise``/
+         ``st.write``/etc.) wraps the f-string AND no LLM sink is
+         reachable, the finding is suppressed unconditionally.
+    """
     out = []
     lines = sf.lines
     for i, raw in enumerate(lines):
         if not _PROMPT_BUILD_RX.search(raw):
             continue
+
+        # Hard suppress: wrapped in a known non-LLM consumer and no
+        # LLM sink on the same line.
+        if (
+            _NON_LLM_CONSUMER_RX.search(raw)
+            and not _PROMPT_SINK_RX.search(raw)
+        ):
+            continue
+
+        var = _line_assigns_to(raw)
+        if not _flows_to_llm_sink(lines, i, var):
+            # The constructed string never reaches an LLM. This is the
+            # critical taint→sink edge; without it the finding is a
+            # false positive (diagnostic print, log line, exception
+            # message, UI label, etc.).
+            continue
+
         window = _window_before(lines, i) + "\n" + raw
         tainted = (
             classify_framework_user_input(window)
@@ -163,6 +295,7 @@ def _detect_prompt_injection_placeholder(sf: ScannedFile) -> list:
         )
         if not tainted:
             continue
+
         guarded = bool(_PROMPT_SANITIZERS.search(window))
         out.append(
             _emit(
@@ -174,9 +307,10 @@ def _detect_prompt_injection_placeholder(sf: ScannedFile) -> list:
                 line_no=i + 1,
                 reason=(
                     "An untrusted value (request/config/model output) is interpolated "
-                    "into a prompt via f-string/.format()/PromptTemplate without an "
-                    "injection guard. An attacker can override the system instruction "
-                    "(prompt injection)."
+                    "into a prompt via f-string/.format()/PromptTemplate and the "
+                    "constructed string flows into an LLM call without an injection "
+                    "guard. An attacker controlling that value can override the system "
+                    "instruction (prompt injection)."
                 ),
                 fix=(
                     "Separate untrusted data from instructions: pass user text as a "
@@ -215,10 +349,12 @@ def _detect_cypher_injection(sf: ScannedFile) -> list:
         if not dynamic:
             continue
         if not (tainted_llm or tainted_user):
-            # still suspicious (dynamic cypher) but lower confidence
-            conf, sev, src = 0.55, "medium", False
-        else:
-            conf, sev, src = 0.9, "high", True
+            # No untrusted source feeds this dynamic Cypher within the
+            # local window. Per the precision spec, "dynamic" alone is
+            # not enough — applications often build queries from fixed
+            # constants for ergonomics. Skip to avoid noisy mediums.
+            continue
+        conf, sev, src = 0.9, "high", True
         out.append(
             _emit(
                 rule_id=RULE_CYPHER_INJECTION,
@@ -343,10 +479,39 @@ def _detect_default_db_credentials(sf: ScannedFile, extra_pairs=None) -> list:
 
 
 # --------------------------------------------------------------------------- #
-# 5. Global os.environ proxy/base-url mutation from user/config
+# 5. Global os.environ mutation
+#    Split into three categories — each with its own threat model:
+#      * network  — proxy / base-URL / API-routing override (high risk
+#                   even hardcoded; can silently redirect every outbound
+#                   model/API call).
+#      * secret   — API key / credential overwrite (medium; can swap
+#                   identity).
+#      * path     — PATH / LD_LIBRARY_PATH / etc. (low/medium; mutating
+#                   the binary/library search path is risky only when the
+#                   destination is writable or user-controlled. The very
+#                   common `sys.prefix`-derived torch/cudnn DLL prepend
+#                   guarded by ``os.path.isdir`` is benign).
 # --------------------------------------------------------------------------- #
+
+# Heuristic: a PATH mutation that joins a `sys.prefix`-derived directory
+# (PyTorch / cuDNN DLLs) AND is guarded by an `os.path.isdir` check is
+# benign. We don't suppress it (presence is still useful info) but we
+# downgrade to low + use a path-specific explanation that does NOT
+# mention proxy/network routing.
+_TRUSTED_PATH_SOURCE_RX = re.compile(
+    r"(sys\.prefix|sys\.executable|sysconfig\.|site\.getsitepackages|__file__|"
+    r"Path\(__file__\)|importlib\.resources|os\.path\.dirname\(|"
+    r"appdirs\.|platformdirs\.)",
+    re.I,
+)
+_PATH_ISDIR_GUARD_RX = re.compile(
+    r"(os\.path\.isdir|os\.path\.exists|Path\([^)]+\)\.is_dir|\.exists\(\))",
+    re.I,
+)
+
+
 def _detect_env_proxy_mutation(sf: ScannedFile) -> list:
-    out = []
+    out: list = []
     lines = sf.lines
     for i, raw in enumerate(lines):
         sink = classify_sink_ext(raw)
@@ -355,34 +520,127 @@ def _detect_env_proxy_mutation(sf: ScannedFile) -> list:
         key = env_key_in_expression(raw)
         if not key:
             continue
-        window = _window_before(lines, i) + "\n" + raw
-        tainted = classify_config_source(window) or classify_framework_user_input(window)
-        # Even a hardcoded mutation of PROXY/BASE_URL is worth flagging at
-        # medium; config/user-controlled bumps it to high.
-        sev = "high" if tainted else "medium"
+        category = env_key_category(key)
+        if category is None:
+            # Mutating an unknown env var is at most informational —
+            # presence-only; let the standalone-sink pass surface it.
+            continue
+        # Build the taint window. We need to be careful with two things:
+        #   1. The env-mutation line CONTAINS ``os.environ[...]`` (it
+        #      triggered the sink). That same expression is matched by
+        #      the generic ``os.environ`` config-source pattern, so
+        #      naively classifying the full line as a source would
+        #      self-taint every PATH-prepend (``os.environ['PATH'] =
+        #      ... + os.environ['PATH']``) and bump it to high.
+        #   2. The line's RHS can be a REAL untrusted source — e.g.
+        #      ``os.environ['HTTP_PROXY'] = request.json['proxy']``.
+        #      We must preserve it.
+        # Solution: keep only the substring AFTER the first ``=``
+        # (the RHS) for the line itself, and combine that with the
+        # lines above (which can also contain the source).
+        window_above = _window_before(lines, i)
+        rhs = raw.split("=", 1)[1] if "=" in raw else ""
+        # Drop ``os.environ[...]`` / ``os.getenv(...)`` reads from the
+        # RHS before classifying. Otherwise the very common
+        # ``os.environ['PATH'] = base + os.pathsep + os.environ['PATH']``
+        # idiom self-taints via its OWN PATH read, which the generic
+        # config-source pattern (``os.environ\b``) matches.
+        rhs_clean = re.sub(
+            r"os\.environ\s*\[[^\]]+\]|os\.getenv\s*\([^)]+\)|process\.env\.\w+",
+            " ",
+            rhs,
+        )
+        taint_window = window_above + "\n" + rhs_clean
+        tainted = (
+            classify_framework_user_input(taint_window)
+            or classify_config_source(taint_window)
+        )
+        # The full window is used for the trusted-source / isdir-guard
+        # heuristics below (which need the LHS context too).
+        window = window_above + "\n" + raw
+
+        # ----- per-category severity + explanation ----------------------------
+        if category == "network":
+            sev = "high" if tainted else "medium"
+            title = f"Global environment mutation of network-routing key {key}"
+            reason = (
+                f"The process-global environment variable {key} is mutated at runtime"
+                + (" from config/request data" if tainted else "")
+                + ". Redirecting a proxy or API base URL can route every outbound "
+                "model/API call through an attacker-controlled endpoint."
+            )
+            fix = (
+                "Avoid mutating os.environ for network routing. Pass an explicit, "
+                "validated client config (base_url, proxies) to the SDK instead, and "
+                "allowlist permitted hosts."
+            )
+            conf = 0.85 if tainted else 0.7
+
+        elif category == "secret":
+            sev = "high" if tainted else "medium"
+            title = f"Global environment mutation of secret key {key}"
+            reason = (
+                f"The process-global environment variable {key} is overwritten at "
+                "runtime"
+                + (" from config/request data" if tainted else "")
+                + ". Replacing a credential/API key can swap the process's identity "
+                "for outbound calls without audit."
+            )
+            fix = (
+                "Do not mutate credential env vars at runtime. Load secrets into a "
+                "scoped client/config object, never the global environment, and "
+                "fail closed if the variable is missing."
+            )
+            conf = 0.85 if tainted else 0.7
+
+        else:
+            # category == "path"
+            trusted_source = bool(_TRUSTED_PATH_SOURCE_RX.search(window))
+            guarded_isdir = bool(_PATH_ISDIR_GUARD_RX.search(window))
+            if tainted:
+                sev, conf = "high", 0.85
+            elif trusted_source and guarded_isdir:
+                sev, conf = "low", 0.5
+            elif trusted_source or guarded_isdir:
+                sev, conf = "low", 0.55
+            else:
+                sev, conf = "medium", 0.65
+
+            title = f"Process search path mutation: {key}"
+            reason = (
+                f"The process-global environment variable {key} is modified at runtime"
+                + (" from config/request data" if tainted else "")
+                + ". This changes the DLL/binary/library search path the interpreter "
+                "uses to LOAD code — not network routing. Risk is high only when the "
+                "appended directory is writable or attacker-influenced; appending a "
+                "library directory derived from sys.prefix and guarded by "
+                "os.path.isdir (the common PyTorch/cuDNN DLL pattern on Windows) is "
+                "benign."
+            )
+            fix = (
+                "Prefer adding paths via the language's own loader API (e.g. "
+                "os.add_dll_directory on Windows, ctypes preloads) over mutating "
+                "os.environ['PATH']. If you must mutate PATH, restrict it to a "
+                "trusted, read-only directory and document why."
+            )
+
         out.append(
             _emit(
                 rule_id=RULE_ENV_PROXY_MUTATION,
                 severity=sev,
                 category="Configuration",
-                title=f"Global environment mutation of sensitive key {key}",
+                title=title,
                 sf=sf,
                 line_no=i + 1,
-                reason=(
-                    f"The process-global environment variable {key} is mutated at runtime"
-                    + (" from config/request data" if tainted else "")
-                    + ". Redirecting a proxy or API base URL can route every outbound "
-                    "model/API call through an attacker-controlled endpoint."
-                ),
-                fix=(
-                    "Avoid mutating os.environ for network routing. Pass an explicit, "
-                    "validated client config (base_url, proxies) to the SDK instead, and "
-                    "allowlist permitted hosts."
-                ),
+                reason=reason,
+                fix=fix,
                 evidence=raw.strip()[:200],
                 code=raw,
-                confidence=0.8 if tainted else 0.6,
+                confidence=conf,
                 source_untrusted=bool(tainted),
+                partial_guard=(
+                    category == "path" and not tainted
+                ),
             )
         )
     return out

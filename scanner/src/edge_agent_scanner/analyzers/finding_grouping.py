@@ -86,6 +86,67 @@ def _severity_rank(sev: str) -> int:
     return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(sev, 4)
 
 
+# Limit how many package examples we name in the grouped explanation —
+# enough to convey breadth without bloating the finding card.
+_DEP_GROUP_EXAMPLE_LIMIT = 8
+
+
+def _rewrite_dep_group_explanation(rep: Any, members: list[Any]) -> None:
+    """Mutate ``rep`` so a grouped dependency finding lists ALL packages.
+
+    The original ``Unpinned dependency: numpy`` reason gives users no
+    sense of scale or breadth. After grouping we summarise:
+      * total grouped count
+      * up to ``_DEP_GROUP_EXAMPLE_LIMIT`` package specs (one per line)
+      * the next-step fix (pin / lockfile / hashes)
+    """
+    # Pull a stable list of "package (spec)" strings from each member.
+    specs: list[str] = []
+    for m in members:
+        symbol = ""
+        try:
+            symbol = m.primary_location.symbol or ""
+        except Exception:
+            symbol = ""
+        ev = (getattr(m, "evidence", "") or "").strip()
+        specs.append(f"{symbol or '(unknown)'}  →  {ev}" if ev else symbol or "(unknown)")
+    examples = specs[:_DEP_GROUP_EXAMPLE_LIMIT]
+    extra = max(0, len(specs) - len(examples))
+
+    bullet_block = "\n".join(f"  - {s}" for s in examples)
+    if extra:
+        bullet_block += f"\n  - … and {extra} more"
+
+    rep.reason = (
+        f"What was detected: {len(members)} dependencies in {rep.file} are not "
+        f"exactly pinned (no `==` / no `~=` specifier).\n\n"
+        f"Why it can be risky: Floating dependency ranges allow a new transitive "
+        f"version — including a compromised or breaking one — to be installed on "
+        f"the next clean build without any code change in this repo. For "
+        f"agent/AI projects this also makes evaluations non-reproducible.\n\n"
+        f"Why this may be okay: Library projects intentionally use ranges to keep "
+        f"compatibility wide. Internal lockfiles (``pip-compile``, ``poetry.lock``, "
+        f"``uv.lock``) may already pin the actual resolved versions.\n\n"
+        f"What to verify: Whether a lockfile is checked in and used in CI, "
+        f"whether any of the packages below has a known CVE, and whether the "
+        f"deployment installs from the manifest or the lockfile.\n\n"
+        f"Grouped packages ({len(members)} total):\n{bullet_block}"
+    )
+    rep.suggestedFix = (
+        "For an application/deployment, pin each package with `==<version>` (or use "
+        "`uv pip compile`/`pip-compile` to generate a lockfile alongside the "
+        "manifest) and install from the lockfile in CI/production. For "
+        "high-integrity builds, additionally include hashes (`--require-hashes`). "
+        "If this is a library, document the supported version ranges and add a "
+        "renovate/dependabot policy."
+    )
+    rep.evidence = (
+        f"Grouped {len(members)} unpinned dependency lines in {rep.file}: "
+        + "; ".join(examples)
+        + (f"; +{extra} more" if extra else "")
+    )
+
+
 def apply_intelligence_grouping(findings: list[Any]) -> list[Any]:
     """Collapse duplicate/noisy findings; stamp fingerprint + dup_count.
 
@@ -128,6 +189,12 @@ def apply_intelligence_grouping(findings: list[Any]) -> list[Any]:
                 rep.title = (
                     f"{len(members)} {rep.severity} dependency risks in {rep.file}"
                 )
+                # Rewrite reason/evidence/suggested_fix so the grouped
+                # finding actually summarises every dep, not just the
+                # first one to show up alphabetically. Without this,
+                # users see "Unpinned dependency: numpy" as the entire
+                # explanation for 7 different packages.
+                _rewrite_dep_group_explanation(rep, members)
             else:
                 rep.title = f"{rep.title} (+{len(members) - 1} more in this file)"
         kept.append(rep)

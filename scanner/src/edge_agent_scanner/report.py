@@ -28,6 +28,9 @@ RuleId = Literal[
     "default-db-credentials",
     "env-proxy-mutation",
     "llm-codegen-to-exec",
+    # Supply-chain + transport rules (added by analyze_supply_chain).
+    "model-supply-chain-risk",
+    "tls-verification-disabled",
 ]
 
 ALL_RULE_IDS: frozenset[str] = frozenset(
@@ -49,6 +52,8 @@ ALL_RULE_IDS: frozenset[str] = frozenset(
         "default-db-credentials",
         "env-proxy-mutation",
         "llm-codegen-to-exec",
+        "model-supply-chain-risk",
+        "tls-verification-disabled",
     ]
 )
 

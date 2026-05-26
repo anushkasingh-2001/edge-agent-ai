@@ -50,14 +50,61 @@ ENV_MUTATION_SINK_PATTERNS = [
     re.compile(r"\bprocess\.env\.\w+\s*=", re.I),               # JS
 ]
 
-# Env keys whose mutation is security-relevant (proxy/base-url/loader).
-SENSITIVE_ENV_KEYS = [
+# Env keys whose mutation is security-relevant. The list is intentionally
+# split into three categories — they imply very different threat models
+# and the analyzer surfaces them at different severities so users don't
+# get a "high" alert on a PyTorch DLL-path tweak.
+#
+#   network  — proxy / base-url / API-routing variables. Mutating these
+#              can silently redirect every outbound model/API call.
+#   secret   — API keys / credentials. Mutating these can swap in an
+#              attacker's identity for outbound traffic.
+#   path     — DLL/library/binary search paths. Mutating these affects
+#              what code the process LOADS, which is risky if the
+#              destination is writable / user-controlled, but is benign
+#              for the very common `sys.prefix`-derived torch/cudnn
+#              path-prepend pattern.
+NETWORK_ENV_KEYS = [
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-    "OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_BASE_URL",
-    "GOOGLE_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN", "PYTHONPATH", "LD_PRELOAD", "LD_LIBRARY_PATH",
-    "NODE_OPTIONS", "PATH",
+    "OPENAI_BASE_URL", "OPENAI_API_BASE",
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_API_BASE",
+    "AZURE_OPENAI_ENDPOINT", "GOOGLE_API_BASE",
+    "HUGGINGFACE_HUB_ENDPOINT",
 ]
+SECRET_ENV_KEYS = [
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    "HUGGINGFACEHUB_API_TOKEN", "HF_TOKEN",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "AZURE_OPENAI_API_KEY",
+]
+PATH_ENV_KEYS = [
+    "PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "LD_PRELOAD",
+    "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+    "NODE_OPTIONS",
+]
+
+# Backwards-compatible union for any caller that still imports the old
+# flat list (e.g. external tests / debugging scripts). Order preserved
+# so existing snapshots stay stable.
+SENSITIVE_ENV_KEYS = NETWORK_ENV_KEYS + SECRET_ENV_KEYS + PATH_ENV_KEYS
+
+
+def env_key_category(key: str) -> str | None:
+    """Return ``"network"``, ``"secret"``, ``"path"`` for a sensitive env
+    var, or ``None`` when the key is not security-relevant.
+
+    The categorisation drives both severity and the explanation text in
+    ``analyzers.root_causes._detect_env_proxy_mutation`` — a PATH tweak
+    must not be explained as proxy interception, and a proxy override
+    must not be downgraded just because it looks like a path append.
+    """
+    if key in NETWORK_ENV_KEYS:
+        return "network"
+    if key in SECRET_ENV_KEYS:
+        return "secret"
+    if key in PATH_ENV_KEYS:
+        return "path"
+    return None
 
 # --- Dynamic code execution -------------------------------------------------
 CODE_EXEC_SINK_PATTERNS = [
