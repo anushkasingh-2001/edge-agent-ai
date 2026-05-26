@@ -54,6 +54,10 @@ import {
 } from "lucide-react"
 import { FindingDrawer } from "@/components/finding-drawer"
 import { FindingFixButton } from "@/components/finding-fix-button"
+import {
+  IntelligenceModeToggle,
+  type IntelligenceMode,
+} from "@/components/intelligence-mode-toggle"
 import { WorkspaceView } from "@/components/workspace/workspace-view"
 import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
 import type { ScanReport, UiFinding } from "@/lib/scan-report"
@@ -353,6 +357,14 @@ function CodeAnalysisPanel({
   const [searchQuery, setSearchQuery] = useState("")
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
+  // Five-tier intelligence mode (Save / Auto / Pro / Max / Manual).
+  // The selected mode is forwarded to /api/finding/patch,
+  // /api/findings/fix-filtered and /api/scan/estimate as
+  // `intelligenceMode`. We default to Auto (smart routing) — the
+  // recommended mode in the design brief — and persist nothing here:
+  // it stays a per-session preference until the user changes it.
+  const [intelligenceMode, setIntelligenceMode] =
+    useState<IntelligenceMode>("auto")
   // When set, the in-app workspace (file tree + Monaco editor) takes
   // over the panel. The findings table is hidden until the user clicks
   // "Back to findings" inside the workspace view.
@@ -496,7 +508,25 @@ function CodeAnalysisPanel({
   return (
     <>
       <Card className="bg-card border-border">
-        <CardContent className="pt-4">
+        <CardContent className="pt-4 space-y-3">
+          {/* Five-tier intelligence mode selector. Sits on its own row
+              above the filter bar so the radiogroup is visible whatever
+              the toolbar's wrap state is. The chosen mode is forwarded
+              to the patch + bulk-fix routes; Save means
+              "deterministic-only" (no LLM patches), Max means
+              "plan→patch→validate" PR-gate quality. */}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Analysis mode</span>
+              <span className="opacity-70">
+                Scanner findings are deterministic in every mode.
+              </span>
+            </div>
+            <IntelligenceModeToggle
+              value={intelligenceMode}
+              onChange={setIntelligenceMode}
+            />
+          </div>
           <div className="flex items-center gap-4">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />

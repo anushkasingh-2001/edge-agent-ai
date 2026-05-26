@@ -1,0 +1,68 @@
+diff --git a/scanner/src/edge_agent_scanner/engine.py b/scanner/src/edge_agent_scanner/engine.py
+index ca7ab9c..635df33 100644
+--- a/scanner/src/edge_agent_scanner/engine.py
++++ b/scanner/src/edge_agent_scanner/engine.py
+@@ -14,6 +14,8 @@ from edge_agent_scanner.analyzers.prompt_contract import analyze_prompt_contract
+ from edge_agent_scanner.analyzers.prompt_injection import analyze_prompt_injection
+ from edge_agent_scanner.analyzers.secrets import analyze_secrets
+ from edge_agent_scanner.analyzers.taint_user_input import analyze_user_input_to_dangerous_code
++from edge_agent_scanner.analyzers.root_causes import analyze_root_causes
++from edge_agent_scanner.analyzers.finding_grouping import apply_intelligence_grouping
+ from edge_agent_scanner.ir.builder import build_agent_ir
+ from edge_agent_scanner.report import (
+     AgentHit,
+@@ -299,10 +301,12 @@ def run_scan(
+     findings.extend(analyze_secrets(root, files))
+     findings.extend(analyze_dependencies(root, files))
+     findings.extend(analyze_user_input_to_dangerous_code(ir, files))
++    findings.extend(analyze_root_causes(ir, files))
+     findings.extend(analyze_accuracy_regression(ir, files, root))
+ 
+     findings = verify_findings_if_enabled(findings, ir, files)
+     findings = _attribute_findings_to_agents(findings, ir)
++    findings = apply_intelligence_grouping(findings)
+     findings = _dedupe_findings(findings)
+     findings = _filter_by_rules(findings, enabled_rule_ids)
+     findings = _cap_findings_per_rule(findings)
+diff --git a/scanner/src/edge_agent_scanner/report.py b/scanner/src/edge_agent_scanner/report.py
+index 35098b4..041b502 100644
+--- a/scanner/src/edge_agent_scanner/report.py
++++ b/scanner/src/edge_agent_scanner/report.py
+@@ -21,6 +21,12 @@ RuleId = Literal[
+     "dependency-risks",
+     "user-input-dangerous-code",
+     "accuracy-regression-risk",
++    "prompt-injection-placeholder",
++    "cypher-injection-from-llm-or-user",
++    "config-controlled-file-read",
++    "default-db-credentials",
++    "env-proxy-mutation",
++    "llm-codegen-to-exec",
+ ]
+ 
+ ALL_RULE_IDS: frozenset[str] = frozenset(
+@@ -36,6 +42,12 @@ ALL_RULE_IDS: frozenset[str] = frozenset(
+         "dependency-risks",
+         "user-input-dangerous-code",
+         "accuracy-regression-risk",
++        "prompt-injection-placeholder",
++        "cypher-injection-from-llm-or-user",
++        "config-controlled-file-read",
++        "default-db-credentials",
++        "env-proxy-mutation",
++        "llm-codegen-to-exec",
+     ]
+ )
+ 
+@@ -137,6 +149,11 @@ class Finding(BaseModel):
+     escalation: str | None = None
+     confidence_features: dict[str, Any] = Field(default_factory=dict)
+ 
++    # Intelligence-mode additions (additive, backward compatible):
++    fingerprint: str | None = None  # sha1(rule_id|sink_kind|guards|path_sig)
++    cluster_id: str | None = None
++    dup_count: int = 0
++
+ 
+ class ScanReport(BaseModel):
+     schema_version: str = SCHEMA_VERSION

@@ -21,6 +21,13 @@ RuleId = Literal[
     "dependency-risks",
     "user-input-dangerous-code",
     "accuracy-regression-risk",
+    # Intelligence-mode root-cause rules (added by analyze_root_causes).
+    "prompt-injection-placeholder",
+    "cypher-injection-from-llm-or-user",
+    "config-controlled-file-read",
+    "default-db-credentials",
+    "env-proxy-mutation",
+    "llm-codegen-to-exec",
 ]
 
 ALL_RULE_IDS: frozenset[str] = frozenset(
@@ -36,6 +43,12 @@ ALL_RULE_IDS: frozenset[str] = frozenset(
         "dependency-risks",
         "user-input-dangerous-code",
         "accuracy-regression-risk",
+        "prompt-injection-placeholder",
+        "cypher-injection-from-llm-or-user",
+        "config-controlled-file-read",
+        "default-db-credentials",
+        "env-proxy-mutation",
+        "llm-codegen-to-exec",
     ]
 )
 
@@ -137,6 +150,42 @@ class Finding(BaseModel):
     escalation: str | None = None
     confidence_features: dict[str, Any] = Field(default_factory=dict)
 
+    # Intelligence-mode additions (additive, backward compatible).
+    # `fingerprint` is sha1(rule_id | sink_kind | guard_sig | path_sig) and is
+    # populated by analyzers.finding_grouping.apply_intelligence_grouping;
+    # `cluster_id` is reserved for cluster-level fix grouping in the TS layer;
+    # `dup_count` is set by grouping when a representative absorbed siblings.
+    fingerprint: str | None = None
+    cluster_id: str | None = None
+    dup_count: int = 0
+
+
+class SuppressedEntry(BaseModel):
+    """One finding hidden by a per-line noqa marker, surfaced in the audit.
+
+    Every entry corresponds to a finding the analyzer would otherwise have
+    reported. Keeping the rule_id + file + line + marker shape lets `git
+    diff` reviewers and the UI sanity-check exactly what got silenced and
+    why. Auto-inserted fix fences are NEVER eligible for suppression and
+    therefore never appear here.
+    """
+
+    rule_id: str
+    file: str
+    line: int
+    marker_kind: str  # "noqa" | "noqa_wildcard"
+    marker_line: int
+
+
+class SuppressionSummary(BaseModel):
+    """Aggregate view of explicitly-suppressed findings."""
+
+    total: int = 0
+    by_rule: dict[str, int] = Field(default_factory=dict)
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    by_marker_kind: dict[str, int] = Field(default_factory=dict)
+    entries: list[SuppressedEntry] = Field(default_factory=list)
+
 
 class ScanReport(BaseModel):
     schema_version: str = SCHEMA_VERSION
@@ -152,6 +201,9 @@ class ScanReport(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
     files_scanned: int = 0
     files_scanned_by_ext: dict[str, int] = Field(default_factory=dict)
+    # Audit channel for noqa-suppressed findings. Auto-inserted fix-engine
+    # comments are NEVER honoured as suppressions and so never land here.
+    suppressions: SuppressionSummary = Field(default_factory=SuppressionSummary)
 
 
 def utc_now_iso() -> str:

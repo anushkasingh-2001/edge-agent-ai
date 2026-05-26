@@ -28,6 +28,7 @@
     "test:explain": "tsx --test tests/finding-explain.test.ts",
     "test:workspace": "tsx --test tests/workspace-api.test.ts",
     "test:workspace-store": "tsx --test tests/workspace-store.test.ts",
+    "test:modes": "tsx --test tests/intelligence-modes.test.ts",
     "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {

@@ -14,6 +14,8 @@ from edge_agent_scanner.analyzers.prompt_contract import analyze_prompt_contract
 from edge_agent_scanner.analyzers.prompt_injection import analyze_prompt_injection
 from edge_agent_scanner.analyzers.secrets import analyze_secrets
 from edge_agent_scanner.analyzers.taint_user_input import analyze_user_input_to_dangerous_code
+from edge_agent_scanner.analyzers.root_causes import analyze_root_causes
+from edge_agent_scanner.analyzers.finding_grouping import apply_intelligence_grouping
 from edge_agent_scanner.ir.builder import build_agent_ir
 from edge_agent_scanner.report import (
     AgentHit,
@@ -22,12 +24,46 @@ from edge_agent_scanner.report import (
     ModelHit,
     PromptHit,
     ScanReport,
+    SuppressedEntry,
+    SuppressionSummary,
     Summary,
     ToolHit,
     utc_now_iso,
 )
+from edge_agent_scanner.suppressions import apply_suppressions, SuppressionResult
 from edge_agent_scanner.verifier.llm_verifier import verify_findings_if_enabled
 from edge_agent_scanner.walker import iter_scanned_files
+
+
+def _summarise_suppressions(supp: SuppressionResult) -> SuppressionSummary:
+    """Turn the in-memory suppression result into a serializable summary
+    for the scan report. The audit list keeps every suppressed entry so
+    a reviewer can sanity-check exactly what got silenced.
+    """
+    entries = [
+        SuppressedEntry(
+            rule_id=s.finding.rule_id,
+            file=s.finding.file,
+            line=s.finding.line,
+            marker_kind=s.marker_kind,
+            marker_line=s.marker_line,
+        )
+        for s in supp.suppressed
+    ]
+    by_rule: dict[str, int] = {}
+    by_severity: dict[str, int] = {}
+    by_marker: dict[str, int] = {}
+    for s in supp.suppressed:
+        by_rule[s.finding.rule_id] = by_rule.get(s.finding.rule_id, 0) + 1
+        by_severity[s.finding.severity] = by_severity.get(s.finding.severity, 0) + 1
+        by_marker[s.marker_kind] = by_marker.get(s.marker_kind, 0) + 1
+    return SuppressionSummary(
+        total=len(entries),
+        by_rule=by_rule,
+        by_severity=by_severity,
+        by_marker_kind=by_marker,
+        entries=entries,
+    )
 
 
 def _cap_findings_per_rule(findings: list[Finding], max_per_rule: int | None = None) -> list[Finding]:
@@ -299,10 +335,21 @@ def run_scan(
     findings.extend(analyze_secrets(root, files))
     findings.extend(analyze_dependencies(root, files))
     findings.extend(analyze_user_input_to_dangerous_code(ir, files))
+    findings.extend(analyze_root_causes(ir, files))
     findings.extend(analyze_accuracy_regression(ir, files, root))
 
     findings = verify_findings_if_enabled(findings, ir, files)
     findings = _attribute_findings_to_agents(findings, ir)
+    # Anti-laundering contract (see scanner/suppressions.py): honour ONLY
+    # human-typed `# edge-agent: noqa <rule>` markers. Auto-inserted fix
+    # fences never silence findings. We apply suppressions BEFORE the
+    # grouping/dedup pass so a noqa on a single offending line doesn't
+    # get masked by a representative chosen elsewhere in the file.
+    supp = apply_suppressions(findings, root)
+    findings = supp.kept
+    # Intelligence-mode fingerprinting + collapsing. Runs BEFORE the legacy
+    # line-text dedup so the latter sees one representative per cluster.
+    findings = apply_intelligence_grouping(findings)
     findings = _dedupe_findings(findings)
     findings = _filter_by_rules(findings, enabled_rule_ids)
     findings = _cap_findings_per_rule(findings)
@@ -325,4 +372,5 @@ def run_scan(
         findings=findings,
         files_scanned=len(files),
         files_scanned_by_ext=by_ext,
+        suppressions=_summarise_suppressions(supp),
     )
