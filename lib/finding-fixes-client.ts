@@ -38,6 +38,12 @@ export interface FixProposal {
   error_kind: FixErrorKind | null
   retryable: boolean
   backup_path: string | null
+  /** True when the "fix" is just a TODO/Manual-suggestion comment
+   *  (fallback template), NOT a real code change. The UI uses this to
+   *  render "Manual suggestion" instead of "Applied" and to leave the
+   *  finding in the table — a TODO marker doesn't clear the finding.
+   *  Always present (default false) so consumers can rely on it. */
+  marker_only: boolean
 }
 
 export interface RunFixesResult {
@@ -49,6 +55,15 @@ export interface RunFixesResult {
   proposals: FixProposal[]
 }
 
+/** Provider kinds the server-side resolver understands today. Mirrors
+ *  ``ProviderKind`` in ``lib/server-model-router.ts``; redefined here
+ *  so client code doesn't import server-only modules. */
+export type FixProviderKind =
+  | "openai_compatible"
+  | "anthropic"
+  | "google"
+  | "custom"
+
 /**
  * Submit a fix request. `mode: "suggest"` is a pure read; `mode: "apply"`
  * writes files (with `.edge-agent.bak` backups) before returning.
@@ -57,8 +72,38 @@ export async function runFindingFixesApi(args: {
   projectPath: string
   mode: FixMode
   targets: FixTarget[]
+  /** Intelligence mode selected in the Findings toolbar. Server uses
+   *  it to size context, pick model tier, and decide whether the LLM
+   *  patch path runs at all. */
+  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
+  /** Retained on the type for legacy callers. The server forces
+   *  BYOK regardless; this is just informational. */
+  aiProviderMode?: "hosted" | "byok"
+  /** BYOK provider type (openai_compatible / anthropic / google /
+   *  custom). Always forwarded — required when the mode actually
+   *  needs an LLM call. */
+  provider?: FixProviderKind
+  /** Caller's API key from Settings. REQUIRED for any AI upgrade
+   *  (Auto/Pro/Max/Manual) — the route returns a structured
+   *  ``missing_api_key`` error when omitted, which we surface as
+   *  the canonical CTA in the UI. */
+  apiKey?: string
+  /** Optional override for OpenAI-compatible endpoints (Together,
+   *  Groq, Ollama, etc). Forwarded alongside ``apiKey``. */
+  baseUrl?: string
+  /** Manual-mode per-task model picks. Both ``manualModelSelection``
+   *  (canonical) and ``manualModels`` (legacy alias) are accepted and
+   *  forwarded. */
+  manualModelSelection?: Record<string, string>
+  /** Backward-compat alias; same shape as ``manualModelSelection``. */
+  manualModels?: Record<string, string>
   signal?: AbortSignal
 }): Promise<RunFixesResult> {
+  // Normalise the manual map: a caller may pass either name. The
+  // server normalises again, but doing it here keeps the wire payload
+  // stable. BYOK fields are always forwarded — the server is the
+  // single point of truth for "is this key/model valid?".
+  const manualMap = args.manualModelSelection ?? args.manualModels
   const res = await fetch("/api/findings/fix", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -66,6 +111,16 @@ export async function runFindingFixesApi(args: {
       projectPath: args.projectPath,
       mode: args.mode,
       targets: args.targets,
+      intelligenceMode: args.intelligenceMode,
+      // BYOK-only post-MVP. We still send the field so older server
+      // builds that branched on it stay compatible.
+      aiProviderMode: "byok",
+      provider: args.provider,
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      manualModelSelection: manualMap,
+      // Backward-compat for the legacy patch name. Server normalises both.
+      manualModels: manualMap,
     }),
     signal: args.signal,
   })

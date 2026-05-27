@@ -43,7 +43,6 @@ import {
   pickModel,
   redactSecrets,
   resetSessionCounterForTests,
-  type CodeContext,
   type FindingInput,
   type ProjectContext,
 } from "../lib/server-finding-explanations"
@@ -658,7 +657,10 @@ test("AI failure populates debug_error (dev only) without leaking the key", asyn
   const prevEnv = process.env.NODE_ENV
   try {
     resetSessionCounterForTests()
-    process.env.NODE_ENV = "development"
+    // NODE_ENV is readonly in @types/node, but we genuinely need to
+    // flip it for these debug-mode tests. Assigning via the index
+    // signature bypasses the readonly check without changing runtime.
+    ;(process.env as Record<string, string | undefined>).NODE_ENV = "development"
     const stub = installStubFetch("nope", { status: 404 })
     try {
       const out = await explainOneFinding(baseFinding(), project, {
@@ -673,7 +675,7 @@ test("AI failure populates debug_error (dev only) without leaking the key", asyn
       stub.restore()
     }
   } finally {
-    process.env.NODE_ENV = prevEnv
+    ;(process.env as Record<string, string | undefined>).NODE_ENV = prevEnv
     cleanup()
   }
 })
@@ -683,7 +685,7 @@ test("debug_error is NEVER set in production builds", async () => {
   const prevEnv = process.env.NODE_ENV
   try {
     resetSessionCounterForTests()
-    process.env.NODE_ENV = "production"
+    ;(process.env as Record<string, string | undefined>).NODE_ENV = "production"
     const stub = installStubFetch("nope", { status: 500 })
     try {
       const out = await explainOneFinding(baseFinding(), project, { apiKey: "sk-test" })
@@ -693,7 +695,7 @@ test("debug_error is NEVER set in production builds", async () => {
       stub.restore()
     }
   } finally {
-    process.env.NODE_ENV = prevEnv
+    ;(process.env as Record<string, string | undefined>).NODE_ENV = prevEnv
     cleanup()
   }
 })

@@ -146,7 +146,10 @@ export interface ProjectContext {
 }
 
 export interface ExplainOptions {
-  /** Override the OpenAI key (preferred) — otherwise process.env.OPENAI_API_KEY is used. */
+  /** Caller-supplied API key (the user's Settings key). REQUIRED for
+   *  any AI call — there is no env fallback in BYOK-only mode. When
+   *  null/empty we return a `template_fallback` with `source` set so
+   *  the UI can render the "API key not provided" CTA. */
   apiKey?: string | null
   /** Override base URL for OpenAI-compatible endpoints. Defaults to api.openai.com. */
   baseUrl?: string | null
@@ -163,6 +166,14 @@ export interface ExplainOptions {
   now?: () => number
   /** Total request budget in ms (default 25_000). */
   timeoutMs?: number
+  /** Step 5: intelligence mode. When set (and no explicit `model` is
+   *  forwarded), the explainer model is chosen by mode rather than only
+   *  by severity — Save/Auto → cheap explainer, Pro/Max → deep. An
+   *  explicit `opts.model` (user Settings choice) still wins. */
+  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
+  /** Manual mode: per-task model overrides. Only `explanation` is read
+   *  here. Honoured when `intelligenceMode === "manual"`. */
+  manualModels?: Record<string, string>
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +216,81 @@ export function pickModel(finding: Pick<FindingInput, "severity" | "agent_reacha
   if (finding.agent_reachable === true) return deep
   if (finding.severity === "critical" || finding.severity === "high") return deep
   return base
+}
+
+/**
+ * Step 5: mode-aware explainer model.
+ *
+ * When an intelligence mode is supplied we let it influence the tier on
+ * top of the severity heuristic:
+ *   - save / auto  → the cheap base explainer (cost-first; explanation
+ *                    is the only LLM use in Save).
+ *   - pro / max    → the deep explainer for high/critical/reachable
+ *                    findings, base otherwise (accuracy-first).
+ *   - manual       → the user's `manualModels.explanation` id, if set.
+ *
+ * Returns null when no mode-specific override applies, so the caller
+ * falls back to `pickModel(finding)` (pure back-compat for callers that
+ * don't pass a mode).
+ */
+export function pickModelForMode(
+  finding: Pick<FindingInput, "severity" | "agent_reachable">,
+  mode: string | undefined,
+  manualModels?: Record<string, string>,
+): string | null {
+  if (!mode) return null
+  const deep = envModel("EDGE_AGENT_EXPLAINER_DEEP_MODEL", DEFAULT_EXPLAINER_DEEP_MODEL)
+  const base = envModel("EDGE_AGENT_EXPLAINER_MODEL", DEFAULT_EXPLAINER_MODEL)
+  switch (mode) {
+    case "save":
+    case "auto":
+      // Cost-first: cheap explainer regardless of severity.
+      return base
+    case "pro":
+    case "max":
+      // Accuracy-first: deep on the cases that matter.
+      return pickModel(finding) === base ? deep : pickModel(finding)
+    case "manual": {
+      // The ModelSelector UI emits keys `explain` / `root_cause` /
+      // `suggest` / `patch` / `bulk` / `verify` (v2). Older callers
+      // sent `explanation` (Step-1). Accept either — explain wins
+      // when both are present so the v2 UI takes precedence.
+      const raw = manualModels?.explain ?? manualModels?.explanation
+      if (typeof raw !== "string" || !raw.trim()) return null
+      // Values may be provider-qualified ids like
+      //   anthropic:claude-sonnet-4-5-20250929
+      //   openai:gpt-4.1-mini
+      //   google:gemini-2.5-pro
+      //   custom:qwen-coder-2.5
+      // The explainer ultimately speaks the OpenAI chat-completions
+      // dialect, so the `${slot}:` prefix has to come off before the
+      // id reaches callLlm — otherwise the provider 404s. Plain
+      // model ids without a prefix are passed through untouched.
+      return stripProviderPrefix(raw.trim())
+    }
+    default:
+      return null
+  }
+}
+
+/** Strip a leading provider/slot prefix from a manual-mode model id.
+ *  Recognised slots match those the UI exposes; an unknown prefix is
+ *  preserved so a raw id like `claude-3.5` (no prefix) is unaffected. */
+function stripProviderPrefix(value: string): string {
+  const colon = value.indexOf(":")
+  if (colon <= 0) return value
+  const slot = value.slice(0, colon).toLowerCase()
+  if (
+    slot === "openai" ||
+    slot === "openai_compatible" ||
+    slot === "anthropic" ||
+    slot === "google" ||
+    slot === "custom"
+  ) {
+    const rest = value.slice(colon + 1).trim()
+    return rest || value
+  }
+  return value
 }
 
 // Per-process counter. Resets on dev-server reload. We still track it
@@ -1152,7 +1238,9 @@ async function callOpenAI(
   | { what_detected: string; why_risky: string; suggested_fix: string; model_used: string }
   | { error: string }
 > {
-  const apiKey = opts.apiKey || process.env.OPENAI_API_KEY
+  // BYOK-only: no env fallback. The caller-supplied key is the ONLY
+  // acceptable credential — see ExplainOptions.apiKey jsdoc.
+  const apiKey = typeof opts.apiKey === "string" ? opts.apiKey.trim() : ""
   if (!apiKey) return { error: "missing_api_key" }
 
   const baseUrl = (opts.baseUrl || DEFAULT_OPENAI_BASE).replace(/\/+$/, "")
@@ -1289,7 +1377,10 @@ export async function explainOneFinding(
   // requiring an env restart, while the default stays cheap and predictable.
   const callerModel =
     typeof opts.model === "string" && opts.model.trim() ? opts.model.trim() : null
-  const model = callerModel ?? pickModel(finding)
+  const model =
+    callerModel ??
+    pickModelForMode(finding, opts.intelligenceMode, opts.manualModels) ??
+    pickModel(finding)
 
   // Build the redacted local code context BEFORE computing the cache
   // fingerprint so that edits to the surrounding function invalidate the
@@ -1315,7 +1406,11 @@ export async function explainOneFinding(
   }
 
   // 3. API key check before incrementing the counter.
-  const apiKey = opts.apiKey || process.env.OPENAI_API_KEY
+  //    BYOK-only: no env fallback. When no caller key is present we
+  //    return a structured `template_fallback` payload so the route
+  //    can surface the canonical "Add your provider key in Settings"
+  //    UX. The scanner's structured reason still renders.
+  const apiKey = typeof opts.apiKey === "string" ? opts.apiKey.trim() : ""
   if (!apiKey) {
     return buildTemplateFallback(finding, "template_fallback")
   }

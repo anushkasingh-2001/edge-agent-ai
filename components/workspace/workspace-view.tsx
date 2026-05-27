@@ -19,6 +19,7 @@
  * `FindingSidePanel` further down for the right-rail layout.
  */
 
+import type { JSX } from "react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { ArrowLeft, ExternalLink, Loader2, PlayCircle, RefreshCw, Sparkles } from "lucide-react"
 

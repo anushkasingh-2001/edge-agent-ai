@@ -90,11 +90,35 @@ export function routeForMode(ctx: ModeRouteContext): ModeRouteDecision {
     forceTier: tier,
   })
 
+  // Mode-specific Anthropic upgrade:
+  //   Max + coding_flagship → claude-opus-4-7
+  // The tier table can only carry one `coding_flagship` model per
+  // provider, so Pro stays on Sonnet (the spec's Pro default) and
+  // Max bumps to Opus here. Manual mode bypasses this branch because
+  // the user-selected model id wins inside the resolver.
+  if (
+    ctx.provider === "anthropic" &&
+    ctx.mode === "max" &&
+    tier === "coding_flagship"
+  ) {
+    decision.model = process.env.EDGE_AGENT_ANTHROPIC_MAX_MODEL ?? "claude-opus-4-7"
+  }
+
   const escTier = escalateTier(tier)
-  const escModel = _resolveModelForTests(
+  let escModel = _resolveModelForTests(
     ctx.privateCodeMode ? "custom" : ctx.provider,
     escTier,
   )
+  // Same Max+Anthropic upgrade for the escalation target so a cascade
+  // never silently drops back from Opus to Sonnet.
+  if (
+    !ctx.privateCodeMode &&
+    ctx.provider === "anthropic" &&
+    ctx.mode === "max" &&
+    escTier === "coding_flagship"
+  ) {
+    escModel = process.env.EDGE_AGENT_ANTHROPIC_MAX_MODEL ?? "claude-opus-4-7"
+  }
 
   return {
     ...decision,

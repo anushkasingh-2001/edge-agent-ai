@@ -23,6 +23,7 @@
 import path from "node:path"
 import fs from "node:fs"
 import { NextResponse } from "next/server"
+import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
 
 import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
 import { planFix, type PlannerFinding } from "@/lib/fix-planner"
@@ -65,6 +66,15 @@ interface BulkBody {
   baseUrl?: string | null
   provider?: ProviderKind
   privateCodeMode?: boolean
+  /** Hosted (server-side key) vs BYOK (caller-supplied). Uses the same
+   *  resolver as /api/finding/patch so estimate and execution agree on
+   *  provider/model. */
+  aiProviderMode?: "hosted" | "byok"
+  /** Manual mode: per-task model overrides. The v2 canonical name is
+   *  ``manualModelSelection``; ``manualModels`` is the Step-1 legacy
+   *  alias kept for backward compatibility. */
+  manualModelSelection?: Record<string, string>
+  manualModels?: import("@/lib/intelligence-mode").ManualOverrides
   /** When true, persist suppressions for `needs_user_decision` clusters
    *  marked as "user accepts this as a known FP". Default: false — UI
    *  must explicitly opt in (we never auto-suppress). */
@@ -159,7 +169,41 @@ export async function POST(req: Request) {
 
   const intelligenceMode: IntelligenceMode = body.intelligenceMode ?? "auto"
   const policy = MODE_POLICIES[intelligenceMode]
-  const provider = (body.provider ?? "openai_compatible") as ProviderKind
+  const aiProviderMode = "byok" as const
+  // Normalise the manual-model picks: canonical name is
+  // ``manualModelSelection``; ``manualModels`` is the legacy alias.
+  const manualPicks: Record<string, string> | undefined =
+    (body.manualModelSelection && typeof body.manualModelSelection === "object"
+      ? (body.manualModelSelection as Record<string, string>)
+      : undefined) ??
+    (body.manualModels && typeof body.manualModels === "object"
+      ? (body.manualModels as Record<string, string>)
+      : undefined)
+  // BYOK-only resolver — refuses without a caller key.
+  const bulkResolution = resolveAiProviderForRequest({
+    userId: "local-user",
+    workspaceId: "local-workspace",
+    aiProviderMode,
+    intelligenceMode,
+    task: "bulk",
+    manualModelSelection: manualPicks,
+    byokApiKey: typeof body.apiKey === "string" ? body.apiKey : null,
+    byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
+    byokProvider: body.provider,
+  })
+  // A blocked resolution only matters when this mode would actually
+  // call an LLM (Save is templates-only and still succeeds below).
+  if (!bulkResolution.ok && policy.allowPatchGeneration) {
+    const httpStatus =
+      bulkResolution.code === "missing_api_key" || bulkResolution.code === "invalid_api_key"
+        ? 400
+        : 403
+    return NextResponse.json(
+      { error: bulkResolution.reason, code: bulkResolution.code, upgrade: bulkResolution.upgrade ?? false },
+      { status: httpStatus },
+    )
+  }
+  const provider = bulkResolution.ok ? bulkResolution.provider : ((body.provider ?? "openai_compatible") as ProviderKind)
 
   const planned: { finding: PlannerFinding; plan: ReturnType<typeof planFix> }[] = []
   for (const raw of body.findings) {
@@ -237,12 +281,16 @@ export async function POST(req: Request) {
       .map((id) => byId.get(id))
       .filter((f): f is PlannerFinding => !!f)
     const targets = targetsFromScannerFindings(
+      // ``title`` is read by targetsFromScannerFindings only to populate
+      // a display label; we don't have one for planner findings here, so
+      // synthesise from rule_id. Leaving the field as ``undefined`` here
+      // breaks ``Pick<…, "title">`` under strict mode (TS2345).
       findings.map((f) => ({
         id: f.id,
         rule_id: f.rule_id,
         file: f.file,
         line: f.line,
-        title: undefined,
+        title: f.rule_id,
       })),
     )
     const r = buildAndMaybeApplyFixes({ projectPath: resolved, targets, mode: "suggest" })
@@ -289,15 +337,36 @@ export async function POST(req: Request) {
           needs_graph_context: true,
           reason: c.reason,
         }
+        // Step 1: compute the SAME complexity the estimate loop uses, and
+        // thread mode + complexity (+ manual) into execution so the model
+        // the estimate priced matches the model execution will run once
+        // Step 2 wires routeForMode inside the pipeline.
+        const clusterComplexity = scoreComplexity({
+          rule_id: representative.rule_id,
+          severity: representative.severity,
+          evidencePathFiles: representative.evidence_path_files,
+          evidencePathLen: representative.evidence_path_len,
+        })
         const preview = await generatePatchPreview({
           projectPath: resolved,
           finding: representative,
           plan,
           provider,
-          apiKey: body.apiKey ?? process.env.OPENAI_API_KEY ?? null,
-          baseUrl: body.baseUrl ?? null,
+          apiKey: bulkResolution.ok ? bulkResolution.apiKey : (body.apiKey ?? process.env.OPENAI_API_KEY ?? null),
+          baseUrl: (bulkResolution.ok ? bulkResolution.baseUrl : body.baseUrl) ?? null,
           privateCodeMode: !!body.privateCodeMode,
+          intelligenceMode,
+          complexity: clusterComplexity,
+          manualModels: manualPicks as import("@/lib/intelligence-mode").ManualOverrides | undefined,
+          // v2: same resolver-locking behaviour as /api/finding/patch so
+          // the bulk path can't silently re-route to a different model.
+          forceModel: bulkResolution.ok ? bulkResolution.model : undefined,
+          forceTwoStep: bulkResolution.ok ? bulkResolution.twoStep : undefined,
         })
+        // BYOK-only: no credit consumption. The user's upstream
+        // provider bills them directly per cluster call. We keep a
+        // best-effort cost estimate in the resolver result for UI
+        // display, but the app never debits an internal balance.
         return {
           cluster_id: c.cluster_id,
           kind: c.kind,

@@ -46,36 +46,27 @@ export const MODEL_CATALOG: Record<LlmSlot, KnownModel[]> = {
     { id: "o4-mini", label: "o4-mini", hint: "Reasoning model" },
     { id: "o3-mini", label: "o3-mini", hint: "Reasoning model" },
   ],
+  // Anthropic catalog is intentionally short — only the three current
+  // default-on Claude models. Legacy ids (claude-3-7-sonnet-latest,
+  // claude-3-5-sonnet-latest, claude-3-opus-…) are dropped so the
+  // dropdown can never seed a model the user's account no longer has
+  // access to. Users who need a different id can still type it via
+  // the "Custom model name…" escape hatch.
   anthropic: [
     {
-      id: "claude-opus-4-1-20250805",
-      label: "Claude Opus 4.1",
-      hint: "Most capable",
+      id: "claude-opus-4-7",
+      label: "Claude Opus 4.7",
+      hint: "Most capable — used by Max",
     },
     {
-      id: "claude-sonnet-4-5-20250929",
-      label: "Claude Sonnet 4.5",
-      hint: "Balanced flagship",
+      id: "claude-sonnet-4-6",
+      label: "Claude Sonnet 4.6",
+      hint: "Balanced flagship — Auto / Pro default",
     },
     {
-      id: "claude-3-7-sonnet-latest",
-      label: "Claude 3.7 Sonnet",
-      hint: "Extended thinking",
-    },
-    {
-      id: "claude-3-5-sonnet-latest",
-      label: "Claude 3.5 Sonnet",
-      hint: "Strong general-purpose",
-    },
-    {
-      id: "claude-3-5-haiku-latest",
-      label: "Claude 3.5 Haiku",
-      hint: "Fast, cheap",
-    },
-    {
-      id: "claude-3-opus-20240229",
-      label: "Claude 3 Opus",
-      hint: "Legacy flagship",
+      id: "claude-haiku-4-5",
+      label: "Claude Haiku 4.5",
+      hint: "Fast and cheap — Save default",
     },
   ],
   google: [

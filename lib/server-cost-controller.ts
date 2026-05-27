@@ -34,12 +34,13 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "gpt-4.1-nano": { inputPer1k: 0.0001, outputPer1k: 0.0004 },
   "o4-mini": { inputPer1k: 0.0011, outputPer1k: 0.0044 },
   "o3-mini": { inputPer1k: 0.0011, outputPer1k: 0.0044 },
-  // Anthropic
-  "claude-opus-4-1-20250805": { inputPer1k: 0.015, outputPer1k: 0.075 },
-  "claude-sonnet-4-5-20250929": { inputPer1k: 0.003, outputPer1k: 0.015 },
-  "claude-3-7-sonnet-latest": { inputPer1k: 0.003, outputPer1k: 0.015 },
-  "claude-3-5-sonnet-latest": { inputPer1k: 0.003, outputPer1k: 0.015 },
-  "claude-3-5-haiku-latest": { inputPer1k: 0.0008, outputPer1k: 0.004 },
+  // Anthropic — current default-on Claude family. Older ids
+  // (3.5, 3.7) are intentionally absent; if a user types one via
+  // Custom-model the FALLBACK_PRICE applies and the UI keeps
+  // working.
+  "claude-opus-4-7": { inputPer1k: 0.015, outputPer1k: 0.075 },
+  "claude-sonnet-4-6": { inputPer1k: 0.003, outputPer1k: 0.015 },
+  "claude-haiku-4-5": { inputPer1k: 0.0008, outputPer1k: 0.004 },
   // Google
   "gemini-2.5-pro": { inputPer1k: 0.00125, outputPer1k: 0.01 },
   "gemini-2.5-flash": { inputPer1k: 0.0003, outputPer1k: 0.0025 },

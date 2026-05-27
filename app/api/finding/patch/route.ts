@@ -29,6 +29,7 @@
 import path from "node:path"
 import fs from "node:fs"
 import { NextResponse } from "next/server"
+import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
 
 import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
 import { planFix, type PlannerFinding } from "@/lib/fix-planner"
@@ -62,6 +63,17 @@ interface PatchBody {
   baseUrl?: string | null
   provider?: ProviderKind
   privateCodeMode?: boolean
+  /** Hosted (server-side key) vs BYOK (caller-supplied). The
+   *  resolver in lib/server-ai-provider-resolver.ts uses this to pick
+   *  the actual key + base URL + model id. */
+  aiProviderMode?: "hosted" | "byok"
+  /** Manual mode: per-task model overrides keyed by task slot
+   *  (explain/root_cause/suggest/patch/bulk/verify). Two names exist
+   *  for historical reasons — the v2 canonical key is
+   *  ``manualModelSelection``; ``manualModels`` is the legacy alias
+   *  from the Step-1 wiring and is accepted for backward compatibility. */
+  manualModelSelection?: Record<string, string>
+  manualModels?: import("@/lib/intelligence-mode").ManualOverrides
   /** apply only: the previewId the user reviewed. */
   previewId?: string
 }
@@ -159,10 +171,11 @@ export async function POST(req: Request) {
       return bad("preview not found or expired; re-run preview", 409)
     }
     // Real-fix gate: a suggestion-only preview can never be applied as a fix.
-    const realFix = preview.patches.every((p) => {
-      const before = preview.patches.find((x) => x.file === p.file)?.beforeFileHash
-      return isRealFixDiff(preview.unifiedDiff, p.file).isRealFix
-    })
+    // We re-check the unified diff per file so a multi-file preview with one
+    // suggestion-only entry can't sneak through alongside a real change.
+    const realFix = preview.patches.every(
+      (p) => isRealFixDiff(preview.unifiedDiff, p.file).isRealFix,
+    )
     if (!realFix) {
       return NextResponse.json(
         {
@@ -210,17 +223,51 @@ export async function POST(req: Request) {
   }
 
   /* --------------------------- PREVIEW --------------------------- */
-  // Provider config required for an LLM patch (template path handles its own).
-  const provider = (body.provider ?? "openai_compatible") as ProviderKind
-  const apiKey = body.apiKey ?? process.env.OPENAI_API_KEY ?? null
-
-  // Complexity drives Auto's cheap→strong choice (Pro/Max ignore it).
+  // BYOK-only: the caller must supply provider/apiKey/baseUrl/model.
+  // The resolver enforces plan gating + manual-mode policy and
+  // returns the tuple to use upstream; missing/invalid keys return
+  // a structured 400 with the canonical UX message.
+  const aiProviderMode = "byok" as const
+  // Normalise the manual-model picks: canonical name is
+  // ``manualModelSelection``; ``manualModels`` is the legacy alias.
+  // Accept either; pass both onwards.
+  const manualPicks: Record<string, string> | undefined =
+    (body.manualModelSelection && typeof body.manualModelSelection === "object"
+      ? (body.manualModelSelection as Record<string, string>)
+      : undefined) ??
+    (body.manualModels && typeof body.manualModels === "object"
+      ? (body.manualModels as Record<string, string>)
+      : undefined)
   const complexity = scoreComplexity({
     rule_id: finding.rule_id,
     severity: finding.severity,
     evidencePathFiles: finding.evidence_path_files,
     evidencePathLen: finding.evidence_path_len,
   })
+  const resolution = resolveAiProviderForRequest({
+    userId: "local-user",
+    workspaceId: "local-workspace",
+    aiProviderMode,
+    intelligenceMode,
+    task: "patch",
+    complexity,
+    manualModelSelection: manualPicks,
+    byokApiKey: typeof body.apiKey === "string" ? body.apiKey : null,
+    byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
+    byokProvider: body.provider,
+  })
+  if (!resolution.ok) {
+    const httpStatus =
+      resolution.code === "missing_api_key" || resolution.code === "invalid_api_key"
+        ? 400
+        : 403
+    return NextResponse.json(
+      { status: "refused", reason: resolution.reason, code: resolution.code, upgrade: resolution.upgrade ?? false },
+      { status: httpStatus },
+    )
+  }
+  const provider = resolution.provider
+  const apiKey = resolution.apiKey
 
   const plan = planFix(finding)
 
@@ -241,13 +288,26 @@ export async function POST(req: Request) {
     plan,
     provider,
     apiKey,
-    baseUrl: body.baseUrl ?? null,
+    baseUrl: resolution.baseUrl ?? null,
     privateCodeMode: !!body.privateCodeMode,
+    intelligenceMode,
+    complexity,
+    manualModels: manualPicks as import("@/lib/intelligence-mode").ManualOverrides | undefined,
+    // v2: lock the resolver's choice into the pipeline so the pipeline
+    // can't silently re-route to a different model. ``forceModel`` /
+    // ``forceTwoStep`` only override fields on the routing decision;
+    // budget gates, ContextBundle build, and validation are unchanged.
+    forceModel: resolution.model,
+    forceTwoStep: resolution.twoStep,
   })
 
   if ("refused" in preview && preview.refused) {
     return NextResponse.json({ status: "refused", intelligenceMode, ...preview }, { status: 200 })
   }
+
+  // BYOK-only: no credit consumption. The user's upstream provider
+  // bills them directly. (The resolver still returns an
+  // ``estimatedCostUsd`` for the UI to display, informational only.)
 
   const p = preview as PatchPreview
   // Stamp the suggestion/fix role from the real-fix gate so the UI can

@@ -3,18 +3,13 @@
 /**
  * ModelSelector (Manual mode)
  *
- * Claude/Cursor-style per-task model picker. The user assigns a model
- * to each task; the server still enforces all guardrails (graph-bounded
- * context, redaction, token caps, validation, no auto-apply) regardless
- * of choice.
+ * Stores model choices as provider-qualified ids: `${slot}:${modelId}`.
+ * Example: `anthropic:claude-sonnet-4-5-20250929`.
  *
- * Tasks:
- *   explanation · root cause · suggestion · patch generation · bulk fix · verifier
- *
- * Models come from `MODEL_CATALOG` (lib/model-catalog.ts) for whichever
- * providers the user has configured in Settings. This component is
- * presentational; the parent persists the chosen map and forwards it to
- * the fix/explain APIs as `manualModels`.
+ * The server accepts these real model ids end-to-end. Tier strings
+ * (`cheap`, `mid`, `coding_flagship`, `local`) are still supported by
+ * the resolver, but this UI intentionally sends model ids because the
+ * user asked to manually choose the actual model.
  */
 
 import { MODEL_CATALOG } from "@/lib/model-catalog"
@@ -31,25 +26,24 @@ import {
 import { Label } from "@/components/ui/label"
 
 export type ManualTask =
-  | "explanation"
+  | "explain"
   | "root_cause"
-  | "suggestion"
+  | "suggest"
   | "patch"
   | "bulk"
-  | "verifier"
+  | "verify"
 
 export type ManualModelMap = Partial<Record<ManualTask, string>>
 
 const TASKS: Array<{ id: ManualTask; label: string; hint: string }> = [
-  { id: "explanation", label: "Explanation", hint: "Cheap model is fine here" },
+  { id: "explain", label: "Explanation", hint: "Cheap model is fine here" },
   { id: "root_cause", label: "Root-cause reasoning", hint: "Stronger helps on ambiguous flows" },
-  { id: "suggestion", label: "Suggestion", hint: "Mid tier is a good default" },
+  { id: "suggest", label: "Suggestion", hint: "Mid tier is a good default" },
   { id: "patch", label: "Patch generation", hint: "Use your best coding model" },
-  { id: "bulk", label: "Bulk fix (per cluster)", hint: "One call per cluster, not per finding" },
-  { id: "verifier", label: "Verifier (LLM judge)", hint: "Cheap model; only validates" },
+  { id: "bulk", label: "Bulk fix", hint: "One call per cluster, not per finding" },
+  { id: "verify", label: "Verifier", hint: "Cheap model; only validates" },
 ]
 
-/** Configured slots the user has keys for. Parent passes this in. */
 export interface ModelSelectorProps {
   availableSlots: LlmSlot[]
   value: ManualModelMap
@@ -63,9 +57,8 @@ export function ModelSelector({ availableSlots, value, onChange }: ModelSelector
   return (
     <div className="grid gap-3">
       <p className="text-xs text-muted-foreground">
-        Choose a model per task. Safety is enforced on the server regardless of
-        selection: graph-bounded context, secret redaction, token caps, patch
-        validation, and no auto-apply.
+        Choose the exact model per task. Safety is still enforced on the server:
+        graph-bounded context, secret redaction, token caps, validation, and no auto-apply.
       </p>
       {TASKS.map((t) => (
         <div key={t.id} className="grid grid-cols-[160px_1fr] items-center gap-3">
@@ -73,7 +66,7 @@ export function ModelSelector({ availableSlots, value, onChange }: ModelSelector
             <Label className="text-xs font-medium">{t.label}</Label>
             <span className="text-[11px] text-muted-foreground">{t.hint}</span>
           </div>
-          <Select value={value[t.id] ?? ""} onValueChange={(v) => set(t.id, v)}>
+          <Select value={value[t.id] ?? undefined} onValueChange={(v) => set(t.id, v)}>
             <SelectTrigger className="h-8 text-xs">
               <SelectValue placeholder="Use mode default" />
             </SelectTrigger>
@@ -82,7 +75,7 @@ export function ModelSelector({ availableSlots, value, onChange }: ModelSelector
                 <SelectGroup key={slot}>
                   <SelectLabel className="text-[11px] uppercase">{slot}</SelectLabel>
                   {MODEL_CATALOG[slot].map((m) => (
-                    <SelectItem key={`${slot}:${m.id}`} value={m.id} className="text-xs">
+                    <SelectItem key={`${slot}:${m.id}`} value={`${slot}:${m.id}`} className="text-xs">
                       {m.label}
                       {m.hint ? <span className="ml-2 text-muted-foreground">{m.hint}</span> : null}
                     </SelectItem>

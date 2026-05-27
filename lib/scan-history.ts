@@ -1,6 +1,22 @@
 import type { Project } from "./projects"
 import type { ScanReport } from "./scan-report"
 
+export type ScanIntelligenceMode = "save" | "auto" | "pro" | "max" | "manual"
+export type ScanAiProviderMode = "hosted" | "byok"
+
+/** Mode/provider metadata stamped onto each scan, surfaced in the
+ *  Findings tab and reused as the re-scan default. Optional so legacy
+ *  entries still load. */
+export interface ScanModeMetadata {
+  intelligenceMode: ScanIntelligenceMode
+  modeLabel: string
+  aiProviderMode: ScanAiProviderMode
+  manualModelSelection?: Record<string, string>
+  estimatedCost?: number
+  actualCost?: number
+  creditsUsed?: number
+}
+
 export type ScanHistoryItem = {
   id: string
   projectId: string
@@ -12,6 +28,16 @@ export type ScanHistoryItem = {
   summary: ScanReport["summary"]
   findingCount: number
   report: ScanReport
+  /** Intelligence-mode + AI-provider metadata for this scan. */
+  meta?: ScanModeMetadata
+}
+
+export const MODE_LABELS: Record<ScanIntelligenceMode, string> = {
+  save: "Save / Deterministic+Explain",
+  auto: "Auto / Smart Routing",
+  pro: "Pro / High Accuracy",
+  max: "Max / Deep Review",
+  manual: "Manual / Select Model",
 }
 
 const STORAGE_KEY = "edge-agent-ai.scanHistory"
@@ -122,7 +148,8 @@ export function scanHistoryForProject(
 export function scanItemFromReport(
   report: ScanReport,
   project: Project,
-  branch: string
+  branch: string,
+  meta?: ScanModeMetadata
 ): ScanHistoryItem {
   return {
     id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -135,6 +162,7 @@ export function scanItemFromReport(
     summary: report.summary,
     findingCount: report.summary.total,
     report,
+    meta,
   }
 }
 

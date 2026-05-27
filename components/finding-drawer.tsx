@@ -19,7 +19,11 @@ import {
 } from "lucide-react"
 import type { Finding } from "@/components/views/findings"
 import { FindingFixButton } from "@/components/finding-fix-button"
-import type { FixTarget, RunFixesResult } from "@/lib/finding-fixes-client"
+import type {
+  FixProviderKind,
+  FixTarget,
+  RunFixesResult,
+} from "@/lib/finding-fixes-client"
 import {
   isPresenceWarningCategory,
   parseFindingReason,
@@ -42,6 +46,21 @@ interface FindingDrawerProps {
   /** Called after a successful apply so the parent can re-scan / refresh
    *  the findings list. */
   onFixApplied?: (result: RunFixesResult) => void
+  /** Selected intelligence mode from the Findings view, forwarded to the
+   *  Fix button → dialog → API. */
+  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
+  /** Hosted (server-side key) vs BYOK (caller-supplied). */
+  aiProviderMode?: "hosted" | "byok"
+  /** Manual-mode per-task model picks. ``manualModelSelection`` is the
+   *  v2 canonical name; ``manualModels`` is the Step-1 legacy alias. */
+  manualModelSelection?: Record<string, string>
+  manualModels?: Record<string, string>
+  /** BYOK provider config — forwarded to the Fix button → dialog →
+   *  API request body. Hosted callers leave these undefined and the
+   *  server falls back to its own key. */
+  provider?: FixProviderKind
+  apiKey?: string
+  baseUrl?: string
   /** Hand the user off to the VS Code/Cursor-style workspace view
    *  (file tree + Monaco editor) with this finding pinned. When set,
    *  the drawer renders an "Open in editor" button next to the title.
@@ -55,8 +74,22 @@ export function FindingDrawer({
   onOpenChange,
   projectPath = null,
   onFixApplied,
-  onOpenInEditor,
+  intelligenceMode,
+  aiProviderMode,
+  manualModelSelection,
+  manualModels,
+  provider,
+  apiKey,
+  baseUrl,
+  // ``onOpenInEditor`` is preserved on the interface for legacy
+  // callers (see the note further down) but the inline button it
+  // used to drive was removed when row-clicks started opening the
+  // workspace view directly. Intentionally NOT destructured here
+  // until/unless we add a fallback affordance.
 }: FindingDrawerProps) {
+  // Either name is accepted — collapse to one local for the rest of the
+  // component so we don't keep branching on which alias was passed.
+  const manualMap = manualModelSelection ?? manualModels
   // AI explanation state. Lives at the drawer level so it resets whenever
   // the user closes the drawer or opens a different finding — we never
   // bleed one finding's explanation into another's panel.
@@ -76,7 +109,7 @@ export function FindingDrawer({
     if (!open || !finding || !projectPath) {
       return
     }
-    const key = `${projectPath}::${finding.scannerFindingId ?? finding.id}`
+    const key = `${projectPath}::${finding.scannerFindingId ?? finding.id}::${intelligenceMode ?? "auto"}`
     if (lastRequestKey.current === key && (aiExplanation || aiError)) {
       return
     }
@@ -90,6 +123,9 @@ export function FindingDrawer({
     fetchFindingExplanation({
       projectPath,
       finding,
+      intelligenceMode,
+      aiProviderMode,
+      manualModelSelection: manualMap,
       signal: controller.signal,
     })
       .then((res) => {
@@ -107,7 +143,7 @@ export function FindingDrawer({
     // We intentionally do NOT re-fetch when projectPath/finding identity
     // is stable — only on real open transitions or finding switches.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, finding?.scannerFindingId, finding?.id, projectPath])
+  }, [open, finding?.scannerFindingId, finding?.id, projectPath, intelligenceMode])
 
   // Reset when drawer fully closes so a future open re-fetches cleanly.
   useEffect(() => {
@@ -328,6 +364,12 @@ export function FindingDrawer({
               size="default"
               variant="default"
               className="justify-start w-full"
+              intelligenceMode={intelligenceMode}
+              aiProviderMode={aiProviderMode}
+              manualModelSelection={manualMap}
+              provider={provider}
+              apiKey={apiKey}
+              baseUrl={baseUrl}
               onApplied={onFixApplied}
             />
             <Button variant="outline" className="justify-start text-muted-foreground">

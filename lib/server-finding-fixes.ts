@@ -107,6 +107,13 @@ export interface FixProposal {
    *  `.edge-agent/backups/<relative-path>.bak` so they don't litter
    *  the source tree next to the original. */
   backup_path: string | null
+  /** True when this "fix" only inserted a TODO/Manual-suggestion
+   *  marker (fallback template), NOT a real code change. The UI uses
+   *  this to render "Manual suggestion" instead of "Applied" and to
+   *  keep the finding in the table — a marker comment doesn't clear
+   *  the underlying issue. Mirrored on the client-facing FixProposal
+   *  in lib/finding-fixes-client.ts. */
+  marker_only: boolean
 }
 
 export interface RunFixesOptions {
@@ -223,6 +230,12 @@ interface FixTemplate {
   /** Plain-language description shown above the diff. */
   description: string
   risk: FixRisk
+  /** True when this template only inserts a TODO/Manual-suggestion
+   *  marker (no real code change). Defaults to false — only the
+   *  generic fallback should set this. The proposal carries the same
+   *  flag to the UI so it can render "Manual suggestion" instead of
+   *  "Applied" and keep the finding in the table. */
+  markerOnly?: boolean
   /** Build the inserted body. Returns either an array of source-language
    *  code lines (will be pasted as-is) OR null if the rule has no
    *  per-line fix template (we fall back to a generic TODO marker). */
@@ -380,13 +393,21 @@ const TEMPLATES: Record<string, FixTemplate> = {
 }
 
 // Generic fallback used when we don't have a rule-specific template.
+//
+// The title intentionally starts with "Manual suggestion" — the UI keys
+// off this exact wording (and the ``marker_only`` flag) to render the
+// row as a "we wrote a TODO above the line, you still need to fix it"
+// state instead of a green "Applied" state. Don't rename without
+// updating components/finding-fix-dialog.tsx and
+// tests/fix-engine-manual-suggestion.test.ts.
 function fallbackTemplate(rule_id: string): FixTemplate {
   return {
-    title: `Manual review needed (${rule_id})`,
-    description: `No automated fix template is wired for rule "${rule_id}". A TODO marker is dropped above the offending line so it's visible on the next pass.`,
+    title: `Manual suggestion needed (${rule_id})`,
+    description: `No automated fix template is wired for rule "${rule_id}". A MANUAL SUGGESTION marker is dropped above the offending line — this is NOT a fix; the finding will keep firing on every re-scan until the underlying code is changed.`,
     risk: "safe-insert",
+    markerOnly: true,
     buildBody: ({ indent }) => [
-      `${indent}# rule: ${rule_id} — TODO(edge-agent): review and add a fix manually.`,
+      `${indent}# rule: ${rule_id} — MANUAL SUGGESTION (edge-agent): no automatic fix wired; review and patch manually.`,
     ],
   }
 }
@@ -694,6 +715,7 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
         error_kind: null,
         retryable: false,
         backup_path: null,
+        marker_only: tpl.markerOnly ?? false,
       })
       skipped += 1
       continue
@@ -747,6 +769,7 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
           error_kind: null,
           retryable: false,
           backup_path: null,
+          marker_only: tpl.markerOnly ?? false,
         })
         skipped += 1
         continue
@@ -803,6 +826,7 @@ export function buildAndMaybeApplyFixes(opts: RunFixesOptions): RunFixesResult {
       error_kind,
       retryable,
       backup_path: backup_path ? path.relative(opts.projectPath, backup_path) : null,
+      marker_only: tpl.markerOnly ?? false,
     })
   }
 
@@ -855,6 +879,8 @@ function makeErrorProposal(
     title: t.title ?? `Fix ${t.rule_id}`,
     description: error,
     risk: "no-op",
+    // Error proposals never wrote a marker comment to the file.
+    marker_only: false,
     before: "",
     after: "",
     diff: "",

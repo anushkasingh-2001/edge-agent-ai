@@ -62,10 +62,20 @@ import {
   parseJsonReply,
 } from "./server-llm-client"
 import {
-  routeModel,
   type ProviderKind,
   type FixTask,
+  type ModelTier,
 } from "./server-model-router"
+// Step 2: mode-aware routing. routeForMode delegates to routeModel
+// internally, so env overrides + the provider tier→id table still apply.
+import { routeForMode } from "./server-model-router-ext"
+import type { ManualOverrides } from "./intelligence-mode"
+import type { IntelligenceMode } from "./context-bundle"
+// Step 4: graph-bounded context. buildContextBundle replaces sending the
+// whole file; only the explicit, capped `max-patch` mode is allowed to
+// carry full-file content.
+import { buildContextBundle } from "./server-context-bundle"
+import { bundleHasNoFullFiles, bundleInputTokens } from "./context-bundle"
 import {
   scorePatch,
   type ValidationSignals,
@@ -164,6 +174,33 @@ export interface PipelineContext {
    *  finding-resolved check still runs against the patched file's
    *  bounded scan; only the project-wide pass is skipped. */
   skipFullRescan?: boolean
+
+  /* ---- Intelligence-mode plumbing -------------------------------- *
+   * The pipeline routes via `routeForMode` (see "Pick model + budget"
+   * below) so intelligenceMode + complexity + manualModels drive the
+   * actual tier/model choice. `intelligenceMode` + `complexity` are
+   * folded into the cache key so switching mode/complexity correctly
+   * invalidates a cached preview. */
+  intelligenceMode?: IntelligenceMode
+  /** 0..1 complexity score from scoreComplexity(); drives Auto's
+   *  cheap→strong choice in routeForMode. */
+  complexity?: number
+  /** Manual mode: per-task model overrides forwarded to routeForMode. */
+  manualModels?: ManualOverrides
+  /** Escalation target tier when re-running after a failed validation
+   *  (Step 2+). Accepted now so the signature is stable. */
+  forceTier?: ModelTier
+  /** v2: Final concrete model id chosen by the Hosted/BYOK/manual
+   *  resolver. When set, the pipeline uses it as-is and skips the tier
+   *  → model table — fixes the "manual selection wins, then pipeline
+   *  silently re-routes by tier" bug. */
+  forceModel?: string
+  /** v2: explicit max-output-token cap from the resolver (e.g. Max mode
+   *  wants a larger window). Optional override of the tier default. */
+  forceMaxTokens?: number
+  /** v2: Force the two-step plan→patch flow. The resolver sets this
+   *  for Max mode; routeForMode would set it via complexity in Auto. */
+  forceTwoStep?: boolean
 }
 
 export async function generatePatchPreview(
@@ -210,18 +247,35 @@ export async function generatePatchPreview(
     }
   }
 
-  // ---- 2. Pick model + budget.
-  const task = ctx.forceTask
-    ? ctx.forceTask
-    : ctx.plan.fix_class === "llm_complex_patch"
-      ? "patch_complex"
-      : "patch_simple"
-  const decision = routeModel({
-    task,
-    fixClass: ctx.plan.fix_class,
+  // ---- 2. Pick model + budget (mode-aware routing).
+  // Mode + complexity drive model selection via routeForMode, which
+  // delegates to routeModel for env overrides + the tier→id table.
+  // `bundleMode` and `twoStep` are carried for the ContextBundle and
+  // the Max plan-then-patch branch; `escalatedModel` is the target if
+  // a later validation-failure escalation is wired.
+  const decision = routeForMode({
+    mode: ctx.intelligenceMode ?? "auto",
+    task: "patch",
+    complexity: typeof ctx.complexity === "number" ? ctx.complexity : 0,
     provider: ctx.provider,
     privateCodeMode: ctx.privateCodeMode,
+    manual: ctx.manualModels,
+    forceTier: ctx.forceTier,
   })
+
+  // v2: honour the resolver-selected model. Without this override the
+  // pipeline would route by tier again and silently undo a Manual /
+  // Hosted-plan model pick. The router still ran above so plan + cost
+  // gates fire; only the final id is replaced.
+  if (typeof ctx.forceModel === "string" && ctx.forceModel.trim()) {
+    decision.model = ctx.forceModel.trim()
+  }
+  if (typeof ctx.forceMaxTokens === "number" && ctx.forceMaxTokens > 0) {
+    decision.maxTokens = ctx.forceMaxTokens
+  }
+  if (typeof ctx.forceTwoStep === "boolean") {
+    decision.twoStep = ctx.forceTwoStep
+  }
 
   // ---- 3. Read the source file. (Single-file path — complex patches
   //          may extend this; the bulk pipeline handles N-file plans.)
@@ -263,20 +317,90 @@ export async function generatePatchPreview(
     return cached
   }
 
-  // ---- 5. Build redacted prompt. Every byte of code that goes to the
-  //          model passes through `redactSecrets`.
-  const promptUser = buildPatchPrompt({
-    finding: ctx.finding,
-    fileContents: redactSecrets(original),
-    file: ctx.finding.file,
-  })
+  // ---- 5. Build the prompt. Step 4: for every mode EXCEPT max-patch
+  //          we send a graph-bounded ContextBundle (redacted slices),
+  //          NOT the whole file, and ask for anchored edits. max-patch
+  //          is the single explicit, capped full-file path.
+  const allowFullFile = decision.bundleMode === "max-patch"
+  let promptUser: string
+  let systemPrompt: string
 
-  // ---- 6. Call the model.
+  if (allowFullFile) {
+    systemPrompt = PATCH_SYSTEM_PROMPT
+    promptUser = buildPatchPrompt({
+      finding: ctx.finding,
+      fileContents: redactSecrets(original),
+      file: ctx.finding.file,
+    })
+  } else {
+    const bundle = buildContextBundle({
+      projectPath: ctx.projectPath,
+      mode: decision.bundleMode,
+      finding: {
+        id: ctx.finding.id,
+        rule_id: ctx.finding.rule_id,
+        severity: ctx.finding.severity,
+        title: ctx.finding.rule_id,
+        file: ctx.finding.file,
+        line: ctx.finding.line,
+        confidence: ctx.finding.confidence,
+        // evidence_path enrichment (callers/callees, related nodes) is
+        // wired from /api/ir in a later step; today the bundle is the
+        // primary + surrounding slices, already far smaller than the
+        // whole file.
+        evidence_path: [],
+      },
+      irHash: SCANNER_VERSION,
+    })
+    // Hard guarantee: no full-file slice leaked into a non-max bundle.
+    if (!bundleHasNoFullFiles(bundle)) {
+      return {
+        refused: true,
+        findingId: ctx.finding.id,
+        reason: "internal: context bundle exceeded slice bounds for this mode",
+        stage: "internal_error",
+      }
+    }
+    systemPrompt = PATCH_SYSTEM_PROMPT_BUNDLE
+    promptUser = renderBundlePrompt(bundle)
+    void bundleInputTokens // budget already enforced inside buildContextBundle
+  }
+
+  // ---- 5b. Step 6: Max plan-then-patch. When the route decided this is
+  //          a two-step task (Max, or high-complexity Auto patch), do a
+  //          PLAN call first, validate the JSON, and prepend the approved
+  //          plan to the patch prompt. A failed/invalid plan is NOT fatal
+  //          — we fall back to the single-shot patch so the feature
+  //          degrades gracefully rather than refusing.
+  if (decision.twoStep) {
+    const planLlm = await callLlm({
+      model: decision.model,
+      apiKey: provGuard.config.apiKey,
+      baseUrl: provGuard.config.baseUrl,
+      system: PLAN_SYSTEM_PROMPT,
+      user: promptUser,
+      json: true,
+      temperature: 0.1,
+      maxTokens: Math.min(decision.maxTokens, 700),
+    })
+    if (planLlm.ok) {
+      const parsedPlan = parseJsonReply(planLlm.text)
+      const planCheck = validatePatchPlan(parsedPlan)
+      if (planCheck.ok) {
+        // Prepend the approved plan; the patch phase must follow it.
+        promptUser = `${renderPlanForPatch(planCheck.plan)}${promptUser}`
+      }
+      // invalid plan → proceed single-shot (graceful degrade)
+    }
+    // plan call failed → proceed single-shot
+  }
+
+  // ---- 6. Call the model (patch phase).
   const llm = await callLlm({
     model: decision.model,
     apiKey: provGuard.config.apiKey,
     baseUrl: provGuard.config.baseUrl,
-    system: PATCH_SYSTEM_PROMPT,
+    system: systemPrompt,
     user: promptUser,
     json: true,
     temperature: 0.1,
@@ -292,21 +416,33 @@ export async function generatePatchPreview(
   }
 
   const parsed = parseJsonReply<ModelPatchReply>(llm.text)
-  if (!parsed || typeof parsed.new_contents !== "string") {
+  if (!parsed) {
     return {
       refused: true,
       findingId: ctx.finding.id,
-      reason: "model reply missing new_contents",
+      reason: "model reply was not valid JSON",
       stage: "model_call",
     }
   }
+  // Resolve full new file contents: max-patch uses new_contents; bundle
+  // modes apply anchored edits to the real on-disk file.
+  const resolved = resolveNewContents(parsed, original, allowFullFile)
+  if (!resolved.ok) {
+    return {
+      refused: true,
+      findingId: ctx.finding.id,
+      reason: `could not build patch: ${resolved.error}`,
+      stage: "model_call",
+    }
+  }
+  const newContents = resolved.text
 
   // ---- 7. Build the temp workspace, write the patched file, validate.
   const workspace = makeTempWorkspace(ctx.projectPath)
   try {
     const tmpFile = path.join(workspace.path, ctx.finding.file)
     fs.mkdirSync(path.dirname(tmpFile), { recursive: true })
-    fs.writeFileSync(tmpFile, parsed.new_contents, "utf8")
+    fs.writeFileSync(tmpFile, newContents, "utf8")
 
     const parses = await parseFile(tmpFile)
     if (!parses) {
@@ -335,12 +471,12 @@ export async function generatePatchPreview(
       ctx,
       report,
       parses,
-      diffLines: countDiffLines(original, parsed.new_contents),
-      matchesStyle: matchesIndentStyle(original, parsed.new_contents),
+      diffLines: countDiffLines(original, newContents),
+      matchesStyle: matchesIndentStyle(original, newContents),
     })
 
     const conf = scorePatch(sigs)
-    const previewFileHash = hashFileContents(parsed.new_contents)
+    const previewFileHash = hashFileContents(newContents)
     const previewId = makePreviewId(cacheKey, previewFileHash)
 
     const preview: PatchPreview = {
@@ -349,12 +485,12 @@ export async function generatePatchPreview(
       fixClass: ctx.plan.fix_class,
       modelUsed: decision.model,
       patches: [
-        { file: ctx.finding.file, newContents: parsed.new_contents, beforeFileHash },
+        { file: ctx.finding.file, newContents: newContents, beforeFileHash },
       ],
       unifiedDiff: simpleUnifiedDiff(
         ctx.finding.file,
         original,
-        parsed.new_contents,
+        newContents,
       ),
       confidence: conf,
       signals: sigs,
@@ -703,6 +839,15 @@ function hashContext(ctx: PipelineContext): string {
         line: ctx.finding.line,
         plan: ctx.plan.fix_class,
         private: !!ctx.privateCodeMode,
+        // Step 1: part of the key so a cached preview generated under
+        // one mode/complexity is not reused under another once Step 2
+        // makes those affect model + context selection.
+        mode: ctx.intelligenceMode ?? "auto",
+        complexity:
+          typeof ctx.complexity === "number"
+            ? Math.round(ctx.complexity * 100) / 100
+            : 0,
+        manual: ctx.manualModels ?? null,
       }),
     )
     .digest("hex")
@@ -717,8 +862,20 @@ function makePreviewId(cacheKey: string, previewFileHash: string): string {
  *  Prompts                                                            *
  * ------------------------------------------------------------------ */
 
+interface ModelEdit {
+  /** Exact existing snippet to replace. Must occur EXACTLY ONCE in the
+   *  file (else the edit is rejected as ambiguous). */
+  old_str: string
+  /** Replacement snippet. */
+  new_str: string
+}
+
 interface ModelPatchReply {
-  new_contents: string
+  /** Full-file path (max-patch mode only): the entire new file. */
+  new_contents?: string
+  /** Bundle path (all other modes): anchored search/replace edits the
+   *  pipeline applies to the real on-disk file. */
+  edits?: ModelEdit[]
   reason?: string
 }
 
@@ -762,4 +919,220 @@ function buildPatchPrompt(args: {
       .map((l, i) => `  ${String(i + 1).padStart(4, " ")} | ${l}`)
       .join("\n"),
   ].join("\n")
+}
+
+/* ------------------------------------------------------------------ *
+ *  Step 4: graph-bounded prompting (bundle path)                      *
+ * ------------------------------------------------------------------ */
+
+/**
+ * System prompt for the bundle path. The model sees ONLY graph-bounded
+ * slices (taint path + neighborhood), never the whole file, so it must
+ * return anchored search/replace edits rather than full file contents.
+ */
+const PATCH_SYSTEM_PROMPT_BUNDLE = `You are a precise security code-fix assistant. You are given a static-scanner
+finding plus a GRAPH-BOUNDED CONTEXT BUNDLE: the taint path (source→sink),
+redacted code slices, and the relevant neighborhood. You do NOT see the whole
+file.
+
+Return a single JSON object with anchored edits:
+
+  { "edits": [ { "old_str": "<exact snippet to replace, copied verbatim from a
+                              slice — include enough surrounding text that it
+                              appears EXACTLY ONCE in the file>",
+                 "new_str": "<replacement snippet>" } ],
+    "reason": "<one short sentence>" }
+
+Hard rules:
+  - Output ONLY valid JSON. No prose, no markdown fences.
+  - Each old_str MUST be copied verbatim from a provided slice and must be
+    unique in the file. If unsure it's unique, include more surrounding lines.
+  - Make the SMALLEST change that resolves the finding. Prefer one edit.
+  - Preserve indentation style (tabs vs spaces) exactly.
+  - Never invent imports that don't exist; if a helper is needed, add it via an
+    edit near the top of the relevant slice.
+  - Never reintroduce a literal secret; use os.getenv / process.env.`
+
+/** Render a ContextBundle into a compact prompt body (redacted slices
+ *  only). Pure + exported for tests. */
+export function renderBundlePrompt(bundle: {
+  finding: { rule_id: string; severity: string; title: string; line?: number }
+  evidence: { primarySlice: { file: string; startLine: number; endLine: number; text: string } }
+  taintPath: {
+    nodes: Array<{ kind: string; subkind?: string; file: string; line: number; label?: string }>
+    slices: Array<{ file: string; startLine: number; endLine: number; text: string }>
+    guardsMissing: string[]
+  }
+  neighborhood: {
+    callers: Array<{ file: string; startLine: number; endLine: number; text: string }>
+    callees: Array<{ file: string; startLine: number; endLine: number; text: string }>
+  }
+}): string {
+  const slice = (s: { file: string; startLine: number; endLine: number; text: string }) =>
+    `--- ${s.file}:${s.startLine}-${s.endLine}\n${s.text}`
+  const lines: string[] = [
+    `FINDING: ${bundle.finding.rule_id} (${bundle.finding.severity}) — ${bundle.finding.title}`,
+    ``,
+    `PRIMARY LOCATION:`,
+    slice(bundle.evidence.primarySlice),
+  ]
+  if (bundle.taintPath.nodes.length) {
+    lines.push(
+      ``,
+      `TAINT PATH (source→sink):`,
+      bundle.taintPath.nodes
+        .map((n) => `  ${n.kind}${n.subkind ? `/${n.subkind}` : ""} @ ${n.file}:${n.line}${n.label ? ` (${n.label})` : ""}`)
+        .join("\n"),
+    )
+  }
+  if (bundle.taintPath.slices.length) {
+    lines.push(``, `TAINT PATH SLICES:`, ...bundle.taintPath.slices.map(slice))
+  }
+  if (bundle.neighborhood.callers.length) {
+    lines.push(``, `CALLERS:`, ...bundle.neighborhood.callers.map(slice))
+  }
+  if (bundle.neighborhood.callees.length) {
+    lines.push(``, `CALLEES:`, ...bundle.neighborhood.callees.map(slice))
+  }
+  if (bundle.taintPath.guardsMissing.length) {
+    lines.push(``, `MISSING GUARDS: ${bundle.taintPath.guardsMissing.join(", ")}`)
+  }
+  return lines.join("\n")
+}
+
+/**
+ * Apply anchored search/replace edits to the original file text.
+ * Each old_str must occur EXACTLY ONCE (ambiguous or missing → error).
+ * Pure + exported for tests. Returns the new file text or an error.
+ */
+export function applySearchReplace(
+  original: string,
+  edits: ModelEdit[],
+): { ok: true; text: string } | { ok: false; error: string } {
+  if (!Array.isArray(edits) || edits.length === 0) {
+    return { ok: false, error: "no edits provided" }
+  }
+  let text = original
+  for (const [i, edit] of edits.entries()) {
+    if (typeof edit?.old_str !== "string" || typeof edit?.new_str !== "string") {
+      return { ok: false, error: `edit ${i}: old_str/new_str must be strings` }
+    }
+    if (edit.old_str === "") {
+      return { ok: false, error: `edit ${i}: old_str is empty` }
+    }
+    const first = text.indexOf(edit.old_str)
+    if (first === -1) {
+      return { ok: false, error: `edit ${i}: old_str not found in file` }
+    }
+    const second = text.indexOf(edit.old_str, first + edit.old_str.length)
+    if (second !== -1) {
+      return { ok: false, error: `edit ${i}: old_str is ambiguous (matches >1 location)` }
+    }
+    text = text.slice(0, first) + edit.new_str + text.slice(first + edit.old_str.length)
+  }
+  return { ok: true, text }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Step 6: Max plan-then-patch                                        *
+ * ------------------------------------------------------------------ */
+
+export interface PatchPlan {
+  /** One-sentence statement of the underlying problem. */
+  problem_statement: string
+  /** The root cause (where the fix should land — may differ from the
+   *  finding line). */
+  root_cause: string
+  /** Invariants the patch must NOT break (behaviour to preserve). */
+  invariants_to_preserve: string[]
+  /** The concrete guard/mitigation the patch will add. */
+  guard_to_add: string
+  /** Project-relative files the patch is expected to touch. */
+  files_to_change: string[]
+}
+
+const PLAN_SYSTEM_PROMPT = `You are a senior security engineer doing the PLANNING phase of a fix.
+You are given a static-scanner finding plus a graph-bounded context bundle.
+Do NOT write code yet. Produce a concise JSON plan:
+
+  { "problem_statement": "<one sentence>",
+    "root_cause": "<where the fix must land and why>",
+    "invariants_to_preserve": ["<behaviour that must keep working>", ...],
+    "guard_to_add": "<the concrete mitigation, e.g. parameterize the query>",
+    "files_to_change": ["<project-relative path>", ...] }
+
+Hard rules:
+  - Output ONLY valid JSON. No prose, no markdown fences.
+  - files_to_change must be real paths visible in the bundle.
+  - Keep it short; this plan is fed back to the patch phase.`
+
+/** Validate a parsed PatchPlan. Pure + exported for tests. */
+export function validatePatchPlan(
+  plan: unknown,
+): { ok: true; plan: PatchPlan } | { ok: false; error: string } {
+  if (!plan || typeof plan !== "object") return { ok: false, error: "plan not an object" }
+  const p = plan as Record<string, unknown>
+  if (typeof p.problem_statement !== "string" || !p.problem_statement.trim()) {
+    return { ok: false, error: "missing problem_statement" }
+  }
+  if (typeof p.root_cause !== "string" || !p.root_cause.trim()) {
+    return { ok: false, error: "missing root_cause" }
+  }
+  if (typeof p.guard_to_add !== "string" || !p.guard_to_add.trim()) {
+    return { ok: false, error: "missing guard_to_add" }
+  }
+  const invariants = Array.isArray(p.invariants_to_preserve)
+    ? p.invariants_to_preserve.filter((x): x is string => typeof x === "string")
+    : []
+  const files = Array.isArray(p.files_to_change)
+    ? p.files_to_change.filter((x): x is string => typeof x === "string")
+    : []
+  if (files.length === 0) return { ok: false, error: "files_to_change empty" }
+  return {
+    ok: true,
+    plan: {
+      problem_statement: p.problem_statement,
+      root_cause: p.root_cause,
+      invariants_to_preserve: invariants,
+      guard_to_add: p.guard_to_add,
+      files_to_change: files,
+    },
+  }
+}
+
+/** Render a validated plan as a prefix block for the patch prompt. Pure. */
+export function renderPlanForPatch(plan: PatchPlan): string {
+  return [
+    `APPROVED PATCH PLAN (follow it):`,
+    `  problem : ${plan.problem_statement}`,
+    `  root    : ${plan.root_cause}`,
+    `  guard   : ${plan.guard_to_add}`,
+    `  preserve: ${plan.invariants_to_preserve.join("; ") || "(none stated)"}`,
+    `  files   : ${plan.files_to_change.join(", ")}`,
+    ``,
+  ].join("\n")
+}
+
+/**
+ * Resolve the full new file contents from a model reply. Full-file path
+ * (max-patch) uses `new_contents`; bundle path applies `edits` to the
+ * original. Pure + exported for tests.
+ */
+export function resolveNewContents(
+  parsed: ModelPatchReply,
+  original: string,
+  allowFullFile: boolean,
+): { ok: true; text: string } | { ok: false; error: string } {
+  if (allowFullFile && typeof parsed.new_contents === "string") {
+    return { ok: true, text: parsed.new_contents }
+  }
+  if (Array.isArray(parsed.edits) && parsed.edits.length > 0) {
+    return applySearchReplace(original, parsed.edits)
+  }
+  // Tolerate a full-file reply even on the bundle path (some models
+  // ignore the edits instruction) ONLY if it's non-empty.
+  if (typeof parsed.new_contents === "string" && parsed.new_contents.length > 0) {
+    return { ok: true, text: parsed.new_contents }
+  }
+  return { ok: false, error: "model reply had neither edits nor new_contents" }
 }

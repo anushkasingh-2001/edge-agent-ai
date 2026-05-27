@@ -14,6 +14,15 @@
 
 export type IntelligenceMode = "save" | "auto" | "pro" | "max" | "manual"
 
+/**
+ * Hosted (Edge-Agent-operated key, plan-billed) vs BYOK (caller's own
+ * key, billed to their provider account). Exported from this module
+ * — instead of the server-only resolver — so client + server can
+ * share a single wire-level definition without React Server / Client
+ * boundary leaks.
+ */
+export type AiProviderMode = "hosted" | "byok"
+
 export type ContextBundleMode =
   | "save-explain" // ≤ 1.5k tokens — finding + 3-line slice
   | "auto-small" // ≤ 4k — taint path + slices + 1-hop callers

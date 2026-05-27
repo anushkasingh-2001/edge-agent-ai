@@ -37,6 +37,15 @@ export async function POST(request: Request) {
      *  for branches they aren't currently checked out on (the fix
      *  for "select gt in dropdown → still see main's findings"). */
     branch?: string
+    // NOTE: intelligenceMode / aiProviderMode / manualModelSelection are
+    // intentionally NOT on this body. The scanner is deterministic and
+    // doesn't consult them; routes that DO consume them are
+    //   /api/scan/estimate, /api/finding/explain, /api/finding/patch,
+    //   /api/findings/fix, /api/findings/fix-filtered.
+    // The client stamps the mode onto scan history via
+    // `scanItemFromReport`, so the round-trip preserves it without
+    // a server-side echo. See the audit in
+    // tests/all-modes-e2e-wiring.test.ts for the contract.
   } = {}
   try {
     body = await request.json()

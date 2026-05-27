@@ -26,6 +26,7 @@
  * of re-issuing every request.
  */
 
+import type { JSX } from "react"
 import { useCallback, useEffect, useState } from "react"
 import { ChevronDown, ChevronRight, File, Folder, FolderOpen, RefreshCw } from "lucide-react"
 

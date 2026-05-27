@@ -12,7 +12,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { Check, ChevronDown, Lightbulb, Wrench } from "lucide-react"
 import { FindingFixDialog } from "@/components/finding-fix-dialog"
-import type { FixMode, FixTarget, RunFixesResult } from "@/lib/finding-fixes-client"
+import type {
+  FixMode,
+  FixProviderKind,
+  FixTarget,
+  RunFixesResult,
+} from "@/lib/finding-fixes-client"
 
 interface FindingFixButtonProps {
   /** Targets the dropdown's actions will run against. */
@@ -29,6 +34,26 @@ interface FindingFixButtonProps {
   /** Disable when the caller has no targets. */
   disabled?: boolean
   className?: string
+  /** Selected intelligence mode, forwarded to the fix dialog →
+   *  runFindingFixesApi → server. */
+  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
+  /** Hosted (server-side key) vs BYOK (browser-supplied key). */
+  aiProviderMode?: "hosted" | "byok"
+  /** Manual-mode per-task model picks. ``manualModelSelection`` is the
+   *  v2 name; ``manualModels`` is the Step-1 alias accepted for
+   *  backward compatibility. */
+  manualModelSelection?: Record<string, string>
+  manualModels?: Record<string, string>
+  /** BYOK provider config — forwarded through the dialog to
+   *  ``runFindingFixesApi``. The parent owns the Settings lookup
+   *  (`loadProviderConfigs` → active slot) so this component stays a
+   *  dumb relay; that keeps the BYOK choice consistent across the
+   *  toolbar Fix button, the drawer Fix button, and the Behavioral
+   *  test row Fix button. ``provider``/``apiKey``/``baseUrl`` are sent
+   *  only when ``aiProviderMode === "byok"``. */
+  provider?: FixProviderKind
+  apiKey?: string
+  baseUrl?: string
   onApplied?: (result: RunFixesResult) => void
 }
 
@@ -52,6 +77,13 @@ export function FindingFixButton({
   variant = "outline",
   disabled = false,
   className,
+  intelligenceMode,
+  aiProviderMode,
+  manualModelSelection,
+  manualModels,
+  provider,
+  apiKey,
+  baseUrl,
   onApplied,
 }: FindingFixButtonProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -123,6 +155,12 @@ export function FindingFixButton({
         mode={dialogMode}
         projectPath={projectPath}
         title={dialogTitle ?? label}
+        intelligenceMode={intelligenceMode}
+        aiProviderMode={aiProviderMode}
+        manualModelSelection={manualModelSelection ?? manualModels}
+        provider={provider}
+        apiKey={apiKey}
+        baseUrl={baseUrl}
         onApplied={onApplied}
       />
     </>

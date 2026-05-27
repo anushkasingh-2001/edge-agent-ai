@@ -58,6 +58,17 @@ import {
   IntelligenceModeToggle,
   type IntelligenceMode,
 } from "@/components/intelligence-mode-toggle"
+import type { AiProviderMode } from "@/components/ai-provider-toggle"
+import { ModelSelector, type ManualModelMap } from "@/components/model-selector"
+import { usePlanSummary, modeAllowedByPlan } from "@/lib/plan-client"
+import {
+  type LlmSlot,
+  type ModelProviderConfig,
+  loadProviderConfigs,
+  getSlotConfig,
+  pickPrimaryProvider,
+} from "@/lib/model-keys"
+import type { FixProviderKind } from "@/lib/finding-fixes-client"
 import { WorkspaceView } from "@/components/workspace/workspace-view"
 import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
 import type { ScanReport, UiFinding } from "@/lib/scan-report"
@@ -93,6 +104,109 @@ export type Finding = UiFinding
  */
 function displayCategory(raw: string): string {
   return displayCategoryLabel(raw)
+}
+
+/** Browser-side BYOK config object passed through Fix → API → resolver. */
+export interface ByokConfig {
+  provider: FixProviderKind
+  apiKey: string
+  baseUrl?: string
+}
+
+/** Map ``LlmSlot`` (UI label) → ``FixProviderKind`` (wire enum). */
+function slotToProviderKind(slot: LlmSlot): FixProviderKind {
+  switch (slot) {
+    case "anthropic":
+      return "anthropic"
+    case "google":
+      return "google"
+    case "openai":
+      return "openai_compatible"
+    case "custom":
+      // The Settings UI calls this "Custom OpenAI-compatible". The
+      // wire enum has a distinct "custom" value the resolver maps
+      // to the same OpenAI-compatible runner — keep them separate
+      // so future divergence (e.g. a vLLM-specific path) is possible
+      // without another wire migration.
+      return "custom"
+  }
+}
+
+/** Same mapping, for a ModelProviderConfig.type instead of a slot. */
+function providerTypeToKind(
+  type: ModelProviderConfig["type"],
+): FixProviderKind {
+  switch (type) {
+    case "anthropic":
+      return "anthropic"
+    case "google":
+      return "google"
+    case "openai_compatible":
+      return "openai_compatible"
+  }
+}
+
+/**
+ * Resolve the BYOK provider config to send with a Fix request.
+ *
+ * Selection rules:
+ *   - Hosted mode → return null. Server picks the hosted key and
+ *     records consumption; we never forward a browser-stored key.
+ *   - BYOK + Manual mode → prefer the slot the user picked in the
+ *     ModelSelector. We grab the FIRST manual slot from the model
+ *     selection because the UI exposes a single per-task slot, and
+ *     all tasks share the same key anyway.
+ *   - BYOK + non-Manual mode → fall back to ``pickPrimaryProvider``
+ *     (OpenAI → Custom → Anthropic → Gemini). That matches the
+ *     Settings/Chat assistant preference order so users don't have
+ *     to pick the provider twice.
+ *
+ * Returns ``null`` when no usable provider config exists. In BYOK-only
+ * MVP this means the user hasn't configured a Settings key yet and
+ * the server will refuse the request with `missing_api_key` — the
+ * UI surfaces the canonical "Add your provider key in Settings…" CTA.
+ */
+function resolveByokConfig(
+  _aiProviderMode: AiProviderMode,
+  configs: ModelProviderConfig[],
+  manualSelection: ManualModelMap,
+): ByokConfig | null {
+  if (configs.length === 0) return null
+
+  // 1. Manual slot pick — find the first provider-qualified value in
+  //    the manual map and use that slot's saved config.
+  for (const value of Object.values(manualSelection)) {
+    if (typeof value !== "string" || !value.includes(":")) continue
+    const slot = value.split(":", 1)[0]?.toLowerCase()
+    if (!slot) continue
+    if (
+      slot === "openai" ||
+      slot === "anthropic" ||
+      slot === "google" ||
+      slot === "custom"
+    ) {
+      const cfg = getSlotConfig(slot as LlmSlot, configs)
+      if (cfg && cfg.apiKey) {
+        return {
+          provider: slotToProviderKind(slot as LlmSlot),
+          apiKey: cfg.apiKey,
+          baseUrl: cfg.baseUrl || undefined,
+        }
+      }
+    }
+  }
+
+  // 2. No manual pick (Auto/Pro/Max/Save under BYOK) — Settings'
+  //    primary provider rule wins.
+  const primary = pickPrimaryProvider(configs)
+  if (primary && primary.apiKey) {
+    return {
+      provider: providerTypeToKind(primary.type),
+      apiKey: primary.apiKey,
+      baseUrl: primary.baseUrl || undefined,
+    }
+  }
+  return null
 }
 
 interface FindingsProps {
@@ -137,6 +251,27 @@ interface FindingsProps {
    *  button. Optional — when omitted the button is hidden. Same
    *  callback the TopBar's Run Scan button calls. */
   onRerunScan?: () => void
+  // -----------------------------------------------------------------
+  // Toolbar state (controlled).
+  //
+  // The page-level parent owns intelligence-mode + manual-model-map
+  // so:
+  //   1. The Behavioral tab's Fix button reads the same selection
+  //      as the Code tab's toolbar.
+  //   2. The user's choice on Findings persists into the NEXT scan
+  //      request issued from app/page.tsx.
+  //
+  // `aiProviderMode` is included for legacy callers that still type
+  // requests against the resolver's enum, but the page hardcodes it
+  // to "hosted" — the Hosted-vs-BYOK toggle was removed because the
+  // app only ships with the in-package providers. There is no setter
+  // by design; nothing in the UI should change it.
+  // -----------------------------------------------------------------
+  intelligenceMode: IntelligenceMode
+  setIntelligenceMode: (mode: IntelligenceMode) => void
+  aiProviderMode: AiProviderMode
+  manualModelSelection: ManualModelMap
+  setManualModelSelection: (selection: ManualModelMap) => void
 }
 
 /**
@@ -171,6 +306,11 @@ export function Findings({
   projectId = null,
   onActiveSuiteChange,
   onRerunScan,
+  intelligenceMode,
+  setIntelligenceMode,
+  aiProviderMode,
+  manualModelSelection,
+  setManualModelSelection,
 }: FindingsProps) {
   const [tab, setTab] = useState<"code" | "behavioral">(initialTab)
 
@@ -182,6 +322,38 @@ export function Findings({
   useEffect(() => {
     setTab(initialTab)
   }, [initialTab])
+
+  // -------------------------------------------------------------------
+  // Toolbar state is now controlled from app/page.tsx so that:
+  //   - Behavioral tab + Code tab share the same selection (U1), and
+  //   - the next scan request reads the toolbar value the user
+  //     picked here (closes the dead-state-write hole that left
+  //     scan requests permanently on Auto+Hosted).
+  // -------------------------------------------------------------------
+  const { plan } = usePlanSummary()
+  // Plan can downgrade the mode silently (e.g. "max" → "auto" on Free).
+  // Mirror it here so the toggle never gets out of sync with what the
+  // server will actually run. Lifted from CodeAnalysisPanel so the
+  // downgrade also takes effect when the user is on the Behavioral tab.
+  useEffect(() => {
+    if (!modeAllowedByPlan(plan, intelligenceMode)) {
+      setIntelligenceMode("auto")
+    }
+  }, [plan, intelligenceMode])
+
+  // Read provider configs from localStorage on mount / whenever BYOK
+  // is toggled on. We re-read on each toggle so a user who just added
+  // a key in Settings sees it without a reload.
+  const [providerConfigs, setProviderConfigs] = useState<ModelProviderConfig[]>(
+    [],
+  )
+  useEffect(() => {
+    setProviderConfigs(loadProviderConfigs())
+  }, [aiProviderMode, manualModelSelection])
+  const byokConfig = useMemo(
+    () => resolveByokConfig(aiProviderMode, providerConfigs, manualModelSelection),
+    [aiProviderMode, providerConfigs, manualModelSelection],
+  )
 
   const criticalCount = findings.filter((f) => f.severity === "critical").length
   const highCount = findings.filter((f) => f.severity === "high").length
@@ -317,6 +489,12 @@ export function Findings({
             findings={findings}
             projectPath={projectPath}
             onRerunScan={onRerunScan}
+            intelligenceMode={intelligenceMode}
+            setIntelligenceMode={setIntelligenceMode}
+            aiProviderMode={aiProviderMode}
+            manualModelSelection={manualModelSelection}
+            setManualModelSelection={setManualModelSelection}
+            byokConfig={byokConfig}
           />
         </TabsContent>
 
@@ -329,6 +507,10 @@ export function Findings({
             activeSuite={activeSuite}
             projectId={projectId}
             onActiveSuiteChange={onActiveSuiteChange}
+            intelligenceMode={intelligenceMode}
+            aiProviderMode={aiProviderMode}
+            manualModelSelection={manualModelSelection}
+            byokConfig={byokConfig}
           />
         </TabsContent>
       </Tabs>
@@ -345,26 +527,54 @@ function CodeAnalysisPanel({
   findings,
   projectPath,
   onRerunScan,
+  intelligenceMode,
+  setIntelligenceMode,
+  aiProviderMode,
+  manualModelSelection,
+  setManualModelSelection,
+  byokConfig,
 }: {
   findings: Finding[]
   projectPath: string | null
   /** When set, the workspace view's "Re-run scan" button fires this
    *  (same callback wired to the global TopBar Run Scan button). */
   onRerunScan?: () => void
+  /** Toolbar state lifted to the outer `Findings` parent so the
+   *  Behavioral tab's Fix button can read the same selection (U1). */
+  intelligenceMode: IntelligenceMode
+  setIntelligenceMode: (mode: IntelligenceMode) => void
+  aiProviderMode: AiProviderMode
+  manualModelSelection: ManualModelMap
+  setManualModelSelection: (selection: ManualModelMap) => void
+  /** Pre-resolved BYOK config (provider/apiKey/baseUrl) for Fix calls.
+   *  ``null`` when Hosted is selected OR no usable browser-stored key
+   *  was found — see ``resolveByokConfig`` for the selection rules. */
+  byokConfig: ByokConfig | null
 }) {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
-  // Five-tier intelligence mode (Save / Auto / Pro / Max / Manual).
-  // The selected mode is forwarded to /api/finding/patch,
-  // /api/findings/fix-filtered and /api/scan/estimate as
-  // `intelligenceMode`. We default to Auto (smart routing) — the
-  // recommended mode in the design brief — and persist nothing here:
-  // it stays a per-session preference until the user changes it.
-  const [intelligenceMode, setIntelligenceMode] =
-    useState<IntelligenceMode>("auto")
+  // Toolbar state — five-tier intelligence mode (Save / Auto / Pro /
+  // Max / Manual), Hosted/BYOK provider toggle, and Manual per-task
+  // model picks — lives on the outer Findings parent now so the
+  // Behavioral tab can read the same selection. See the comment block
+  // in `Findings` (U1).
+  //
+  // The plan summary is still fetched here (alongside the parent's
+  // mode-downgrade effect) because the AiProviderToggle and the
+  // Manual selector hint both need to render plan-aware text — the
+  // hook caches under the hood so an extra call is cheap.
+  const { plan } = usePlanSummary()
+  // BYOK lets the user point at any provider; Hosted exposes only the
+  // providers we operate keys for.
+  // Manual-mode picker exposes the in-package providers only. The
+  // `custom` BYOK slot is gone along with the Hosted-vs-BYOK toggle.
+  const availableManualSlots = useMemo<LlmSlot[]>(
+    () => ["openai", "anthropic", "google"],
+    [],
+  )
   // When set, the in-app workspace (file tree + Monaco editor) takes
   // over the panel. The findings table is hidden until the user clicks
   // "Back to findings" inside the workspace view.
@@ -527,6 +737,29 @@ function CodeAnalysisPanel({
               onChange={setIntelligenceMode}
             />
           </div>
+
+          {/* Hosted-vs-BYOK toggle removed: the app ships with the
+              in-package providers only. `aiProviderMode` flows in
+              from the page as the hosted constant so every API call
+              still routes through the resolver's hosted path. */}
+
+          {intelligenceMode === "manual" ? (
+            <div className="rounded-lg border border-border/70 bg-secondary/30 p-3">
+              <ModelSelector
+                availableSlots={availableManualSlots}
+                value={manualModelSelection}
+                onChange={setManualModelSelection}
+              />
+              {plan && !plan.allowManualModelSelection ? (
+                <p className="mt-2 text-xs text-yellow-500">
+                  Your current plan can enter Manual mode, but per-task
+                  model selection is blocked server-side unless the plan
+                  allows it.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="flex items-center gap-4">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -588,6 +821,14 @@ function CodeAnalysisPanel({
               dialogTitle={fixAllLabel}
               size="sm"
               variant="default"
+              intelligenceMode={intelligenceMode}
+              aiProviderMode={aiProviderMode}
+              manualModelSelection={
+                intelligenceMode === "manual" ? manualModelSelection : undefined
+              }
+              provider={byokConfig?.provider}
+              apiKey={byokConfig?.apiKey}
+              baseUrl={byokConfig?.baseUrl}
               onApplied={handleApplied}
             />
           </div>
@@ -686,6 +927,14 @@ function CodeAnalysisPanel({
         onOpenChange={setDrawerOpen}
         projectPath={projectPath}
         onFixApplied={handleApplied}
+        intelligenceMode={intelligenceMode}
+        aiProviderMode={aiProviderMode}
+        manualModelSelection={
+          intelligenceMode === "manual" ? manualModelSelection : undefined
+        }
+        provider={byokConfig?.provider}
+        apiKey={byokConfig?.apiKey}
+        baseUrl={byokConfig?.baseUrl}
         onOpenInEditor={(f) => {
           setDrawerOpen(false)
           setWorkspaceFinding(f)
@@ -723,6 +972,14 @@ interface BehavioralTestsPanelProps {
   /** Forwarded up to `app/page.tsx` so the new/edited suite becomes
    *  the active one (and the suite-bridge useEffect there re-fires). */
   onActiveSuiteChange?: (suite: TestSuite | null) => void
+  /** Same toolbar state CodeAnalysisPanel receives, lifted to the
+   *  outer parent so the per-row Fix button in this tab uses the
+   *  identical intelligence-mode / provider / Manual model picks as
+   *  the toolbar Fix button on the Code Analysis tab (U1). */
+  intelligenceMode: IntelligenceMode
+  aiProviderMode: AiProviderMode
+  manualModelSelection: ManualModelMap
+  byokConfig: ByokConfig | null
 }
 
 function BehavioralTestsPanel({
@@ -733,6 +990,10 @@ function BehavioralTestsPanel({
   activeSuite,
   projectId,
   onActiveSuiteChange,
+  intelligenceMode,
+  aiProviderMode,
+  manualModelSelection,
+  byokConfig,
 }: BehavioralTestsPanelProps) {
   const [report, setReport] = useState<BehavioralRunReport | null>(null)
   const [running, setRunning] = useState(false)
@@ -1165,6 +1426,10 @@ function BehavioralTestsPanel({
                     projectPath={projectPath}
                     onRemove={() => handleRemoveTest(t)}
                     onDefineSimilar={() => setEditSuiteOpen(true)}
+                    intelligenceMode={intelligenceMode}
+                    aiProviderMode={aiProviderMode}
+                    manualModelSelection={manualModelSelection}
+                    byokConfig={byokConfig}
                   />
                 ))}
               </div>
@@ -1404,6 +1669,10 @@ function BehavioralTestRow({
   projectPath,
   onRemove,
   onDefineSimilar,
+  intelligenceMode,
+  aiProviderMode,
+  manualModelSelection,
+  byokConfig,
 }: {
   test: BehavioralTestCase
   projectPath: string | null
@@ -1413,6 +1682,13 @@ function BehavioralTestRow({
   /** Optional helper to open the Define dialog pre-filled with this
    *  test's category — used from inside the expanded details panel. */
   onDefineSimilar?: () => void
+  /** Toolbar state lifted from Findings — passed to the row's Fix
+   *  button so the Behavioral tab uses the same mode/provider/manual
+   *  picks as the Code Analysis tab's toolbar (U1). */
+  intelligenceMode: IntelligenceMode
+  aiProviderMode: AiProviderMode
+  manualModelSelection: ManualModelMap
+  byokConfig: ByokConfig | null
 }) {
   const [open, setOpen] = useState(false)
   const sev = severityTone(test.severity)
@@ -1616,6 +1892,14 @@ function BehavioralTestRow({
               size="sm"
               variant={test.status === "fail" ? "default" : "outline"}
               disabled={fixTargets.length === 0}
+              intelligenceMode={intelligenceMode}
+              aiProviderMode={aiProviderMode}
+              manualModelSelection={
+                intelligenceMode === "manual" ? manualModelSelection : undefined
+              }
+              provider={byokConfig?.provider}
+              apiKey={byokConfig?.apiKey}
+              baseUrl={byokConfig?.baseUrl}
             />
           </div>
         </div>

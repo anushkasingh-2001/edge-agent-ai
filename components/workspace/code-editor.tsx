@@ -19,6 +19,7 @@
  *     Markdown, CSS, HTML, YAML; everything else is plaintext)
  */
 
+import type { JSX } from "react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import type {
@@ -27,7 +28,7 @@ import type {
   ViewUpdate,
 } from "@uiw/react-codemirror"
 import { EditorView, Decoration, DecorationSet, keymap } from "@codemirror/view"
-import { StateField, StateEffect, EditorState, RangeSetBuilder } from "@codemirror/state"
+import { StateField, StateEffect, RangeSetBuilder } from "@codemirror/state"
 import { javascript } from "@codemirror/lang-javascript"
 import { python } from "@codemirror/lang-python"
 import { json } from "@codemirror/lang-json"

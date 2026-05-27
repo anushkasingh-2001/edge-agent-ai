@@ -110,10 +110,23 @@ function tierModels(): Record<ProviderKind, Record<ModelTier, string>> {
       local: cheap,
     },
     anthropic: {
-      cheap: "claude-3-5-haiku-latest",
-      mid: "claude-3-5-sonnet-latest",
-      coding_flagship: "claude-sonnet-4-5-20250929",
-      local: "claude-3-5-haiku-latest",
+      // Intelligence-mode → model mapping for Anthropic:
+      //   Save  (cheap)            → claude-haiku-4-5
+      //   Auto  (mid)              → claude-sonnet-4-6
+      //   Pro   (coding_flagship)  → claude-sonnet-4-6
+      //   Max   (coding_flagship)  → claude-opus-4-7  (overridden in
+      //                              routeForMode — see ext layer)
+      //   Manual                   → exact user-selected model id.
+      //
+      // The mode/tier matrix only exposes one `coding_flagship` slot,
+      // so Max's claude-opus-4-7 selection lives in the ext layer
+      // (lib/server-model-router-ext.ts). Anything that asks for
+      // coding_flagship here gets the Sonnet default, matching Pro's
+      // expectation; Max post-processes to Opus after routeModel runs.
+      cheap: "claude-haiku-4-5",
+      mid: "claude-sonnet-4-6",
+      coding_flagship: "claude-sonnet-4-6",
+      local: "claude-haiku-4-5",
     },
     google: {
       cheap: "gemini-2.5-flash",

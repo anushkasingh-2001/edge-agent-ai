@@ -97,7 +97,21 @@ function getStatusBadge(status: string) {
   }
 }
 
-export function RunTraces() {
+/**
+ * Run-traces view. Some call sites (app/page.tsx) pass scan history /
+ * project context as props so the view can later filter against them.
+ * The fields are accepted (and currently unused) here so the prop
+ * surface is declared — without them TS rejects the call site under
+ * strict mode.
+ */
+type ScanHistoryItem = import("@/lib/scan-history").ScanHistoryItem
+interface RunTracesProps {
+  scanHistory?: ScanHistoryItem[]
+  hasProject?: boolean
+  selectedAgents?: string[]
+}
+
+export function RunTraces(_props: RunTracesProps = {}) {
   const [isLive, setIsLive] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
 

@@ -4,16 +4,16 @@
  * Lives in `lib/` (not `components/`) so non-React callers (e.g. a future
  * standalone detail page) can use the same fetch shape.
  *
- * Key resolution order (mirrors Prompt Playground / Chat Assistant):
- *   1. Explicit `apiKey` passed by the caller (used by tests).
- *   2. Server-side `process.env.OPENAI_API_KEY` — the route falls back to
- *      this automatically when the request body has no `apiKey`, so we
- *      simply omit the field and let the server pick it up.
- *   3. The OpenAI key the user configured in Settings → LLM Providers,
- *      stored in `localStorage` under the same `ModelProviderConfig`
- *      shape that Prompt Playground reads. We attach it to this ONE
- *      request only — never persisted server-side, never written to the
- *      explanation cache (cache is keyed by content hashes, not the key).
+ * **BYOK-only.** Key resolution order:
+ *   1. Explicit `apiKey` passed by the caller (tests / power-users).
+ *   2. The user-configured Settings key for the matching provider slot.
+ *      Read from `localStorage` via `loadProviderConfigs()`.
+ *
+ * If neither yields a key, the request still goes out without one and
+ * the server returns the canonical "API key not provided. Add your
+ * provider key in Settings…" error — there is NO env / hosted fallback
+ * in MVP. The scanner's structured `reason` is still rendered via the
+ * template fallback so the drawer never goes blank.
  *
  * Important: callers MUST only invoke this when the user opens a finding.
  * Do NOT call it from list-render code; the cost guardrails in the API
@@ -78,6 +78,15 @@ export interface ExplanationRequest {
   /** Caller-supplied model id. Honoured by the server only when paired
    * with a caller-supplied apiKey (i.e. the browser-settings flow). */
   model?: string | null
+  /** Intelligence mode, forwarded so the explainer model tier follows
+   *  the selected mode (Save→cheap, Pro/Max→deep). */
+  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
+  /** Hosted (server-side key) vs BYOK (caller-supplied). */
+  aiProviderMode?: "hosted" | "byok"
+  /** Manual-mode per-task model picks. ``manualModelSelection`` is the
+   *  v2 canonical name; ``manualModels`` is the Step-1 legacy alias. */
+  manualModelSelection?: Record<string, string>
+  manualModels?: Record<string, string>
   signal?: AbortSignal
 }
 
@@ -131,14 +140,13 @@ export function getBrowserOpenAIKey(): {
  * string when available.
  */
 export async function fetchFindingExplanation(req: ExplanationRequest): Promise<AIExplanationResponse> {
-  // Resolve the browser-stored OpenAI key ONLY if the caller didn't pass
-  // one explicitly. When neither path yields a key, we send no `apiKey`
-  // field at all — the server then falls back to process.env.OPENAI_API_KEY
-  // (or the template, when that's missing too). The key is attached to
-  // this single fetch and never persisted by either side. The model field
-  // is forwarded too so the server uses the user's Settings choice (e.g.
-  // gpt-4.1) instead of the cost-control default (gpt-5-nano), which
-  // many project keys are not yet entitled to.
+  // Resolve the browser-stored Settings key ONLY if the caller didn't
+  // pass one explicitly. When neither path yields a key we send no
+  // `apiKey` field and the server returns the canonical
+  // `missing_api_key` error — there is NO env / hosted fallback in
+  // MVP. The key is attached to this single fetch and never persisted
+  // by either side; the model field is forwarded so the server uses
+  // the user's Settings choice instead of the cost-control default.
   const browser = req.apiKey ? null : getBrowserOpenAIKey()
   const apiKey = req.apiKey ?? browser?.apiKey ?? undefined
   const baseUrl = req.baseUrl ?? browser?.baseUrl ?? undefined
@@ -151,6 +159,11 @@ export async function fetchFindingExplanation(req: ExplanationRequest): Promise<
     apiKey,
     baseUrl,
     model,
+    intelligenceMode: req.intelligenceMode,
+    aiProviderMode: req.aiProviderMode,
+    // Send both names so older and newer server builds both accept it.
+    manualModelSelection: req.manualModelSelection ?? req.manualModels,
+    manualModels: req.manualModelSelection ?? req.manualModels,
     finding: {
       finding_id: req.finding.scannerFindingId ?? String(req.finding.id),
       rule_id: req.finding.ruleId ?? "unknown",

@@ -25,10 +25,12 @@
     "lint": "eslint .",
     "policy-gate": "tsx scripts/policy-gate.ts",
     "policy-gate-setup": "tsx scripts/policy-gate-setup.ts",
+    "test": "tsx --test tests/*.test.ts",
     "test:explain": "tsx --test tests/finding-explain.test.ts",
     "test:workspace": "tsx --test tests/workspace-api.test.ts",
     "test:workspace-store": "tsx --test tests/workspace-store.test.ts",
     "test:modes": "tsx --test tests/intelligence-modes.test.ts",
+    "test:modes-wiring": "tsx --test tests/all-modes-e2e-wiring.test.ts",
     "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {

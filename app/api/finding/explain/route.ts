@@ -22,6 +22,7 @@
 
 import path from "node:path"
 import { NextResponse } from "next/server"
+import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
 
 import {
   ExplanationError,
@@ -45,14 +46,29 @@ interface RouteBody {
     code_snippet?: string
     line?: number | string
   }
-  /** Test / power-user override. Falls back to process.env.OPENAI_API_KEY. */
+  /** REQUIRED for any AI call. BYOK-only — there is no env fallback.
+   *  Sourced from the user's Settings → provider slot in the browser. */
   apiKey?: string
-  /** Test / power-user override of the OpenAI base URL (for compat servers). */
+  /** OpenAI-compatible base URL override (Together / Groq / local). */
   baseUrl?: string
-  /** Caller's chosen model id (e.g. from Settings → OpenAI slot). Overrides
-   * the cost-control default so we don't try to call a gpt-5 model that
-   * the user's key may not be entitled to. */
+  /** Caller's chosen model id from Settings. */
   model?: string
+  /** Intelligence mode (save/auto/pro/max/manual). Forwarded to the
+   *  resolver (key/provider/model selection) and to ``explainOneFinding``
+   *  (model tier per mode). The scanner-owned fields
+   *  (severity/category/file/line/evidence) are NEVER taken from the
+   *  model regardless of mode. */
+  intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
+  /** Retained on the wire for backward-compat. Treated as "byok"
+   *  regardless of value post-MVP — there is no hosted path. */
+  aiProviderMode?: "hosted" | "byok"
+  /** Manual-mode per-task model picks. The canonical name is
+   *  ``manualModelSelection``; ``manualModels`` is accepted as a
+   *  backward-compatible alias so older clients still work. */
+  manualModelSelection?: Record<string, string>
+  manualModels?: Record<string, string>
+  /** Caller's chosen provider kind (defaults to openai_compatible). */
+  provider?: "openai_compatible" | "anthropic" | "google" | "custom"
 }
 
 function clampCodeSnippet(input: unknown): string {
@@ -134,27 +150,99 @@ export async function POST(req: Request) {
     projectType: body.projectType ?? null,
   }
 
-  // The body-supplied `apiKey` (when present) came either from the user's
-  // browser-stored Settings → OpenAI slot or from a power-user override.
-  // It is used ONLY for this request: not logged here, not echoed back in
-  // any response, not persisted to the explanation cache (cache keys are
-  // content hashes — see `fingerprintFinding`).
-  const bodyApiKey = typeof body.apiKey === "string" ? body.apiKey : undefined
-  const effectiveKeyForRedaction = bodyApiKey || process.env.OPENAI_API_KEY || ""
+  // The body-supplied `apiKey` is the user's Settings key. BYOK-only:
+  // there is NO env / hosted fallback. The key is used ONLY for this
+  // request — not logged, not echoed, not persisted to the explanation
+  // cache (cache keys are content hashes — see `fingerprintFinding`).
+  const bodyApiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const effectiveKeyForRedaction = bodyApiKey
 
-  // Caller-chosen model: only honoured when paired with the caller's apiKey
-  // (browser Settings flow). When the request relies on the server env key
-  // we keep the cost-control default so a stray body field can't redirect
-  // billed traffic to an expensive model.
   const bodyModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined
-  const modelForCall = bodyApiKey ? bodyModel : undefined
+
+  // ---- BYOK resolution + plan eligibility ---------------------------
+  // The resolver enforces plan limits and gates Save/Manual modes
+  // BEFORE the model call, then returns the (provider, model, key,
+  // base URL) tuple to use upstream. There is no hosted path.
+  const intelligenceMode = body.intelligenceMode ?? "auto"
+  const aiProviderMode = "byok" as const
+  // Normalise the manual map so callers that sent only the legacy
+  // ``manualModels`` name still influence the Manual route. Both
+  // names mean the same thing on the wire.
+  const manualPicksForResolver: Record<string, string> | undefined =
+    (body.manualModelSelection && typeof body.manualModelSelection === "object"
+      ? (body.manualModelSelection as Record<string, string>)
+      : undefined) ??
+    (body.manualModels && typeof body.manualModels === "object"
+      ? (body.manualModels as Record<string, string>)
+      : undefined)
+
+  const resolution = resolveAiProviderForRequest({
+    userId: "local-user",
+    workspaceId: "local-workspace",
+    aiProviderMode,
+    intelligenceMode,
+    task: "explain",
+    manualModelSelection: manualPicksForResolver,
+    byokApiKey: bodyApiKey || null,
+    byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
+    byokProvider: body.provider,
+  })
+  if (!resolution.ok) {
+    // For missing/invalid key we ALSO return a template_fallback
+    // payload so the drawer can still render the scanner's structured
+    // reason alongside the CTA. Other refusals (mode_not_in_plan,
+    // task_not_allowed_in_mode) return a plain error so the UI can
+    // show the upgrade prompt without misleading "AI explanation"
+    // framing.
+    if (resolution.code === "missing_api_key" || resolution.code === "invalid_api_key") {
+      const fallback = buildTemplateFallback(finding, "template_fallback")
+      return NextResponse.json({
+        ...fallback,
+        finding_id: finding.finding_id,
+        rule_id: finding.rule_id,
+        severity: finding.severity,
+        category: finding.category,
+        file: finding.file,
+        line: finding.line,
+        model_planned: pickModel(finding),
+        error: resolution.reason,
+        code: resolution.code,
+      })
+    }
+    return NextResponse.json(
+      { error: resolution.reason, code: resolution.code, upgrade: resolution.upgrade ?? false },
+      { status: 403 },
+    )
+  }
+  const resolvedApiKey: string = resolution.apiKey
+  const resolvedBaseUrl: string | undefined = resolution.baseUrl ?? undefined
+  const resolvedModel: string = bodyModel ?? resolution.model
 
   let payload
   try {
+    // Normalise the manual-model picks: ``manualModelSelection`` is the
+    // v2 canonical name; ``manualModels`` is the legacy name from the
+    // Step-1 wiring. Either is accepted; the explainer sees one map.
+    const manualPicks =
+      (body.manualModelSelection && typeof body.manualModelSelection === "object"
+        ? body.manualModelSelection
+        : undefined) ??
+      (body.manualModels && typeof body.manualModels === "object"
+        ? body.manualModels
+        : undefined)
+
     payload = await explainOneFinding(finding, project, {
-      apiKey: bodyApiKey,
-      baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
-      model: modelForCall,
+      // The Hosted/BYOK resolver above already chose the provider key,
+      // base URL, and a concrete model id. Forward those — that's how
+      // Hosted plans avoid leaking the server key to the client.
+      apiKey: resolvedApiKey,
+      baseUrl: resolvedBaseUrl,
+      model: resolvedModel,
+      // Forward the mode + manual map so the explainer tiering / per-task
+      // selection still applies when the resolver didn't override.
+      intelligenceMode:
+        typeof body.intelligenceMode === "string" ? body.intelligenceMode : undefined,
+      manualModels: manualPicks,
     })
   } catch (e) {
     // Defensive: never let an unexpected error block the UI — fall back so
@@ -179,6 +267,11 @@ export async function POST(req: Request) {
     })
   }
 
+  // No credit accounting in BYOK-only MVP — the user's upstream
+  // provider bills them directly. recordConsumption is intentionally
+  // a no-op (kept on the resolver's public surface so the API
+  // signature stays stable if hosted is re-introduced later).
+
   return NextResponse.json({
     ...payload,
     // Re-stamp the scanner-owned fields from the validated input so any
@@ -190,7 +283,7 @@ export async function POST(req: Request) {
     category: finding.category,
     file: finding.file,
     line: finding.line,
-    model_planned: modelForCall ?? pickModel(finding),
+    model_planned: bodyModel ?? pickModel(finding),
     // explainOneFinding sets `debug_error` only in non-prod and only when
     // the AI failed; in prod we strip it as belt-and-braces.
     debug_error:

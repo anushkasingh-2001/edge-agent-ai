@@ -38,6 +38,15 @@ interface EstimateBody {
   intelligenceMode?: IntelligenceMode
   provider?: ProviderKind
   privateCodeMode?: boolean
+  // NOTE: `aiProviderMode` and `manualModelSelection` are deliberately
+  // NOT consumed by this route. The estimate is a fast tier-based
+  // approximation that uses the mode's DEFAULT tier per task, not the
+  // user's Manual-mode pick or Hosted-vs-BYOK price. The live call
+  // (/api/finding/patch, /api/findings/fix*) goes through
+  // `resolveAiProviderForRequest` which honours both, and that
+  // resolved cost is what gets billed. If we surface a Manual-aware
+  // estimate later it'll live here too; for now the field is omitted
+  // from the wire type so callers don't expect server-side respect.
 }
 
 function bad(msg: string, status = 400) {

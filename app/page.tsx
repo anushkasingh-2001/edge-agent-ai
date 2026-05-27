@@ -37,9 +37,10 @@ import {
   loadScanHistory,
   scanHistoryForProject,
   scanItemFromReport,
+  MODE_LABELS,
   type ScanHistoryItem,
 } from "@/lib/scan-history"
-import { loadSavedSuites, type TestSuite } from "@/lib/test-cases"
+import type { TestSuite } from "@/lib/test-cases"
 import {
   buildBridgedProbesFromSuite,
   replaceSuiteProbes,
@@ -185,6 +186,17 @@ export default function Home() {
     useState<"code" | "behavioral">("code")
   const [currentBranch, setCurrentBranch] = useState("main")
   const [selectedAgents, setSelectedAgents] = useState<string[]>(["all"])
+  // Intelligence mode selected before a scan. Default Auto. The
+  // Findings + Scan Center toolbars read/write this same state.
+  const [intelligenceMode, setIntelligenceMode] = useState<
+    "save" | "auto" | "pro" | "max" | "manual"
+  >("auto")
+  // BYOK-only MVP: there is no hosted credential path. The constant
+  // is kept on the wire so older callers compile, but the server
+  // resolver only accepts the BYOK branch. See
+  // lib/server-ai-provider-resolver.ts for the contract.
+  const aiProviderMode = "byok" as const
+  const [manualModelSelection, setManualModelSelection] = useState<Record<string, string>>({})
   const [scanReport, setScanReport] = useState<ScanReport | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
@@ -456,6 +468,10 @@ export default function Home() {
             // The API no-ops the worktree path when this matches the
             // current HEAD branch.
             branch: currentBranch || undefined,
+            // Mode/provider metadata is stamped onto scan history
+            // client-side (see `scanItemFromReport` below). The /api/scan
+            // route is deterministic and does not consume those fields,
+            // so we don't add wire noise by sending them.
           }),
           // Wiring the AbortSignal here is what makes the Stop button
           // actually do something: aborting the controller rejects the
@@ -509,7 +525,13 @@ export default function Home() {
         // beyond a single "Latest scan" entry.
         const branchAtScan =
           target.branch?.trim() || currentBranch || "main"
-        const item = scanItemFromReport(report, target, branchAtScan)
+        const item = scanItemFromReport(report, target, branchAtScan, {
+          intelligenceMode,
+          modeLabel: MODE_LABELS[intelligenceMode],
+          aiProviderMode,
+          manualModelSelection:
+            intelligenceMode === "manual" ? manualModelSelection : undefined,
+        })
         const next = appendScanToHistory(item)
         setScanHistory(next)
         return {
@@ -820,6 +842,10 @@ export default function Home() {
               setFindingsInitialTab("behavioral")
               setCurrentView("findings")
             }}
+            intelligenceMode={intelligenceMode}
+            setIntelligenceMode={setIntelligenceMode}
+            manualModelSelection={manualModelSelection}
+            setManualModelSelection={setManualModelSelection}
           />
         )
       case "detected-agents":
@@ -860,6 +886,11 @@ export default function Home() {
             projectId={selectedProject?.id ?? null}
             onActiveSuiteChange={setActiveSuite}
             onRerunScan={handleRunScan}
+            intelligenceMode={intelligenceMode}
+            setIntelligenceMode={setIntelligenceMode}
+            aiProviderMode={aiProviderMode}
+            manualModelSelection={manualModelSelection}
+            setManualModelSelection={setManualModelSelection}
           />
         )
       case "run-traces":

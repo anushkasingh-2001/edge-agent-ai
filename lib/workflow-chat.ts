@@ -351,10 +351,14 @@ function finalize(
 /* ----------------- OpenAI -------------------------------------------------- */
 
 async function chatOpenAI(req: ChatRequest): Promise<string> {
-  const key = req.apiKey || process.env.OPENAI_API_KEY
+  // BYOK-only: no env fallback. The caller must pass a key explicitly
+  // from Settings; without it we return a structured missing_key
+  // error that the UI surfaces as the canonical "Add your provider
+  // key in Settings to use AI explanations and fixes." CTA.
+  const key = typeof req.apiKey === "string" ? req.apiKey.trim() : ""
   if (!key) {
     throw new ChatProviderError(
-      "No OpenAI API key found. Open Settings → LLM Providers and add your key, or set OPENAI_API_KEY in .env.local.",
+      "API key not provided. Add your provider key in Settings to use AI explanations and fixes.",
       "missing_key",
       400
     )
@@ -401,10 +405,10 @@ async function chatOpenAI(req: ChatRequest): Promise<string> {
 /* ----------------- Anthropic ---------------------------------------------- */
 
 async function chatAnthropic(req: ChatRequest): Promise<string> {
-  const key = req.apiKey || process.env.ANTHROPIC_API_KEY
+  const key = typeof req.apiKey === "string" ? req.apiKey.trim() : ""
   if (!key) {
     throw new ChatProviderError(
-      "No Anthropic API key found. Open Settings → LLM Providers and add your key, or set ANTHROPIC_API_KEY in .env.local.",
+      "API key not provided. Add your provider key in Settings to use AI explanations and fixes.",
       "missing_key",
       400
     )
@@ -455,11 +459,10 @@ async function chatAnthropic(req: ChatRequest): Promise<string> {
 /* ----------------- Gemini -------------------------------------------------- */
 
 async function chatGemini(req: ChatRequest): Promise<string> {
-  const key =
-    req.apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+  const key = typeof req.apiKey === "string" ? req.apiKey.trim() : ""
   if (!key) {
     throw new ChatProviderError(
-      "No Gemini API key found. Open Settings → LLM Providers and add your key, or set GEMINI_API_KEY in .env.local.",
+      "API key not provided. Add your provider key in Settings to use AI explanations and fixes.",
       "missing_key",
       400
     )

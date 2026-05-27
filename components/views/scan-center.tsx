@@ -1,11 +1,18 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import {
+  IntelligenceModeToggle,
+  type IntelligenceMode,
+} from "@/components/intelligence-mode-toggle"
+import { ModelSelector, type ManualModelMap } from "@/components/model-selector"
+import type { LlmSlot } from "@/lib/model-keys"
+import { usePlanSummary } from "@/lib/plan-client"
 import {
   Play,
   Square,
@@ -112,6 +119,25 @@ interface ScanCenterProps {
    *  panel (which merges AI-generated probes + user-authored ones)
    *  is what the user sees as soon as the scan finishes. */
   onShowUserDefinedAndAiTests?: () => void
+  // -----------------------------------------------------------------
+  // Analysis-mode toolbar (controlled).
+  //
+  // Lifted to the page-level parent so:
+  //   1. The user can pick a mode BEFORE the first scan (no longer
+  //      locked to Auto until the Findings tab has results to render).
+  //   2. The Findings tab toolbar reads/writes the same state — the
+  //      user's pick survives switching tabs.
+  //
+  // NOTE: The Hosted-vs-BYOK toggle was intentionally removed; the
+  // app ships with the in-package model providers only. Anything
+  // user-facing that mentioned "your own key" is gone. The internal
+  // `aiProviderMode` is hardcoded to "hosted" at the page level so
+  // every API call still routes through the resolver's hosted path.
+  // -----------------------------------------------------------------
+  intelligenceMode: IntelligenceMode
+  setIntelligenceMode: (mode: IntelligenceMode) => void
+  manualModelSelection: ManualModelMap
+  setManualModelSelection: (selection: ManualModelMap) => void
 }
 
 export function ScanCenter({
@@ -133,7 +159,41 @@ export function ScanCenter({
   activeSuite: activeSuiteProp,
   onActiveSuiteChange,
   onShowUserDefinedAndAiTests,
+  intelligenceMode,
+  setIntelligenceMode,
+  manualModelSelection,
+  setManualModelSelection,
 }: ScanCenterProps) {
+  // Plan summary drives both the AiProviderToggle "credits remaining"
+  // chip and the soft mode-downgrade effect below. Same hook the
+  // Findings toolbar uses; safe to call from both tabs because
+  // usePlanSummary memoises.
+  const { plan } = usePlanSummary()
+
+  // Soft downgrade: if the user's plan no longer allows the selected
+  // mode (e.g. they were on Pro but their workspace dropped to a
+  // Save+Auto-only tier), bounce them to Auto so the next scan still
+  // works. This mirrors the same effect inside Findings — both tabs
+  // agree on the allowed-mode set so the user never sees a "stuck"
+  // mode that the server would refuse anyway.
+  useEffect(() => {
+    if (
+      plan &&
+      Array.isArray(plan.allowedModes) &&
+      !plan.allowedModes.includes(intelligenceMode)
+    ) {
+      setIntelligenceMode("auto")
+    }
+  }, [plan, intelligenceMode, setIntelligenceMode])
+
+  // Manual-mode picker is limited to the in-package providers
+  // (openai / anthropic / google). The `custom` slot — which used to
+  // accept a self-hosted / OpenAI-compatible BYOK endpoint — is gone
+  // along with the Hosted-vs-BYOK toggle. Same gating in Findings.
+  const availableManualSlots: LlmSlot[] = useMemo(
+    () => ["openai", "anthropic", "google"],
+    [],
+  )
   const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
   const [allSelected, setAllSelected] = useState(true)
   const [scanProgress, setScanProgress] = useState(0)
@@ -443,6 +503,60 @@ export function ScanCenter({
 
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-2 space-y-4">
+          {/* Analysis mode card.
+              ────────────────────
+              Pre-scan picker for the five intelligence modes
+              (Save / Auto / Pro / Max / Manual) + Hosted-vs-BYOK
+              provider + per-task model selection in Manual.
+
+              The selection here is the SINGLE source of truth for
+              the whole session — Findings reads the same parent
+              state so the user's pick persists across tabs and
+              into the next scan. Scanner findings stay
+              deterministic in every mode; this only changes how
+              the LLM is used for explain / fix / patch downstream. */}
+          <Card className="bg-card border-border">
+            <CardHeader>
+              <CardTitle className="text-base">Analysis Mode</CardTitle>
+              <CardDescription>
+                Pick how the in-package LLM is used for explanations
+                and fixes. Scanner findings stay deterministic in
+                every mode.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Mode</span>
+                  <span className="opacity-70 hidden sm:inline">
+                    Save = no LLM patches · Max = plan→patch→validate
+                  </span>
+                </div>
+                <IntelligenceModeToggle
+                  value={intelligenceMode}
+                  onChange={setIntelligenceMode}
+                />
+              </div>
+
+              {intelligenceMode === "manual" ? (
+                <div className="rounded-lg border border-border/70 bg-secondary/30 p-3">
+                  <ModelSelector
+                    availableSlots={availableManualSlots}
+                    value={manualModelSelection}
+                    onChange={setManualModelSelection}
+                  />
+                  {plan && !plan.allowManualModelSelection ? (
+                    <p className="mt-2 text-xs text-yellow-500">
+                      Your current plan can enter Manual mode, but
+                      per-task model selection is blocked server-side
+                      unless the plan allows it.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
           <Card className="bg-card border-border">
             <CardHeader>
               <CardTitle className="text-base">Security Checks</CardTitle>

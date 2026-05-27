@@ -39,6 +39,8 @@
     "node_modules",
     "electron",
     "release",
-    ".next"
+    ".next",
+    "files",
+    "edge-agent-ai-intelligence-modes-v2-fixed"
   ]
 }

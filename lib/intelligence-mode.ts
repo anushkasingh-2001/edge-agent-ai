@@ -27,26 +27,58 @@ export type LlmTask =
   | "bulk"
   | "verify"
 
-/** What a mode permits. Enforced in the route handlers. */
+/**
+ * What a mode permits.
+ *
+ * **Runtime-enforced fields** (the route handlers / resolver branch
+ * on these): `allowExplain`, `allowPatchGeneration`, `explainTier`,
+ * `reasonTier`, `patchTier`. The Hosted/BYOK resolver refuses a
+ * `patch`/`bulk` task when `allowPatchGeneration` is false (Save).
+ *
+ * **Declarative-invariant fields** (held true unconditionally by the
+ * pipeline; the flag is documentation, not a switch):
+ *   - `validateInSandbox`  — `generatePatchPreview` ALWAYS materialises
+ *      a temp workspace and re-runs the scanner; no code path skips
+ *      this regardless of mode. Set to `true` on every mode for that
+ *      reason.
+ *   - `planThenPatch`      — the twoStep flow is actually wired via
+ *      `routeTaskForMode`'s `twoStep: mode === "max" && ...` return,
+ *      consumed by the pipeline's `decision.twoStep` branch. This
+ *      field mirrors that for documentation.
+ *   - `escalateOnFailure`  — `routeForMode` already pre-computes
+ *      `escalatedTier`/`escalatedModel`, but no caller re-runs on a
+ *      failed validation today. Future work.
+ *   - `neverAutoApply`     — every fix flow goes through an explicit
+ *      user "Apply" click; there is no auto-apply path to gate.
+ *
+ * If a future change makes any of these a real runtime switch,
+ * promote the comment + update the audit in
+ * `tests/all-modes-e2e-wiring.test.ts`.
+ */
 export interface ModePolicy {
   mode: IntelligenceMode
   /** May the LLM be used for explanation at all? (all modes: yes) */
   allowExplain: boolean
-  /** May the LLM generate a patch automatically? save = false. */
+  /** May the LLM generate a patch automatically? save = false.
+   *  ENFORCED by `resolveAiProviderForRequest` (returns
+   *  `task_not_allowed_in_mode` for Save+patch/bulk). */
   allowPatchGeneration: boolean
-  /** Use plan-then-patch (two-phase)? max = true. */
+  /** Declarative: max = true. Actually wired via `routeTaskForMode`'s
+   *  twoStep return; see `decision.twoStep` in the pipeline. */
   planThenPatch: boolean
-  /** Run sandbox parse/test/re-scan validation before marking fixed? */
+  /** Declarative invariant: every mode validates via sandbox re-scan;
+   *  `generatePatchPreview` does this unconditionally. */
   validateInSandbox: boolean
-  /** Escalate model tier on validation failure? */
+  /** Declarative: no caller acts on this today (escalation not wired). */
   escalateOnFailure: boolean
-  /** Default tier for explanation. */
+  /** Default tier for explanation. ENFORCED via `routeForMode`. */
   explainTier: ModelTier
   /** Default tier for root-cause reasoning / suggestion. */
   reasonTier: ModelTier
   /** Default tier for patch generation. */
   patchTier: ModelTier
-  /** Hard ceiling: never auto-apply; user must click. (all modes: true) */
+  /** Declarative invariant: every fix flow goes through an explicit
+   *  "Apply" click; there is no auto-apply path. */
   neverAutoApply: true
 }
 

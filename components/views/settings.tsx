@@ -145,7 +145,7 @@ export function Settings({
         </CardContent>
       </Card>
 
-      {/* B. LLM Providers — required for Prompt Playground + Chat Assistant */}
+      {/* B. LLM Providers — required for ALL AI features in this MVP */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
@@ -153,16 +153,26 @@ export function Settings({
             LLM Providers
           </CardTitle>
           <CardDescription>
-            Add at least one provider to use Prompt Playground, Chat
-            Assistant, and AI finding explanations. Keys are stored locally
-            in your browser only — never sent to our servers — and are
-            forwarded to the configured provider (or to a local Edge Agent
-            API route) only for the duration of the request that needs them.
-            They are never written to the explanation cache, logged, or
+            Bring your own API key. Edge Agent AI never provides or stores
+            hosted credits in this MVP. Your provider bills you directly.
+            Keys are stored locally in your browser only — never sent to
+            our servers — and are forwarded to the configured provider
+            only for the duration of the request that needs them. They
+            are never written to the explanation cache, logged, or
             included in error messages.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent-foreground">
+            <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              <strong>BYOK only.</strong> AI explanations, fixes,
+              Pro/Max/Manual modes all require a key configured here.
+              The scanner itself is deterministic and runs without
+              any key. Use <em>Test key</em> below to validate a
+              provider before relying on it.
+            </span>
+          </div>
           <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
             <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
@@ -380,6 +390,16 @@ function ProviderSlotEditor({
   // corrupt the saved value if the user typed into the masked text).
   const [editingKey, setEditingKey] = useState<boolean>(false)
   const [justSaved, setJustSaved] = useState<boolean>(false)
+  // "Test key" result: ``null`` when never run, otherwise the parsed
+  // /api/byok/test response. The ``warning`` field on a success means
+  // the key authenticated but the account needs attention before AI
+  // calls will run end-to-end (e.g. Anthropic billing/credits).
+  const [testing, setTesting] = useState<boolean>(false)
+  const [testResult, setTestResult] = useState<
+    | { ok: true; model: string; warning?: string }
+    | { ok: false; message: string; code?: string }
+    | null
+  >(null)
 
   // When the underlying config changes (e.g. user removed and re-saved
   // from another tab), reset the editor to the new value.
@@ -602,6 +622,50 @@ function ProviderSlotEditor({
         )}
       </div>
 
+      {testResult ? (
+        (() => {
+          // Three visual states:
+          //   * ok + no warning   → solid green "key works"
+          //   * ok + warning      → amber "works but ..." (e.g.
+          //                        Anthropic billing not enabled)
+          //   * !ok               → red error with upstream message
+          const tone = testResult.ok
+            ? testResult.warning
+              ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+            : "border-destructive/40 bg-destructive/10 text-destructive"
+          return (
+            <div className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${tone}`}>
+              {testResult.ok ? (
+                testResult.warning ? (
+                  <>
+                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      Key authenticated with{" "}
+                      <span className="font-mono">{testResult.model}</span>.{" "}
+                      {testResult.warning}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      Key works. Tested with{" "}
+                      <span className="font-mono">{testResult.model}</span>.
+                    </span>
+                  </>
+                )
+              ) : (
+                <>
+                  <XCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  <span className="whitespace-pre-wrap break-words">{testResult.message}</span>
+                </>
+              )}
+            </div>
+          )
+        })()
+      ) : null}
+
       <div className="flex items-center justify-end gap-2">
         {configured && (
           <Button
@@ -615,6 +679,84 @@ function ProviderSlotEditor({
             Remove
           </Button>
         )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={async () => {
+            // Use the typed key if present (the user is rotating or
+            // entering for the first time); otherwise fall back to the
+            // stored one so "Test key" works without forcing the user
+            // to re-paste a previously-saved key.
+            const keyForTest = apiKey.trim() || config?.apiKey || ""
+            if (!keyForTest) {
+              setTestResult({
+                ok: false,
+                message:
+                  "API key not provided. Add your provider key in Settings to use AI explanations and fixes.",
+              })
+              return
+            }
+            setTesting(true)
+            setTestResult(null)
+            try {
+              const res = await fetch("/api/byok/test", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  provider: meta.type === "openai_compatible" && slot === "custom"
+                    ? "custom"
+                    : meta.type,
+                  apiKey: keyForTest,
+                  baseUrl: isOpenAiCompat
+                    ? (baseUrl || meta.defaultBaseUrl || "").trim() || undefined
+                    : undefined,
+                  model: (model || meta.defaultModel).trim(),
+                }),
+              })
+              const j = (await res.json()) as
+                | { ok: true; provider: string; model: string; warning?: string }
+                | { ok: false; code: string; message: string; upstream?: string }
+              if ("ok" in j && j.ok) {
+                setTestResult({
+                  ok: true,
+                  model: j.model,
+                  warning: j.warning,
+                })
+              } else {
+                // Surface the upstream provider body verbatim when
+                // available so the user sees the actual reason
+                // (e.g. Anthropic's "credit balance is too low")
+                // instead of a generic line.
+                setTestResult({
+                  ok: false,
+                  code: (j as { code?: string }).code,
+                  message: (j as { message: string }).message ?? "Test failed.",
+                })
+              }
+            } catch (e) {
+              setTestResult({
+                ok: false,
+                message: `Network error: ${(e as Error).message}`,
+              })
+            } finally {
+              setTesting(false)
+            }
+          }}
+          disabled={testing || (!apiKey.trim() && !config?.apiKey)}
+          title={
+            !apiKey.trim() && !config?.apiKey
+              ? "Enter a key first"
+              : "Validate this key + model with a single low-cost upstream call"
+          }
+        >
+          {testing ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+          )}
+          {testing ? "Testing…" : "Test key"}
+        </Button>
         <Button
           type="button"
           size="sm"
