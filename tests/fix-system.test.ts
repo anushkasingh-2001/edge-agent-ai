@@ -515,6 +515,8 @@ test("apply: rejects when file hash changed between preview and apply", () => {
       resolved: true,
       introducedHighCritical: 0,
       reason: "test",
+      attemptedModels: ["gpt-4.1"],
+      escalated: false,
     }
     // Concurrent edit lands BEFORE apply.
     fs.writeFileSync(path.join(dir, rel), "x = 99\n")
@@ -550,6 +552,8 @@ test("apply: refuses files outside project root", () => {
       resolved: true,
       introducedHighCritical: 0,
       reason: "",
+      attemptedModels: ["gpt-4.1"],
+      escalated: false,
     }
     const r = applyPatch({ projectPath: dir, preview })
     assert.equal(r.applied, false)
@@ -577,6 +581,8 @@ test("apply: writes file + backup on success", () => {
       resolved: true,
       introducedHighCritical: 0,
       reason: "",
+      attemptedModels: ["gpt-4.1"],
+      escalated: false,
     }
     const r = applyPatch({ projectPath: dir, preview })
     assert.equal(r.applied, true)

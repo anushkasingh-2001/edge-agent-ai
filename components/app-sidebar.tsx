@@ -16,6 +16,7 @@ import {
   FolderPlus,
   Gauge,
   Workflow,
+  CreditCard,
 } from "lucide-react"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
@@ -42,6 +43,7 @@ export type ViewType =
   | "evaluations"
   | "prompt-playground"
   | "chat-assistant"
+  | "plan-billing"
   | "settings"
 
 interface AppSidebarProps {
@@ -69,6 +71,7 @@ const mainNavItems = [
 ]
 
 const bottomNavItems = [
+  { id: "plan-billing" as ViewType, label: "Plan & Billing", icon: CreditCard },
   { id: "settings" as ViewType, label: "Settings", icon: Settings },
 ]
 

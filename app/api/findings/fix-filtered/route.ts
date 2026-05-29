@@ -23,7 +23,18 @@
 import path from "node:path"
 import fs from "node:fs"
 import { NextResponse } from "next/server"
-import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+import {
+  resolveAiProviderForRequestAsync as resolveAiProviderForRequest,
+} from "@/lib/server-ai-provider-resolver"
+import {
+  generateFindingPatch,
+  cloudGenerationActive,
+  type GatewayBlock,
+} from "@/lib/server-patch-generation-gateway"
+import {
+  assertHostedRequest,
+  RouteGuardError,
+} from "@/lib/server-route-guards"
 
 import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
 import { planFix, type PlannerFinding } from "@/lib/fix-planner"
@@ -32,7 +43,6 @@ import {
   totalEstimatedLlmCalls,
 } from "@/lib/server-fix-clustering"
 import {
-  generatePatchPreview,
   type PatchResult,
 } from "@/lib/server-patch-pipeline"
 import {
@@ -52,7 +62,10 @@ import { BUNDLE_INPUT_TOKEN_CAP } from "@/lib/context-bundle"
 import type { IntelligenceMode } from "@/lib/context-bundle"
 
 export const dynamic = "force-dynamic"
-export const maxDuration = 300
+// Runs on the desktop's local standalone server, where `maxDuration` is a
+// no-op. Capped at 60 so a Vercel deploy of the same codebase builds on any
+// plan (Hobby caps at 60s). AI generation is delegated to the cloud.
+export const maxDuration = 60
 
 interface BulkBody {
   projectPath?: string
@@ -61,26 +74,21 @@ interface BulkBody {
   intelligenceMode?: IntelligenceMode
   /** Cap concurrent LLM calls. Default 3, hard cap 6. */
   concurrency?: number
-  /** Provider config — same shape as /api/finding/patch. */
-  apiKey?: string
-  baseUrl?: string | null
-  provider?: ProviderKind
   privateCodeMode?: boolean
-  /** Hosted (server-side key) vs BYOK (caller-supplied). Uses the same
-   *  resolver as /api/finding/patch so estimate and execution agree on
-   *  provider/model. */
+  /** Wire-level value retained for backward compat. Always treated as
+   *  hosted; the resolver is hosted-only. */
   aiProviderMode?: "hosted" | "byok"
   /** Manual mode: per-task model overrides. The v2 canonical name is
-   *  ``manualModelSelection``; ``manualModels`` is the Step-1 legacy
-   *  alias kept for backward compatibility. */
+   *  ``manualModelSelection``; ``manualModels`` is the legacy alias. */
   manualModelSelection?: Record<string, string>
   manualModels?: import("@/lib/intelligence-mode").ManualOverrides
   /** When true, persist suppressions for `needs_user_decision` clusters
-   *  marked as "user accepts this as a known FP". Default: false — UI
-   *  must explicitly opt in (we never auto-suppress). */
+   *  marked as "user accepts this as a known FP". Default: false. */
   confirmSuppressions?: boolean
   /** When true, skip the budget gate (UI confirmed the estimate). */
   budgetConfirmed?: boolean
+  /** IR neighborhood forwarded to every cluster's bundle build. */
+  neighborhood?: import("@/lib/server-context-bundle").IRNeighborhoodInput
 }
 
 function bad(msg: string, status = 400): NextResponse {
@@ -120,6 +128,25 @@ function coerceFinding(
       typeof raw.evidence_path_files === "number" ? raw.evidence_path_files : undefined,
     evidence_path_len:
       typeof raw.evidence_path_len === "number" ? raw.evidence_path_len : undefined,
+    agent: typeof raw.agent === "string" ? raw.agent : null,
+    // Defensive coercion of evidence_path; matches the single-finding
+    // patch route. Malformed nodes are dropped so buildContextBundle
+    // never sees a partial node.
+    evidence_path: Array.isArray(raw.evidence_path)
+      ? raw.evidence_path
+          .filter(
+            (n): n is { kind: string; label: string; file?: string | null; line?: number | null } =>
+              !!n &&
+              typeof (n as Record<string, unknown>).kind === "string" &&
+              typeof (n as Record<string, unknown>).label === "string",
+          )
+          .map((n) => ({
+            kind: n.kind,
+            label: n.label,
+            file: typeof n.file === "string" ? n.file : null,
+            line: typeof n.line === "number" ? n.line : null,
+          }))
+      : undefined,
   }
 }
 
@@ -167,11 +194,18 @@ export async function POST(req: Request) {
     return bad("projectPath is not a directory", 404)
   }
 
+  let session
+  try {
+    session = assertHostedRequest(req, body as unknown as Record<string, unknown>)
+  } catch (e) {
+    if (e instanceof RouteGuardError) {
+      return NextResponse.json(e.body, { status: e.status })
+    }
+    throw e
+  }
+
   const intelligenceMode: IntelligenceMode = body.intelligenceMode ?? "auto"
   const policy = MODE_POLICIES[intelligenceMode]
-  const aiProviderMode = "byok" as const
-  // Normalise the manual-model picks: canonical name is
-  // ``manualModelSelection``; ``manualModels`` is the legacy alias.
   const manualPicks: Record<string, string> | undefined =
     (body.manualModelSelection && typeof body.manualModelSelection === "object"
       ? (body.manualModelSelection as Record<string, string>)
@@ -179,31 +213,43 @@ export async function POST(req: Request) {
     (body.manualModels && typeof body.manualModels === "object"
       ? (body.manualModels as Record<string, string>)
       : undefined)
-  // BYOK-only resolver — refuses without a caller key.
-  const bulkResolution = resolveAiProviderForRequest({
-    userId: "local-user",
-    workspaceId: "local-workspace",
-    aiProviderMode,
-    intelligenceMode,
-    task: "bulk",
-    manualModelSelection: manualPicks,
-    byokApiKey: typeof body.apiKey === "string" ? body.apiKey : null,
-    byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
-    byokProvider: body.provider,
-  })
+  // Desktop relays generation to the cloud (which holds the keys + quota);
+  // single-origin web/dev resolves in-process. We only run the LOCAL bulk
+  // resolver — and its top-level plan/quota gate — on the web path. On
+  // desktop the per-cluster gateway surfaces any block.
+  const splitMode = cloudGenerationActive()
+  const bulkResolution = splitMode
+    ? null
+    : await resolveAiProviderForRequest({
+        userId: session.userId,
+        workspaceId: session.workspaceId,
+        intelligenceMode,
+        task: "bulk",
+        manualModelSelection: manualPicks,
+      })
   // A blocked resolution only matters when this mode would actually
   // call an LLM (Save is templates-only and still succeeds below).
-  if (!bulkResolution.ok && policy.allowPatchGeneration) {
+  if (bulkResolution && !bulkResolution.ok && policy.allowPatchGeneration) {
     const httpStatus =
-      bulkResolution.code === "missing_api_key" || bulkResolution.code === "invalid_api_key"
-        ? 400
-        : 403
+      bulkResolution.code === "not_authenticated" ? 401 :
+      bulkResolution.code === "missing_hosted_key" ? 503 :
+      bulkResolution.code === "quota_exceeded" ? 402 :
+      403
     return NextResponse.json(
-      { error: bulkResolution.reason, code: bulkResolution.code, upgrade: bulkResolution.upgrade ?? false },
+      {
+        error: bulkResolution.reason,
+        code: bulkResolution.code,
+        upgrade: bulkResolution.upgrade ?? false,
+        remaining: bulkResolution.remaining,
+        needed: bulkResolution.needed,
+      },
       { status: httpStatus },
     )
   }
-  const provider = bulkResolution.ok ? bulkResolution.provider : ((body.provider ?? "openai_compatible") as ProviderKind)
+  const provider: ProviderKind =
+    bulkResolution && bulkResolution.ok
+      ? bulkResolution.provider
+      : ("openai_compatible" as ProviderKind)
 
   const planned: { finding: PlannerFinding; plan: ReturnType<typeof planFix> }[] = []
   for (const raw of body.findings) {
@@ -308,94 +354,123 @@ export async function POST(req: Request) {
   })
 
   // ---- LLM clusters: ONE representative call each (Save skips entirely) ----
+  // Every representative goes through the generation gateway: in-process on
+  // web/dev, relayed to /api/cloud/findings/fix-filtered-generate on desktop.
+  // The cloud (or in-process resolver) bills per cluster.
   const concurrency = Math.max(1, Math.min(6, body.concurrency ?? 3))
+  const makeShell = (
+    c: (typeof llmClusters)[number],
+    llm_preview: PatchResult | null,
+  ) => ({
+    cluster_id: c.cluster_id,
+    kind: c.kind,
+    fix_class: c.fix_class,
+    rule_id: c.rule_id,
+    files: c.files,
+    finding_ids: c.finding_ids,
+    reason: c.reason,
+    template_proposals: [] as (typeof templateResults)[number]["template_proposals"],
+    llm_preview,
+  })
+
+  let totalBulkCredits = 0
+  let bulkQuotaRemaining: number | null =
+    bulkResolution && bulkResolution.ok ? bulkResolution.quotaStatus.remaining : null
+  let bulkBlock: GatewayBlock | undefined
+
   const llmResults: typeof templateResults = policy.allowPatchGeneration
-    ? await mapWithLimit(llmClusters, concurrency, async (c) => {
-        const representative = byId.get(c.finding_ids[0])
-        if (!representative) {
-          return {
-            cluster_id: c.cluster_id,
-            kind: c.kind,
-            fix_class: c.fix_class,
-            rule_id: c.rule_id,
-            files: c.files,
-            finding_ids: c.finding_ids,
-            reason: c.reason,
-            template_proposals: [],
-            llm_preview: {
-              refused: true as const,
-              findingId: c.finding_ids[0],
-              reason: "cluster representative finding missing",
-              stage: "internal_error" as const,
-            },
+    ? (
+        await mapWithLimit(llmClusters, concurrency, async (c) => {
+          const representative = byId.get(c.finding_ids[0])
+          if (!representative) {
+            return {
+              shell: makeShell(c, {
+                refused: true as const,
+                findingId: c.finding_ids[0],
+                reason: "cluster representative finding missing",
+                stage: "internal_error" as const,
+              }),
+              creditsUsed: 0,
+              quotaRemaining: null as number | null,
+              blocked: undefined as GatewayBlock | undefined,
+            }
           }
-        }
-        const plan = {
-          ...planFix(representative),
-          fix_class: c.fix_class,
-          needs_llm: true,
-          needs_graph_context: true,
-          reason: c.reason,
-        }
-        // Step 1: compute the SAME complexity the estimate loop uses, and
-        // thread mode + complexity (+ manual) into execution so the model
-        // the estimate priced matches the model execution will run once
-        // Step 2 wires routeForMode inside the pipeline.
-        const clusterComplexity = scoreComplexity({
-          rule_id: representative.rule_id,
-          severity: representative.severity,
-          evidencePathFiles: representative.evidence_path_files,
-          evidencePathLen: representative.evidence_path_len,
+          const plan = {
+            ...planFix(representative),
+            fix_class: c.fix_class,
+            needs_llm: true,
+            needs_graph_context: true,
+            reason: c.reason,
+          }
+          const clusterComplexity = scoreComplexity({
+            rule_id: representative.rule_id,
+            severity: representative.severity,
+            evidencePathFiles: representative.evidence_path_files,
+            evidencePathLen: representative.evidence_path_len,
+          })
+          const gen = await generateFindingPatch({
+            req,
+            session,
+            projectPath: resolved,
+            finding: representative,
+            plan,
+            intelligenceMode,
+            complexity: clusterComplexity,
+            manualModelSelection: manualPicks,
+            privateCodeMode: !!body.privateCodeMode,
+            neighborhood: body.neighborhood,
+            task: "bulk",
+            cloudEndpoint: "/api/cloud/findings/fix-filtered-generate",
+          })
+          if (gen.blocked) {
+            return {
+              shell: makeShell(c, {
+                refused: true as const,
+                findingId: c.finding_ids[0],
+                reason: gen.blocked.reason,
+                stage: "guard_provider" as const,
+              }),
+              creditsUsed: 0,
+              quotaRemaining: null as number | null,
+              blocked: gen.blocked,
+            }
+          }
+          return {
+            shell: makeShell(c, (gen.preview ?? null) as PatchResult | null),
+            creditsUsed: gen.creditsUsed,
+            quotaRemaining: gen.quotaRemaining,
+            blocked: undefined as GatewayBlock | undefined,
+          }
         })
-        const preview = await generatePatchPreview({
-          projectPath: resolved,
-          finding: representative,
-          plan,
-          provider,
-          apiKey: bulkResolution.ok ? bulkResolution.apiKey : (body.apiKey ?? process.env.OPENAI_API_KEY ?? null),
-          baseUrl: (bulkResolution.ok ? bulkResolution.baseUrl : body.baseUrl) ?? null,
-          privateCodeMode: !!body.privateCodeMode,
-          intelligenceMode,
-          complexity: clusterComplexity,
-          manualModels: manualPicks as import("@/lib/intelligence-mode").ManualOverrides | undefined,
-          // v2: same resolver-locking behaviour as /api/finding/patch so
-          // the bulk path can't silently re-route to a different model.
-          forceModel: bulkResolution.ok ? bulkResolution.model : undefined,
-          forceTwoStep: bulkResolution.ok ? bulkResolution.twoStep : undefined,
-        })
-        // BYOK-only: no credit consumption. The user's upstream
-        // provider bills them directly per cluster call. We keep a
-        // best-effort cost estimate in the resolver result for UI
-        // display, but the app never debits an internal balance.
-        return {
-          cluster_id: c.cluster_id,
-          kind: c.kind,
-          fix_class: c.fix_class,
-          rule_id: c.rule_id,
-          files: c.files,
-          finding_ids: c.finding_ids,
-          reason: c.reason,
-          template_proposals: [],
-          llm_preview: preview,
-        }
+      ).map((r) => {
+        totalBulkCredits += r.creditsUsed
+        if (r.quotaRemaining != null) bulkQuotaRemaining = r.quotaRemaining
+        if (!bulkBlock && r.blocked) bulkBlock = r.blocked
+        return r.shell
       })
-    : llmClusters.map((c) => ({
-        cluster_id: c.cluster_id,
-        kind: c.kind,
-        fix_class: c.fix_class,
-        rule_id: c.rule_id,
-        files: c.files,
-        finding_ids: c.finding_ids,
-        reason: c.reason,
-        template_proposals: [],
-        llm_preview: {
+    : llmClusters.map((c) =>
+        makeShell(c, {
           refused: true as const,
           findingId: c.finding_ids[0],
-          reason:
-            "Save mode: LLM patch generation disabled; use template/suggestion",
+          reason: "Save mode: LLM patch generation disabled; use template/suggestion",
           stage: "guard_provider" as const,
-        },
-      }))
+        }),
+      )
+
+  // Desktop path: a plan/quota/auth block surfaced per-cluster (there was no
+  // local pre-gate). Mirror the web pre-gate by returning the top-level error.
+  if (bulkBlock && policy.allowPatchGeneration) {
+    return NextResponse.json(
+      {
+        error: bulkBlock.reason,
+        code: bulkBlock.code,
+        upgrade: bulkBlock.upgrade ?? false,
+        remaining: bulkBlock.remaining,
+        needed: bulkBlock.needed,
+      },
+      { status: bulkBlock.status },
+    )
+  }
 
   const handOffResults = handOffClusters.map((c) => ({
     cluster_id: c.cluster_id,
@@ -433,6 +508,10 @@ export async function POST(req: Request) {
     estimate,
     budget,
     clusters: ordered,
+    // Hosted contract metadata (no key).
+    apiKeySource: "hosted" as const,
+    creditsUsed: totalBulkCredits,
+    quotaRemaining: bulkQuotaRemaining,
   })
 }
 

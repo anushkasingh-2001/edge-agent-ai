@@ -4,6 +4,75 @@ This doc covers how to build the desktop bundles produced by
 `pnpm package:mac` (the primary, fully-exercised target),
 `pnpm package:win`, and `pnpm package:linux`.
 
+## Desktop/cloud split & secrets (read this first)
+
+The packaged app runs a Next.js server **locally** on `127.0.0.1` inside
+the user's machine. Anything in that local server's environment is, for
+security purposes, shipped to the user. So **the desktop build holds no
+provider keys, no billing secrets, and no `DATABASE_URL`.** Those live
+ONLY on a cloud backend you deploy and control.
+
+How traffic is split (see `lib/api-fetch.ts`):
+
+| Category | Routes | Runs on | Needs secrets? |
+| --- | --- | --- | --- |
+| **Cloud** | `/api/hosted/*`, `/api/finding/explain`, `/api/workflow/chat`, `/api/cloud/*` (patch/fix **generation**), `/api/plan`, `/api/billing/*`, `/api/auth/*` | your cloud backend | yes (provider keys, Stripe, DB) |
+| **Local** | `/api/scan`, `/api/scan/estimate`, `/api/findings/fix`, `/api/finding/patch`, `/api/findings/fix-filtered`, `/api/workflow/analyze`/`export`, `/api/git/*`, `/api/github/*`, `/api/system/*`, … | bundled local server | no — touch the user's files |
+
+- Every client call goes through `apiFetch(route, init)`. When a cloud
+  base is configured, cloud-category routes are sent there with the
+  user's **session** Bearer token (never a provider key) + credentials;
+  local routes stay same-origin. With no cloud base configured (the plain
+  web deployment, or single-origin dev) `apiFetch` is a transparent no-op.
+- Configure the cloud base for the desktop build via
+  **`NEXT_PUBLIC_CLOUD_API_BASE=https://api.myproduct.com`** at
+  `pnpm build:standalone` time (it is inlined into the client bundle).
+  `electron/main.ts` also forwards the same value as
+  `EDGE_AGENT_CLOUD_API_BASE` to the local server so its **generation
+  gateway** (below) can reach the cloud server-to-server.
+- On launch, `electron/main.ts` **strips** the secret denylist
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+  `GOOGLE_API_KEY`, `EDGE_AGENT_CUSTOM_API_KEY`, `DATABASE_URL`,
+  `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) from the local server's
+  env even if they happen to be present on the host. The canonical list is
+  `lib/desktop-secret-denylist.ts`; `tests/desktop-cloud-split.test.ts`
+  enforces parity.
+
+### AI fix generation: local apply, cloud generation
+
+`fix`/`patch`/`fix-filtered` read and **write** the user's files, so they
+must run on the local server. But the *model* call that produces a patch
+needs a provider key, which the desktop never holds. The split:
+
+1. **Local** (`lib/server-patch-generation-gateway.ts`) builds the redacted,
+   graph-bounded `ContextBundle` / prompt from the user's files.
+2. When `EDGE_AGENT_CLOUD_API_BASE` is set (desktop), the local server relays
+   **only the prompt** to a cloud generation endpoint with the user's session
+   Bearer token:
+   - `/api/cloud/finding/patch-generate`
+   - `/api/cloud/findings/fix-generate`
+   - `/api/cloud/findings/fix-filtered-generate`
+3. **Cloud** (`lib/server-cloud-generate.ts`) checks the session, runs the
+   hosted resolver (plan → quota → **server** key), calls the model, debits
+   credits, and returns the patch text. It never reads or writes files and
+   never returns a key. A `quota_exceeded` is returned **before** any model
+   call.
+4. **Local** validates the returned patch in a temp workspace, writes a
+   `.edge-agent/backups/<file>.bak` backup, applies it, and **re-scans** —
+   all on the user's machine.
+
+On a single-origin web deployment (no cloud base) the gateway resolves the
+key and calls the model in-process exactly as before — the cloud endpoints
+are simply unused.
+
+**CORS:** the desktop renderer's loopback origin and the local→cloud relay
+trigger preflights on the cloud `Authorization` POSTs. The cloud generation
+routes answer `OPTIONS` and echo `Access-Control-*` headers
+(`lib/server-cloud-cors.ts`). Loopback origins (`127.0.0.1`/`localhost`) are
+always allowed; for any additional browser origins set
+**`EDGE_AGENT_CLOUD_ALLOWED_ORIGINS=https://app.myproduct.com,https://...`**
+(comma-separated) on the cloud deployment. Use `*` only for local testing.
+
 > **Cross-compile note up front:** PyInstaller cannot produce a Windows
 > scanner binary from macOS (or vice versa). Each `package:*` script
 > therefore expects the matching slot under
@@ -256,13 +325,13 @@ As of this build the packaged `.app` ships:
 * **Understand Code Workflow** — static workflow analyzer (`/api/workflow/analyze`,
   `/api/workflow/export`), Mermaid diagram rendering, component/prompt/tool
   inventories, deterministic Q&A from the workflow graph.
-* **LLM-backed "Ask about this repo" chat** — `/api/workflow/chat`
-  dispatches to OpenAI (GPT-5.x / GPT-4o), Anthropic (Claude 4.x), or
-  Google (Gemini 3.x / 2.5.x) via plain HTTPS. API keys are read from the
-  in-app Settings page (browser `localStorage`, scoped to this installation)
-  and forwarded with each request — never persisted on the server. Power
-  users can also set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
-  `GEMINI_API_KEY` in `.env.local` as a fallback.
+* **LLM-backed chat + AI explanations** — hosted-only. The desktop app
+  holds **no provider keys**. Hosted-AI requests (`/api/hosted/*`,
+  `/api/finding/explain`) are sent to the **cloud backend** (see the
+  Desktop/cloud split section below), which owns the OpenAI/Anthropic keys,
+  enforces plan + credits, calls the model, and returns a **redacted**
+  result (never an `apiKey`/`baseUrl`). There is no BYOK and no in-app
+  key entry.
 
 ### Network requirements (LLM chat only)
 

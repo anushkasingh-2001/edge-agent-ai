@@ -28,30 +28,20 @@ import {
   GitBranch,
   ChevronDown,
   Webhook,
-  KeyRound,
-  Eye,
-  EyeOff,
-  Trash2,
-  CheckCircle2,
+  Sparkles,
   AlertTriangle,
   Github,
   Loader2,
   RefreshCw,
   XCircle,
+  Zap,
+  CheckCircle2,
 } from "lucide-react"
 import {
-  loadProviderConfigs,
-  saveProviderConfig,
-  deleteProviderConfig,
-  slotConfigId,
-  getSlotConfig,
-  maskKey,
-  LLM_SLOTS,
-  SLOT_META,
-  type LlmSlot,
-  type ModelProviderConfig,
+  consumeMigrationNotices,
+  purgeLegacyProviderKeys,
+  type MigrationNotice,
 } from "@/lib/model-keys"
-import { MODEL_CATALOG, isKnownModel } from "@/lib/model-catalog"
 import {
   fetchGitHubRepoPermission,
   fetchGitHubStatus,
@@ -61,18 +51,25 @@ import {
 import { GithubLoginDialog } from "@/components/github-login-dialog"
 import { PolicyRulesCard } from "@/components/views/policy-rules-card"
 import { SystemHealthGate } from "@/components/system-health-gate"
+import {
+  usePlanSummary,
+  startCheckout,
+  openBillingPortal,
+  devLogin,
+  devLogout,
+  isBillingMockClient,
+  DEMO_BILLING_LABEL,
+} from "@/lib/plan-client"
 import type { Project } from "@/lib/projects"
 import type { ScanReport } from "@/lib/scan-report"
+import { apiFetch } from "@/lib/api-fetch"
 
 export interface SettingsProps {
   /** Currently opened project's filesystem path. Required for the
    *  "Selected project remote" + permission lookup in the GitHub
    *  Account card. Null when no project is open. */
   projectPath?: string | null
-  /** Full Project record — needed by the Policy Rules card so it can
-   *  load / save .edgeagent/policy.yaml and persist the latest
-   *  policy result to localStorage. Falling back to null when no
-   *  project is open. */
+  /** Full Project record — needed by the Policy Rules card. */
   project?: Project | null
   /** Latest scan report — used by "Test policy on latest scan". */
   scanReport?: ScanReport | null
@@ -81,6 +78,20 @@ export interface SettingsProps {
   currentBranch?: string | null
 }
 
+/**
+ * Settings.
+ *
+ * Hosted-only product. The Settings page no longer carries any provider
+ * key UI: AI is included in the user's plan and the server reads keys
+ * from server env / secret manager. The primary AI-related card is now
+ * "Plan & AI" — current tier, credits remaining, included features,
+ * upgrade CTA.
+ *
+ * Legacy localStorage cleanup runs ONCE on mount via
+ * `purgeLegacyProviderKeys()`. Any stale provider credentials from earlier
+ * pre-hosted builds get wiped; stale Anthropic model ids get migrated
+ * (notice surfaced in the amber banner just below).
+ */
 export function Settings({
   projectPath = null,
   project = null,
@@ -92,12 +103,23 @@ export function Settings({
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [alertDestination, setAlertDestination] = useState("slack")
 
-  // LLM provider slots — read once on mount, updated locally on every save/delete
-  // so we don't need to round-trip through React Context.
-  const [providers, setProviders] = useState<ModelProviderConfig[]>([])
+  // Legacy-key purge on mount. We surface a one-shot banner when
+  // either (a) the purge removed stale provider credentials from a
+  // previous pre-hosted build, or (b) a saved Anthropic model id was
+  // rewritten to
+  // the current catalog.
+  const [migrationNotices, setMigrationNotices] = useState<MigrationNotice[]>([])
+  const [legacyKeysWiped, setLegacyKeysWiped] = useState(false)
   useEffect(() => {
-    setProviders(loadProviderConfigs())
+    const result = purgeLegacyProviderKeys()
+    if (result.purged && result.noticesAdded === 0) {
+      setLegacyKeysWiped(true)
+    }
+    const notices = consumeMigrationNotices()
+    if (notices.length > 0) setMigrationNotices(notices)
   }, [])
+
+  const { plan, loading: planLoading } = usePlanSummary()
 
   return (
     <div className="p-6 space-y-6 max-w-3xl">
@@ -107,13 +129,7 @@ export function Settings({
         <p className="text-muted-foreground">Configure Edge Agent AI preferences</p>
       </div>
 
-      {/* A0. System Health — desktop-readiness probe for git / gh /
-          scanner. Surfaces here (and not just on first launch) because
-          users typically come to Settings when something feels off,
-          and "is my scanner even installed?" is the cheapest
-          first-question to answer. Soft-blocks via warnings only;
-          actual feature gating lives in the consumers (Run Scan,
-          Create PR, etc.). */}
+      {/* A0. System Health */}
       <SystemHealthGate />
 
       {/* A. Appearance */}
@@ -145,65 +161,171 @@ export function Settings({
         </CardContent>
       </Card>
 
-      {/* B. LLM Providers — required for ALL AI features in this MVP */}
+      {/* One-shot legacy-key wipe banner. Hosted contract: the app no
+          longer stores provider credentials client-side; the purge runs once
+          on mount. */}
+      {legacyKeysWiped && (
+        <div className="flex items-start gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+          <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            Edge Agent AI is now Hosted-only. Any provider credentials
+            you previously stored in this browser have been removed —
+            AI is included in your plan and runs through Edge Agent
+            AI&apos;s shared infrastructure.
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setLegacyKeysWiped(false)}
+            className="h-6 px-2 text-emerald-300 hover:bg-emerald-500/20"
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      {/* One-shot Anthropic migration banner. */}
+      {migrationNotices.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <div className="flex-1 space-y-1">
+            {migrationNotices.map((n, i) => (
+              <div key={`${n.slot}-${i}`}>
+                Your saved <span className="capitalize">{n.slot}</span> model
+                <code className="mx-1 rounded bg-yellow-500/10 px-1 font-mono">
+                  {n.oldModel}
+                </code>
+                was outdated and was updated to
+                <code className="mx-1 rounded bg-yellow-500/10 px-1 font-mono">
+                  {n.newModel}
+                </code>
+                .
+              </div>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setMigrationNotices([])}
+            className="h-6 px-2 text-yellow-300 hover:bg-yellow-500/20"
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      {/* A2. Demo account (mock billing only) — lets the user establish
+          an email-based session without a real identity provider, so the
+          selected plan is saved against their email. */}
+      {process.env.NEXT_PUBLIC_BILLING_MOCK === "1" && <DemoAccountCard />}
+
+      {/* B. Plan & AI — replaces the old "LLM Providers" editor.
+          Hosted AI is included in the user's plan; no key fields,
+          no base URL fields, no provider-key toggle. The user sees
+          current tier, credits left, included features, and the
+          upgrade button. */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <KeyRound className="h-4 w-4" />
-            LLM Providers
+            <Sparkles className="h-4 w-4" />
+            Plan &amp; AI
           </CardTitle>
           <CardDescription>
-            Bring your own API key. Edge Agent AI never provides or stores
-            hosted credits in this MVP. Your provider bills you directly.
-            Keys are stored locally in your browser only — never sent to
-            our servers — and are forwarded to the configured provider
-            only for the duration of the request that needs them. They
-            are never written to the explanation cache, logged, or
-            included in error messages.
+            AI explanations, fixes, and Pro/Max modes are included in
+            your plan. Edge Agent AI manages provider credentials
+            centrally — you never need an OpenAI / Anthropic / Gemini
+            key.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent-foreground">
-            <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          {process.env.NEXT_PUBLIC_BILLING_MOCK === "1" && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/[0.08] p-3 text-xs flex items-center gap-2 text-amber-200">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              <span>{DEMO_BILLING_LABEL}</span>
+            </div>
+          )}
+          <div className="rounded-md border border-accent/40 bg-accent/[0.06] p-3 text-xs flex items-center gap-2">
+            <Sparkles className="h-3.5 w-3.5 text-accent" />
             <span>
-              <strong>BYOK only.</strong> AI explanations, fixes,
-              Pro/Max/Manual modes all require a key configured here.
-              The scanner itself is deterministic and runs without
-              any key. Use <em>Test key</em> below to validate a
-              provider before relying on it.
+              <strong>AI included in your plan.</strong> No API key required.
             </span>
           </div>
-          <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Local-storage keys are fine for personal dev use. Don't use
-              production / shared API keys here.
-            </span>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <StatTile
+              label="Current plan"
+              value={planLoading ? "…" : plan?.tier ?? "—"}
+              accent="text-foreground"
+            />
+            <StatTile
+              label="AI credits remaining"
+              value={
+                planLoading
+                  ? "…"
+                  : plan
+                    ? `${plan.creditsRemaining} / ${plan.creditsTotal}`
+                    : "—"
+              }
+              accent={
+                plan && plan.creditsRemaining > 0
+                  ? "text-emerald-300"
+                  : "text-yellow-300"
+              }
+            />
+            <StatTile
+              label="Manual model picks"
+              value={
+                planLoading
+                  ? "…"
+                  : plan?.allowManualModelSelection
+                    ? "Enabled"
+                    : "Pro plan only"
+              }
+              accent={
+                plan?.allowManualModelSelection
+                  ? "text-emerald-300"
+                  : "text-muted-foreground"
+              }
+            />
           </div>
-          <div className="space-y-3">
-            {LLM_SLOTS.map((slot) => (
-              <ProviderSlotEditor
-                key={slot}
-                slot={slot}
-                config={getSlotConfig(slot, providers)}
-                onSaved={(next) => setProviders(next)}
-                onDeleted={(next) => setProviders(next)}
-              />
-            ))}
+
+          <div className="rounded-md border border-border bg-secondary/20 p-3 text-xs space-y-2">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Included AI features
+            </div>
+            <ul className="space-y-1 text-muted-foreground">
+              {(plan?.allowedModes ?? []).map((m) => (
+                <li key={m} className="flex items-center gap-2">
+                  <Zap className="h-3 w-3 text-accent" />
+                  <span className="uppercase">{m}</span>
+                  <span className="opacity-70">
+                    {modeBlurb(m)}
+                  </span>
+                </li>
+              ))}
+              {(!plan?.allowedModes || plan.allowedModes.length === 0) && (
+                <li className="text-muted-foreground">
+                  No AI modes are enabled on this plan.
+                </li>
+              )}
+            </ul>
           </div>
+
+          <PlanActions plan={plan} />
+          <p className="text-[11px] text-muted-foreground">
+            Provider credentials are managed centrally by Edge Agent
+            AI — no API key is ever stored in this browser.
+          </p>
         </CardContent>
       </Card>
 
-      {/* B2. GitHub Account — checks gh CLI install/auth and per-repo
-          push permission so the user knows which account git push will
-          actually use before they run it. Settings is the canonical
-          place to fix "wrong account cached" type errors. */}
+      {/* B2. GitHub Account */}
       <GitHubAccountCard projectPath={projectPath} />
 
-      {/* B3. Policy Rules — authoritative editor for
-          .edgeagent/policy.yaml. Lives in Settings so users can
-          discover and edit gates from one place. Exports to backend
-          on save; backend enforcement is unchanged. */}
+      {/* B3. Policy Rules */}
       <PolicyRulesCard
         project={project}
         scanReport={scanReport}
@@ -321,10 +443,10 @@ export function Settings({
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="webhook">Webhook URL</Label>
-                    <Input 
-                      id="webhook" 
-                      placeholder="https://hooks.slack.com/..." 
-                      className="bg-secondary/50" 
+                    <Input
+                      id="webhook"
+                      placeholder="https://hooks.slack.com/..."
+                      className="bg-secondary/50"
                     />
                     <p className="text-sm text-muted-foreground">
                       Paste the webhook URL from Slack, Discord, Jira, Linear, or your internal system. Edge Agent AI will send scan summaries after scans.
@@ -349,537 +471,226 @@ export function Settings({
 }
 
 /* -------------------------------------------------------------------------- */
-/* Provider slot editor                                                       */
+/* Plan & AI helpers                                                          */
 /* -------------------------------------------------------------------------- */
 
-/**
- * One row of the LLM Providers card. A "slot" is a fixed named provider
- * (OpenAI, Anthropic, Gemini, Custom OpenAI-compatible) — we use named
- * slots rather than a freeform "add provider" form so users see the
- * familiar brands and the Playground / Chat Assistant can ask for a
- * specific slot by name.
- *
- * Local edit state is kept inside this component; only Save / Delete
- * propagate back via the parent's setProviders so the page-level list
- * stays the source of truth for everything else (Playground, Chat).
- */
-function ProviderSlotEditor({
-  slot,
-  config,
-  onSaved,
-  onDeleted,
-}: {
-  slot: LlmSlot
-  config: ModelProviderConfig | undefined
-  onSaved: (next: ModelProviderConfig[]) => void
-  onDeleted: (next: ModelProviderConfig[]) => void
-}) {
-  const meta = SLOT_META[slot]
-  const isOpenAiCompat = meta.type === "openai_compatible"
+/** Demo-only email sign-in (mock billing). Establishes a session cookie
+ *  via `/api/auth/dev-login` so the selected plan is persisted against
+ *  the user's email. Shows the current signed-in email (read from
+ *  `/api/plan`) and a sign-out action. */
+function DemoAccountCard() {
+  const [email, setEmail] = useState("")
+  const [currentEmail, setCurrentEmail] = useState<string | null>(null)
+  const [authenticated, setAuthenticated] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // Form state
-  const [model, setModel] = useState<string>(config?.model ?? meta.defaultModel)
-  const [apiKey, setApiKey] = useState<string>(config?.apiKey ?? "")
-  const [baseUrl, setBaseUrl] = useState<string>(
-    config?.baseUrl ?? meta.defaultBaseUrl ?? ""
-  )
-  const [showKey, setShowKey] = useState<boolean>(false)
-  // True while the user is rotating the key for an already-configured slot.
-  // Lets the input sit empty with "Replace key…" placeholder rather than
-  // round-tripping the stored key through the mask string (which would
-  // corrupt the saved value if the user typed into the masked text).
-  const [editingKey, setEditingKey] = useState<boolean>(false)
-  const [justSaved, setJustSaved] = useState<boolean>(false)
-  // "Test key" result: ``null`` when never run, otherwise the parsed
-  // /api/byok/test response. The ``warning`` field on a success means
-  // the key authenticated but the account needs attention before AI
-  // calls will run end-to-end (e.g. Anthropic billing/credits).
-  const [testing, setTesting] = useState<boolean>(false)
-  const [testResult, setTestResult] = useState<
-    | { ok: true; model: string; warning?: string }
-    | { ok: false; message: string; code?: string }
-    | null
-  >(null)
-
-  // When the underlying config changes (e.g. user removed and re-saved
-  // from another tab), reset the editor to the new value.
-  useEffect(() => {
-    setModel(config?.model ?? meta.defaultModel)
-    setApiKey("")
-    setEditingKey(false)
-    setBaseUrl(config?.baseUrl ?? meta.defaultBaseUrl ?? "")
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.id, config?.updatedAt])
-
-  const modelChanged = (model || "") !== (config?.model ?? meta.defaultModel)
-  const baseChanged =
-    isOpenAiCompat &&
-    (baseUrl || "") !== (config?.baseUrl ?? meta.defaultBaseUrl ?? "")
-  // Dirty when:
-  //  - any free-form field changed
-  //  - OR the user is rotating an existing key (editingKey + non-empty)
-  //  - OR there's no saved key yet and they typed one in
-  const dirty =
-    modelChanged ||
-    baseChanged ||
-    (!config && apiKey.trim().length > 0) ||
-    (!!config && editingKey && apiKey.trim().length > 0)
-
-  function save() {
-    // Effective key: brand-new entry or user typed a new one to rotate;
-    // otherwise keep the existing saved key untouched (user only edited
-    // model / base URL).
-    const keyToUse = (() => {
-      if (apiKey.trim().length > 0) return apiKey.trim()
-      if (config?.apiKey) return config.apiKey
-      return ""
-    })()
-    if (!keyToUse) return
-    const now = new Date().toISOString()
-    const next: ModelProviderConfig = {
-      id: slotConfigId(slot),
-      type: meta.type,
-      label: meta.label,
-      model: (model || meta.defaultModel).trim(),
-      apiKey: keyToUse,
-      baseUrl: isOpenAiCompat
-        ? (baseUrl || meta.defaultBaseUrl || "").trim() || undefined
-        : undefined,
-      createdAt: config?.createdAt ?? now,
-      updatedAt: now,
+  const refresh = async () => {
+    try {
+      const res = await apiFetch("/api/plan")
+      if (!res.ok) return
+      const json = (await res.json()) as { authenticated?: boolean; email?: string | null }
+      setAuthenticated(Boolean(json.authenticated))
+      setCurrentEmail(json.email ?? null)
+    } catch {
+      /* ignore */
     }
-    onSaved(saveProviderConfig(next))
-    setApiKey("")
-    setEditingKey(false)
-    setJustSaved(true)
-    setTimeout(() => setJustSaved(false), 2200)
   }
 
-  function remove() {
-    if (!config) return
-    onDeleted(deleteProviderConfig(config.id))
-    setApiKey("")
-    setEditingKey(false)
-    setJustSaved(false)
+  useEffect(() => {
+    void refresh()
+  }, [])
+
+  const signIn = async () => {
+    setBusy(true)
+    setError(null)
+    const r = await devLogin(email.trim())
+    if (!r.ok) {
+      setError(r.error)
+      setBusy(false)
+      return
+    }
+    if (typeof window !== "undefined") window.location.reload()
   }
 
-  const configured = !!config?.apiKey
+  const signOut = async () => {
+    setBusy(true)
+    setError(null)
+    await devLogout()
+    if (typeof window !== "undefined") window.location.reload()
+  }
+
   return (
-    <div className="rounded-lg border border-border/60 bg-secondary/10 p-3 space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{meta.label}</span>
-          {configured ? (
-            <Badge
-              variant="outline"
-              className="bg-green-500/10 text-green-400 border-green-500/20 text-[10px]"
-            >
-              <CheckCircle2 className="h-3 w-3 mr-1" />
-              Configured
-            </Badge>
-          ) : (
-            <Badge variant="outline" className="text-[10px]">
-              Not configured
-            </Badge>
-          )}
-          {!meta.runnerImplemented && (
-            <Badge
-              variant="outline"
-              className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20 text-[10px]"
-              title="Key stores locally but the runtime call isn't wired yet — the playground will surface a clear error instead of pretending."
-            >
-              Runner pending
-            </Badge>
-          )}
-        </div>
-        {justSaved && (
-          <span className="text-[11px] text-green-400 inline-flex items-center gap-1">
-            <CheckCircle2 className="h-3 w-3" /> Saved
-          </span>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Model</Label>
-          {/* Curated dropdown of known model ids for this provider, plus
-           *  a "Custom…" option that flips back to a free-form input.
-           *  Saving a model id outside the catalog (eg. a private fine-
-           *  tune) automatically renders as Custom on next mount. */}
-          <ModelPicker
-            slot={slot}
-            value={model}
-            onChange={setModel}
-            placeholder={meta.defaultModel}
-          />
-        </div>
-        {isOpenAiCompat && (
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              Base URL{" "}
-              <span className="text-[10px]">
-                (optional — defaults to {meta.defaultBaseUrl ?? "OpenAI"})
-              </span>
-            </Label>
-            <Input
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder={meta.defaultBaseUrl ?? "https://api.openai.com/v1"}
-              className="bg-secondary/40 h-9 text-sm font-mono"
-            />
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-1">
-        <Label className="text-xs text-muted-foreground">API key</Label>
-        {/* When a key is already saved we render two states:
-         *   - Default: read-only masked preview + "Replace" button. Users
-         *     can confirm a key is stored without us round-tripping the
-         *     real value through the input.
-         *   - Editing: blank input with placeholder "Enter new key…".
-         * For unconfigured slots the input is always editable. */}
-        {configured && !editingKey ? (
-          <div className="flex items-center gap-2">
-            <Input
-              type="text"
-              value={
-                showKey
-                  ? config?.apiKey ?? ""
-                  : maskKey(config?.apiKey ?? "")
-              }
-              readOnly
-              className="bg-secondary/40 h-9 text-sm font-mono"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setShowKey((s) => !s)}
-              className="h-9"
-              title={showKey ? "Hide key" : "Show key"}
-            >
-              {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setEditingKey(true)
-                setApiKey("")
-                setShowKey(true)
-              }}
-              className="h-9"
-            >
-              Replace
+    <Card className="bg-card border-border">
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4" />
+          Demo account
+        </CardTitle>
+        <CardDescription>
+          Demo mode — sign in with an email to create a session. Your
+          email and selected plan are saved server-side (file store in
+          dev, Postgres when DATABASE_URL is set). No password, no real
+          payment.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {authenticated && currentEmail ? (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs">
+              Signed in as <strong className="text-foreground">{currentEmail}</strong>
+            </div>
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={signOut}>
+              {busy ? "…" : "Sign out"}
             </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-2">
-            <Input
-              type={showKey ? "text" : "password"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={
-                editingKey
-                  ? "Enter new key to replace…"
-                  : meta.type === "openai_compatible"
-                  ? "sk-…"
-                  : meta.type === "anthropic"
-                  ? "sk-ant-…"
-                  : "AIza…"
-              }
-              className="bg-secondary/40 h-9 text-sm font-mono"
-              autoComplete="off"
-              autoFocus={editingKey}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setShowKey((s) => !s)}
-              className="h-9"
-              title={showKey ? "Hide key" : "Show key"}
-            >
-              {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </Button>
-            {editingKey && (
+          <div className="space-y-2">
+            <Label htmlFor="demo-email" className="text-xs">
+              Email
+            </Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                id="demo-email"
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="max-w-xs"
+              />
               <Button
                 type="button"
-                variant="ghost"
                 size="sm"
-                onClick={() => {
-                  setEditingKey(false)
-                  setApiKey("")
-                }}
-                className="h-9 text-muted-foreground"
+                disabled={busy || email.trim().length === 0}
+                onClick={signIn}
               >
-                Cancel
+                {busy ? "…" : "Sign in"}
               </Button>
-            )}
+            </div>
           </div>
         )}
-      </div>
+        {error && (
+          <div className="flex items-center gap-2 text-xs text-red-400">
+            <XCircle className="h-3.5 w-3.5" />
+            <span>{error}</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
 
-      {testResult ? (
-        (() => {
-          // Three visual states:
-          //   * ok + no warning   → solid green "key works"
-          //   * ok + warning      → amber "works but ..." (e.g.
-          //                        Anthropic billing not enabled)
-          //   * !ok               → red error with upstream message
-          const tone = testResult.ok
-            ? testResult.warning
-              ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
-              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-            : "border-destructive/40 bg-destructive/10 text-destructive"
-          return (
-            <div className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${tone}`}>
-              {testResult.ok ? (
-                testResult.warning ? (
-                  <>
-                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span>
-                      Key authenticated with{" "}
-                      <span className="font-mono">{testResult.model}</span>.{" "}
-                      {testResult.warning}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span>
-                      Key works. Tested with{" "}
-                      <span className="font-mono">{testResult.model}</span>.
-                    </span>
-                  </>
-                )
-              ) : (
-                <>
-                  <XCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                  <span className="whitespace-pre-wrap break-words">{testResult.message}</span>
-                </>
-              )}
-            </div>
-          )
-        })()
-      ) : null}
+/** Upgrade + manage-billing CTAs. Hits `/api/billing/checkout` to
+ *  start a Stripe Checkout session, or `/api/billing/portal` to open
+ *  the Stripe Customer Portal for paid users. Surfaces server
+ *  configuration errors instead of opening a broken URL. */
+function PlanActions({
+  plan,
+}: {
+  plan: Pick<NonNullable<ReturnType<typeof usePlanSummary>["plan"]>, "tier" | "subscriptionStatus"> | null
+}) {
+  const [busy, setBusy] = useState<"starter" | "pro" | "team" | "portal" | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const hasSub =
+    plan?.tier !== "free" && plan?.tier !== undefined && plan?.subscriptionStatus !== "none"
 
-      <div className="flex items-center justify-end gap-2">
-        {configured && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={remove}
-            className="text-muted-foreground hover:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5 mr-1" />
-            Remove
+  const useMock = isBillingMockClient()
+
+  const start = async (tier: "starter" | "pro" | "team") => {
+    setBusy(tier)
+    setError(null)
+    const r = await startCheckout(tier)
+    if (!r.ok) {
+      setError(r.error)
+      setBusy(null)
+      return
+    }
+    if (useMock) {
+      if (typeof window !== "undefined") window.location.reload()
+      return
+    }
+    setBusy(null)
+  }
+
+  const portal = async () => {
+    setBusy("portal")
+    setError(null)
+    const r = await openBillingPortal()
+    if (!r.ok) setError(r.error)
+    setBusy(null)
+  }
+
+  return (
+    <div className="space-y-2">
+      {useMock && (
+        <p className="text-[11px] text-amber-200/90">{DEMO_BILLING_LABEL}</p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {plan?.tier !== "starter" && (
+          <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => start("starter")}>
+            {busy === "starter" ? "…" : "Upgrade to Starter"}
           </Button>
         )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={async () => {
-            // Use the typed key if present (the user is rotating or
-            // entering for the first time); otherwise fall back to the
-            // stored one so "Test key" works without forcing the user
-            // to re-paste a previously-saved key.
-            const keyForTest = apiKey.trim() || config?.apiKey || ""
-            if (!keyForTest) {
-              setTestResult({
-                ok: false,
-                message:
-                  "API key not provided. Add your provider key in Settings to use AI explanations and fixes.",
-              })
-              return
-            }
-            setTesting(true)
-            setTestResult(null)
-            try {
-              const res = await fetch("/api/byok/test", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  provider: meta.type === "openai_compatible" && slot === "custom"
-                    ? "custom"
-                    : meta.type,
-                  apiKey: keyForTest,
-                  baseUrl: isOpenAiCompat
-                    ? (baseUrl || meta.defaultBaseUrl || "").trim() || undefined
-                    : undefined,
-                  model: (model || meta.defaultModel).trim(),
-                }),
-              })
-              const j = (await res.json()) as
-                | { ok: true; provider: string; model: string; warning?: string }
-                | { ok: false; code: string; message: string; upstream?: string }
-              if ("ok" in j && j.ok) {
-                setTestResult({
-                  ok: true,
-                  model: j.model,
-                  warning: j.warning,
-                })
-              } else {
-                // Surface the upstream provider body verbatim when
-                // available so the user sees the actual reason
-                // (e.g. Anthropic's "credit balance is too low")
-                // instead of a generic line.
-                setTestResult({
-                  ok: false,
-                  code: (j as { code?: string }).code,
-                  message: (j as { message: string }).message ?? "Test failed.",
-                })
-              }
-            } catch (e) {
-              setTestResult({
-                ok: false,
-                message: `Network error: ${(e as Error).message}`,
-              })
-            } finally {
-              setTesting(false)
-            }
-          }}
-          disabled={testing || (!apiKey.trim() && !config?.apiKey)}
-          title={
-            !apiKey.trim() && !config?.apiKey
-              ? "Enter a key first"
-              : "Validate this key + model with a single low-cost upstream call"
-          }
-        >
-          {testing ? (
-            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-          ) : (
-            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-          )}
-          {testing ? "Testing…" : "Test key"}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          onClick={save}
-          disabled={
-            // Save is allowed when there's _something_ that needs writing
-            // and we have a key on file (either typed now or already
-            // stored). The dirty check already excludes "nothing changed".
-            !dirty || (!config?.apiKey && !apiKey.trim())
-          }
-          title={
-            !config?.apiKey && !apiKey.trim()
-              ? "Enter an API key first"
-              : !dirty
-              ? "Nothing changed"
-              : "Save this provider"
-          }
-        >
-          <Save className="h-3.5 w-3.5 mr-1" />
-          {configured ? "Update" : "Save"}
-        </Button>
+        {plan?.tier !== "pro" && plan?.tier !== "team" && plan?.tier !== "enterprise" && (
+          <Button type="button" variant="default" size="sm" disabled={busy !== null} onClick={() => start("pro")}>
+            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+            {busy === "pro" ? "…" : "Upgrade to Pro"}
+          </Button>
+        )}
+        {plan?.tier !== "team" && plan?.tier !== "enterprise" && (
+          <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => start("team")}>
+            {busy === "team" ? "…" : "Upgrade to Team"}
+          </Button>
+        )}
+        {hasSub && !useMock && (
+          <Button type="button" variant="ghost" size="sm" disabled={busy !== null} onClick={portal}>
+            {busy === "portal" ? "…" : "Manage billing"}
+          </Button>
+        )}
       </div>
+      {error && (
+        <div className="flex items-start gap-1.5 text-[11px] text-red-300">
+          <AlertTriangle className="h-3 w-3 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
     </div>
   )
 }
 
-/* -------------------------------------------------------------------------- */
-/* Model picker (Settings)                                                    */
-/* -------------------------------------------------------------------------- */
+function modeBlurb(mode: string): string {
+  switch (mode) {
+    case "save":
+      return "— deterministic scanner + AI explanations"
+    case "auto":
+      return "— smart model routing (cheap → strong)"
+    case "pro":
+      return "— stronger model, larger context"
+    case "max":
+      return "— plan → patch → validate (deep review)"
+    case "manual":
+      return "— pick a specific model per task"
+    default:
+      return ""
+  }
+}
 
-/**
- * Curated dropdown of known models for a provider slot, with a
- * "Custom model name…" escape hatch that swaps the picker for a
- * free-form input. Used inside the slot editor.
- *
- * The component is uncontrolled w.r.t. "is the user picking custom?" —
- * we derive that from whether the value is in the catalog, which means
- * loading a saved custom model id always defaults to the input, no
- * extra state needed.
- */
-const CUSTOM_SENTINEL = "__custom__"
-
-function ModelPicker({
-  slot,
+function StatTile({
+  label,
   value,
-  onChange,
-  placeholder,
+  accent,
 }: {
-  slot: LlmSlot
+  label: string
   value: string
-  onChange: (next: string) => void
-  placeholder?: string
+  accent: string
 }) {
-  const catalog = MODEL_CATALOG[slot]
-  const known = isKnownModel(slot, value)
-  // Track "user explicitly picked Custom" so an empty string doesn't
-  // collapse the picker back to a known item.
-  const [customMode, setCustomMode] = useState<boolean>(!known && value !== "")
-
-  function handleSelect(v: string) {
-    if (v === CUSTOM_SENTINEL) {
-      setCustomMode(true)
-      // Don't blow away the existing value when entering custom mode.
-      if (isKnownModel(slot, value)) onChange("")
-      return
-    }
-    setCustomMode(false)
-    onChange(v)
-  }
-
-  if (customMode || (!known && value !== "")) {
-    return (
-      <div className="flex items-center gap-2">
-        <Input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder ?? "model-id"}
-          className="bg-secondary/40 h-9 text-sm font-mono"
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setCustomMode(false)
-            onChange(catalog[0]?.id ?? "")
-          }}
-          className="h-9 text-xs text-muted-foreground"
-          title="Switch back to the curated list"
-        >
-          Use list
-        </Button>
-      </div>
-    )
-  }
-
   return (
-    <Select
-      value={known && value ? value : catalog[0]?.id ?? ""}
-      onValueChange={handleSelect}
-    >
-      <SelectTrigger className="bg-secondary/40 h-9 text-sm">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {catalog.map((m) => (
-          <SelectItem key={m.id} value={m.id}>
-            <span className="flex items-center gap-2">
-              <span className="font-mono">{m.id}</span>
-              {m.hint && (
-                <span className="text-[10px] text-muted-foreground">
-                  {m.hint}
-                </span>
-              )}
-            </span>
-          </SelectItem>
-        ))}
-        <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-          Other
-        </div>
-        <SelectItem value={CUSTOM_SENTINEL}>Custom model name…</SelectItem>
-      </SelectContent>
-    </Select>
+    <div className="rounded-md border border-border bg-secondary/30 p-3">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className={`text-sm font-semibold mt-1 ${accent}`}>{value}</div>
+    </div>
   )
 }
 
@@ -887,33 +698,13 @@ function ModelPicker({
 /* GitHub Account card                                                        */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Self-contained "GitHub Account" settings card. It hits two read-only
- * endpoints (`/api/github/status`, `/api/github/repo-permission`) on
- * mount and again whenever the user clicks one of the refresh buttons.
- *
- * We deliberately do *not* attempt to launch `gh auth login` from the
- * server: that command opens a browser and prints a one-time code on
- * stdin, which is hostile from inside a Next.js dev server. Instead
- * we render the exact command and let the user run it in their own
- * terminal — then click "Refresh".
- *
- * No tokens, passwords, or PATs are persisted by this component.
- * Authentication state lives entirely in the user's `gh` CLI / system
- * credential manager.
- */
 function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
   const [status, setStatus] = useState<GitHubStatusResponse | null>(null)
   const [statusLoading, setStatusLoading] = useState(false)
   const [perm, setPerm] = useState<GitHubRepoPermissionResponse | null>(null)
   const [permLoading, setPermLoading] = useState(false)
-  // The CLI-only instructions panel is kept as a fallback for users
-  // who'd rather use `gh` than paste a token. Hidden by default now
-  // that the in-app sign-in dialog is the recommended path.
-  const [showConnectInstructions, setShowConnectInstructions] =
-    useState(false)
-  const [showDisconnectInstructions, setShowDisconnectInstructions] =
-    useState(false)
+  const [showConnectInstructions, setShowConnectInstructions] = useState(false)
+  const [showDisconnectInstructions, setShowDisconnectInstructions] = useState(false)
   const [signInOpen, setSignInOpen] = useState(false)
 
   const refreshStatus = async () => {
@@ -951,8 +742,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
     }
   }
 
-  // Initial load + re-load whenever the selected project path changes
-  // so the "Selected project remote" line stays in sync.
   useEffect(() => {
     void refreshStatus()
   }, [])
@@ -997,17 +786,10 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Status grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <StatRow
             label="GitHub CLI installed"
-            value={
-              statusLoading
-                ? "Checking…"
-                : ghInstalled
-                  ? "yes"
-                  : "no"
-            }
+            value={statusLoading ? "Checking…" : ghInstalled ? "yes" : "no"}
             ok={ghInstalled}
             warn={!statusLoading && !ghInstalled}
           />
@@ -1060,7 +842,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
           />
         </div>
 
-        {/* Status message banner */}
         {(status?.message || perm?.message) && (
           <div className="rounded-md border border-border bg-secondary/20 p-2 text-xs text-muted-foreground space-y-1">
             {status?.message && (
@@ -1078,7 +859,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
           </div>
         )}
 
-        {/* Cached-credentials warning for HTTPS remotes */}
         {ghInstalled &&
           authed &&
           perm?.protocol === "https" &&
@@ -1092,7 +872,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
             </div>
           )}
 
-        {/* Action buttons */}
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
@@ -1108,11 +887,7 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
             )}
             Check GitHub Status
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => setSignInOpen(true)}
-          >
+          <Button type="button" size="sm" onClick={() => setSignInOpen(true)}>
             <Github className="h-3.5 w-3.5 mr-1.5" />
             {status?.authenticated ? "Manage GitHub account" : "Sign in with GitHub"}
           </Button>
@@ -1150,7 +925,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
           </Button>
         </div>
 
-        {/* Connect instructions panel */}
         {showConnectInstructions && (
           <InstructionsPanel
             title="Sign in to GitHub from your terminal"
@@ -1183,9 +957,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
           />
         )}
       </CardContent>
-      {/* In-app sign-in modal. Refreshes both status + permission
-          after a successful login so the badges reflect the new
-          identity immediately. */}
       <GithubLoginDialog
         open={signInOpen}
         onOpenChange={setSignInOpen}
@@ -1198,7 +969,6 @@ function GitHubAccountCard({ projectPath }: { projectPath: string | null }) {
   )
 }
 
-/** Tiny labelled value row used by the GitHub Account stat grid. */
 function StatRow({
   label,
   value,

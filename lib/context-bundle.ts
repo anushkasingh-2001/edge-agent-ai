@@ -15,11 +15,14 @@
 export type IntelligenceMode = "save" | "auto" | "pro" | "max" | "manual"
 
 /**
- * Hosted (Edge-Agent-operated key, plan-billed) vs BYOK (caller's own
- * key, billed to their provider account). Exported from this module
- * — instead of the server-only resolver — so client + server can
- * share a single wire-level definition without React Server / Client
- * boundary leaks.
+ * Wire-level AI provider mode.
+ *
+ * Hosted-only contract: every new request sends `"hosted"`, and the
+ * server resolver ignores BYOK regardless. The union retains the
+ * legacy `"byok"` literal ONLY so older serialised data (stored scan
+ * history JSON, etc.) still parses without a migration. No code path
+ * may produce a NEW `"byok"` value — the lint guard in the resolver
+ * + the route shapes enforce that.
  */
 export type AiProviderMode = "hosted" | "byok"
 
@@ -54,10 +57,17 @@ export interface CodeSlice {
   text: string
   /** IR node this slice anchors to, when known. */
   irNodeId?: string
-  /** Why this slice is in the bundle (telemetry / debugging). */
+  /** Why this slice is in the bundle (telemetry / debugging). The
+   *  `taint-source` / `taint-sink` / `taint-guard` / `taint-node`
+   *  variants let the trimmer protect the irreducible part of the
+   *  taint path (source + sink) when budget is tight while still
+   *  dropping intermediate function hops first. */
   role?:
     | "primary"
     | "surrounding"
+    | "taint-source"
+    | "taint-sink"
+    | "taint-guard"
     | "taint-node"
     | "caller"
     | "callee"

@@ -153,6 +153,18 @@ export interface PlannerFinding {
   evidence_path_files?: number
   /** Length of the taint/evidence path. Longer ⇒ more hops ⇒ complex. */
   evidence_path_len?: number
+  /** Owning agent name from the scanner. The bundle builder uses this
+   *  to rank related prompts/tools/routes by same-agent proximity. */
+  agent?: string | null
+  /** Full taint flow nodes (source → … → sink) from the scanner's IR
+   *  analyzer. Threaded straight into buildContextBundle so the LLM
+   *  sees source / sink / guard slices, not just the primary line. */
+  evidence_path?: Array<{
+    kind: string
+    label: string
+    file?: string | null
+    line?: number | null
+  }>
 }
 
 export interface PlanResult {

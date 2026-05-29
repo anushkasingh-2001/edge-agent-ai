@@ -7,52 +7,49 @@ import {
   type FixTarget,
   type FixMode,
 } from "@/lib/server-finding-fixes"
-// Step 2: mode-aware LLM delegation. When the mode allows LLM patches
-// and the deterministic engine couldn't fix a target, we upgrade that
-// target via the graph-routed pipeline (suggest only — apply still goes
-// through the deterministic safe-write path).
 import { planFix, type PlannerFinding } from "@/lib/fix-planner"
-import { generatePatchPreview, type PatchPreview } from "@/lib/server-patch-pipeline"
+import { type PatchPreview } from "@/lib/server-patch-pipeline"
 import { MODE_POLICIES, scoreComplexity } from "@/lib/intelligence-mode"
 import type { IntelligenceMode } from "@/lib/context-bundle"
-import type { ProviderKind } from "@/lib/server-model-router"
 import type { FixProposal } from "@/lib/finding-fixes-client"
-import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+import {
+  generateFindingPatch,
+  type GatewayBlock,
+} from "@/lib/server-patch-generation-gateway"
+import {
+  assertHostedRequest,
+  RouteGuardError,
+} from "@/lib/server-route-guards"
 
 /**
- * POST /api/findings/fix
+ * POST /api/findings/fix  —  hosted-only contract.
  *
  * Body:
  *   {
  *     projectPath: string,
  *     mode: "suggest" | "apply",
- *     targets: [{ ref_id, rule_id, file, line, title? }, ...]
+ *     targets: [{ ref_id, rule_id, file, line, title? }, ...],
+ *     intelligenceMode?: "save"|"auto"|"pro"|"max"|"manual",
+ *     manualModelSelection?: Record<string,string>,
  *   }
  *
  * Returns the per-target FixProposal list. In `suggest` mode we never
  * touch the filesystem. In `apply` mode we write each file atomically
- * after dropping a `.edge-agent.bak` backup so the user can revert
- * without git.
+ * after dropping a `.edge-agent.bak` backup so the user can revert.
+ *
+ * The provider credential is read SERVER-SIDE from env via the hosted
+ * resolver. The body NEVER carries `apiKey` / `baseUrl` / `provider` —
+ * any such legacy fields are silently ignored.
  */
 export async function POST(request: Request) {
   let body: {
     projectPath?: string
     mode?: FixMode
     targets?: unknown
-    /** Intelligence mode threaded from the UI (save/auto/pro/max/manual). */
     intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
-    /** Hosted (server-side key) vs BYOK (caller-supplied). */
     aiProviderMode?: "hosted" | "byok"
-    /** Manual mode: per-task model overrides. v2 canonical name is
-     *  ``manualModelSelection``; ``manualModels`` is the Step-1 alias. */
     manualModelSelection?: Record<string, string>
     manualModels?: Record<string, string>
-    /** Provider config for the LLM upgrade path (BYOK). Optional —
-     *  when absent, the LLM delegation is skipped and the deterministic
-     *  result is returned unchanged. */
-    provider?: ProviderKind
-    apiKey?: string | null
-    baseUrl?: string | null
     privateCodeMode?: boolean
   } = {}
   try {
@@ -61,8 +58,15 @@ export async function POST(request: Request) {
     body = {}
   }
 
-  const intelligenceMode = body.intelligenceMode ?? "auto"
-  void intelligenceMode
+  let session
+  try {
+    session = assertHostedRequest(request, body as unknown as Record<string, unknown>)
+  } catch (e) {
+    if (e instanceof RouteGuardError) {
+      return NextResponse.json(e.body, { status: e.status })
+    }
+    throw e
+  }
 
   if (!body.projectPath || typeof body.projectPath !== "string") {
     return NextResponse.json(
@@ -143,65 +147,29 @@ export async function POST(request: Request) {
     })
 
     // ---- Mode-aware LLM upgrade -------------------------------------
-    // Deterministic-first stays the source of truth. We only invoke
-    // the graph-routed pipeline for targets the deterministic engine
-    // could NOT fix (no template / comment-marker-only), and only
-    // when:
-    //   - mode allows patch generation (Save does not), AND
-    //   - we're in "suggest" mode (apply keeps the deterministic safe
-    //     write path; the LLM preview is reviewed, then applied via
-    //     /api/finding/patch?mode=apply), AND
-    //   - the caller supplied a BYOK key.
-    //
-    // If the user picks Auto/Pro/Max/Manual without a key in Settings,
-    // we return the structured per-proposal error from the resolver
-    // (so the UI can render the "API key not provided" CTA) instead
-    // of silently doing nothing.
+    // Deterministic-first stays the source of truth. We invoke the
+    // graph-routed pipeline ONLY for targets the deterministic engine
+    // could NOT fix, only in "suggest" mode, only when the mode allows
+    // LLM patches, and only when the hosted resolver clears plan +
+    // quota. There is no client-supplied key path.
     const mode = (body.intelligenceMode ?? "auto") as IntelligenceMode
     const policy = MODE_POLICIES[mode] ?? MODE_POLICIES.auto
-    const aiProviderMode = "byok" as const
-    // Accept either canonical (`manualModelSelection`) or legacy
-    // (`manualModels`) name from the client.
     const manualPicks = (body.manualModelSelection ?? body.manualModels) as
       | Record<string, string>
       | undefined
 
-    // Surface the BYOK missing-key error at the top level if the
-    // mode would have wanted an LLM upgrade. This is the canonical
-    // UX path: the user picked Pro/Max/Manual and forgot the key.
-    if (policy.allowPatchGeneration && body.mode === "suggest") {
-      const probe = resolveAiProviderForRequest({
-        userId: "local-user",
-        workspaceId: "local-workspace",
-        aiProviderMode,
-        intelligenceMode: mode,
-        task: "patch",
-        complexity: 0,
-        manualModelSelection: manualPicks,
-        byokApiKey: typeof body.apiKey === "string" ? body.apiKey : null,
-        byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
-        byokProvider: body.provider,
-      })
-      if (
-        !probe.ok &&
-        (probe.code === "missing_api_key" || probe.code === "invalid_api_key")
-      ) {
-        // Deterministic proposals still ran above, so we attach the
-        // structured error rather than dropping the whole response.
-        // The UI shows the CTA AND the templates the engine could
-        // fix without any LLM at all.
-        return NextResponse.json({
-          ...result,
-          error: probe.reason,
-          code: probe.code,
-        })
-      }
-    }
-
+    // ---- LLM upgrade via the generation gateway -------------------
+    // For unfixed targets we ask the gateway for a patch. In web/dev the
+    // gateway resolves the key + calls the model in-process; on desktop it
+    // relays a redacted prompt to /api/cloud/findings/fix-generate and the
+    // cloud generates + bills. The first plan/quota/auth block surfaces as a
+    // top-level error (deterministic proposals still attached) and stops.
     if (policy.allowPatchGeneration && body.mode === "suggest") {
       const unfixed = result.proposals.filter(
         (p) => !p.applied && (p.error_kind !== null || !p.diff || p.diff.trim() === ""),
       )
+      let totalCreditsUsed = 0
+      let topBlock: GatewayBlock | undefined
       for (const proposal of unfixed) {
         const target = targets.find((t) => t.ref_id === proposal.ref_id)
         if (!target) continue
@@ -220,45 +188,31 @@ export async function POST(request: Request) {
           rule_id: finding.rule_id,
           severity: finding.severity,
         })
-        const resolution = resolveAiProviderForRequest({
-          userId: "local-user",
-          workspaceId: "local-workspace",
-          aiProviderMode,
-          intelligenceMode: mode,
-          task: "patch",
-          complexity,
-          manualModelSelection: manualPicks,
-          byokApiKey: typeof body.apiKey === "string" ? body.apiKey : null,
-          byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
-          byokProvider: body.provider,
-        })
-        if (!resolution.ok) continue
-
-        const preview = await generatePatchPreview({
+        const gen = await generateFindingPatch({
+          req: request,
+          session,
           projectPath: requested,
           finding,
           plan: planFix(finding),
-          provider: resolution.provider,
-          apiKey: resolution.apiKey,
-          baseUrl: resolution.baseUrl ?? null,
-          privateCodeMode: !!body.privateCodeMode,
           intelligenceMode: mode,
           complexity,
-          manualModels: manualPicks,
-          forceModel: resolution.model,
-          forceTwoStep: resolution.twoStep,
+          manualModelSelection: manualPicks,
+          privateCodeMode: !!body.privateCodeMode,
+          task: "patch",
+          cloudEndpoint: "/api/cloud/findings/fix-generate",
         })
-        if ("refused" in preview && preview.refused) continue
-        // BYOK-only: no credit accounting; user's upstream provider
-        // bills them directly.
+        if (gen.blocked) {
+          topBlock = gen.blocked
+          break
+        }
+        totalCreditsUsed += gen.creditsUsed
+        const preview = gen.preview
+        if (!preview || ("refused" in preview && preview.refused)) continue
         const pv = preview as PatchPreview
-        // Convert the PatchPreview into the FixProposal shape the UI
-        // already renders. Marked not-applied (suggest); the user
-        // promotes to a real write via the patch route.
+
         const upgraded: Partial<FixProposal> = {
           title: `${proposal.title} (AI ${mode})`,
           description: pv.reason,
-          before: pv.patches[0]?.beforeFileHash ? proposal.before : proposal.before,
           after: pv.patches[0]?.newContents ?? proposal.after,
           diff: pv.unifiedDiff || proposal.diff,
           risk: pv.resolved ? "edits-line" : "no-op",
@@ -267,9 +221,28 @@ export async function POST(request: Request) {
         }
         Object.assign(proposal, upgraded)
       }
+      if (topBlock) {
+        return NextResponse.json({
+          ...result,
+          error: topBlock.reason,
+          code: topBlock.code,
+          upgrade: topBlock.upgrade ?? false,
+          remaining: topBlock.remaining,
+          needed: topBlock.needed,
+        })
+      }
+      return NextResponse.json({
+        ...result,
+        apiKeySource: "hosted" as const,
+        creditsUsed: totalCreditsUsed,
+      })
     }
 
-    return NextResponse.json(result)
+    return NextResponse.json({
+      ...result,
+      apiKeySource: "hosted" as const,
+      creditsUsed: 0,
+    })
   } catch (e) {
     return NextResponse.json(
       {

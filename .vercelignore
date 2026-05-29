@@ -1,0 +1,15 @@
+# Desktop/Electron + scanner artifacts are not part of the cloud backend.
+# Keeping them out of the Vercel upload speeds deploys and shrinks the bundle.
+scanner/
+electron/dist/
+dist/
+release/
+edge-agent-output/
+sample-agent/
+tmp-git-test-*/
+*.dmg
+*.AppImage
+*.exe
+*.blockmap
+.edgeagent/
+report.json

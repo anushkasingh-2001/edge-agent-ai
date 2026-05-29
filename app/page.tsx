@@ -13,6 +13,8 @@ import { BranchCompare } from "@/components/views/branch-compare"
 import { Evaluations } from "@/components/views/evaluations"
 import { PromptPlayground } from "@/components/views/prompt-playground"
 import { ChatAssistant } from "@/components/views/chat-assistant"
+import { PlanBilling } from "@/components/views/plan-billing"
+import { OnboardingWelcome } from "@/components/onboarding-welcome"
 import { Settings } from "@/components/views/settings"
 import { OpenProjectDialog } from "@/components/open-project-dialog"
 import { CloneGithubDialog } from "@/components/clone-github-dialog"
@@ -48,6 +50,7 @@ import {
 } from "@/lib/user-probes"
 import { evaluatePolicyApi, type PolicyApiResponse } from "@/lib/policy-client"
 import { saveLatestPolicyResult } from "@/lib/latest-policy-result"
+import { apiFetch } from "@/lib/api-fetch"
 
 type GitBranchesResponse = {
   isRepo: boolean
@@ -178,6 +181,9 @@ export default function Home() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [recentProjects, setRecentProjects] = useState<Project[]>([])
   const [currentView, setCurrentView] = useState<ViewType>("overview")
+  // First-run welcome gate. `null` = undecided (still checking), so we
+  // don't flash the app or the onboarding before we know the auth state.
+  const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null)
   /** Which inner tab Findings should land on. Reset to "code" any
    *  time the user navigates away from Findings so a later trip
    *  through the sidebar doesn't accidentally land them on
@@ -191,11 +197,12 @@ export default function Home() {
   const [intelligenceMode, setIntelligenceMode] = useState<
     "save" | "auto" | "pro" | "max" | "manual"
   >("auto")
-  // BYOK-only MVP: there is no hosted credential path. The constant
-  // is kept on the wire so older callers compile, but the server
-  // resolver only accepts the BYOK branch. See
+  // Hosted-only: AI access is included in the user's plan and resolved
+  // server-side from env-managed provider credentials. The constant is
+  // kept on the wire as a stable client→server signal, but the server
+  // resolver is hosted-only regardless. See
   // lib/server-ai-provider-resolver.ts for the contract.
-  const aiProviderMode = "byok" as const
+  const aiProviderMode = "hosted" as const
   const [manualModelSelection, setManualModelSelection] = useState<Record<string, string>>({})
   const [scanReport, setScanReport] = useState<ScanReport | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -242,6 +249,57 @@ export default function Home() {
   useEffect(() => {
     setRecentProjects(loadRecentProjects())
     setScanHistory(loadScanHistory())
+  }, [])
+
+  // Decide whether to show the welcome gate: skip it if the user already
+  // dismissed it (localStorage) or already has a session (/api/plan).
+  useEffect(() => {
+    let cancelled = false
+    const ONBOARDED_KEY = "edge-agent-ai.onboarded"
+    // Force override for testing: `?welcome=1` (or `#welcome`) always
+    // shows the gate, ignoring the dismissed flag AND any live session.
+    // It also clears the dismissed flag so a normal reload behaves again.
+    try {
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search)
+        if (params.get("welcome") === "1" || window.location.hash === "#welcome") {
+          window.localStorage.removeItem(ONBOARDED_KEY)
+          setShowOnboarding(true)
+          return
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (typeof window !== "undefined" && window.localStorage.getItem(ONBOARDED_KEY) === "1") {
+        setShowOnboarding(false)
+        return
+      }
+    } catch {
+      /* localStorage unavailable — fall through to the auth check */
+    }
+    apiFetch("/api/plan")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json: { authenticated?: boolean } | null) => {
+        if (cancelled) return
+        setShowOnboarding(!json?.authenticated)
+      })
+      .catch(() => {
+        if (!cancelled) setShowOnboarding(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const dismissOnboarding = useCallback(() => {
+    try {
+      if (typeof window !== "undefined") window.localStorage.setItem("edge-agent-ai.onboarded", "1")
+    } catch {
+      /* best-effort */
+    }
+    setShowOnboarding(false)
   }, [])
 
   /**
@@ -846,6 +904,7 @@ export default function Home() {
             setIntelligenceMode={setIntelligenceMode}
             manualModelSelection={manualModelSelection}
             setManualModelSelection={setManualModelSelection}
+            onNavigateToPlan={() => setCurrentView("plan-billing")}
           />
         )
       case "detected-agents":
@@ -961,6 +1020,8 @@ export default function Home() {
           />
         )
       }
+      case "plan-billing":
+        return <PlanBilling />
       case "settings":
         return (
           <Settings
@@ -973,6 +1034,24 @@ export default function Home() {
       default:
         return null
     }
+  }
+
+  // Hold rendering until we know whether to show the welcome gate, then
+  // show onboarding or the app.
+  if (showOnboarding === null) {
+    return <div className="h-screen bg-background" />
+  }
+  if (showOnboarding) {
+    return (
+      <OnboardingWelcome
+        onSkip={dismissOnboarding}
+        onSignedIn={dismissOnboarding}
+        onViewPlans={() => {
+          setCurrentView("plan-billing")
+          dismissOnboarding()
+        }}
+      />
+    )
   }
 
   return (

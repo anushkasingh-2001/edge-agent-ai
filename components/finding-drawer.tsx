@@ -20,7 +20,6 @@ import {
 import type { Finding } from "@/components/views/findings"
 import { FindingFixButton } from "@/components/finding-fix-button"
 import type {
-  FixProviderKind,
   FixTarget,
   RunFixesResult,
 } from "@/lib/finding-fixes-client"
@@ -49,18 +48,10 @@ interface FindingDrawerProps {
   /** Selected intelligence mode from the Findings view, forwarded to the
    *  Fix button → dialog → API. */
   intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
-  /** Hosted (server-side key) vs BYOK (caller-supplied). */
-  aiProviderMode?: "hosted" | "byok"
-  /** Manual-mode per-task model picks. ``manualModelSelection`` is the
-   *  v2 canonical name; ``manualModels`` is the Step-1 legacy alias. */
+  /** Manual-mode per-task model picks. `manualModelSelection` is the
+   *  canonical name; `manualModels` is the legacy alias. */
   manualModelSelection?: Record<string, string>
   manualModels?: Record<string, string>
-  /** BYOK provider config — forwarded to the Fix button → dialog →
-   *  API request body. Hosted callers leave these undefined and the
-   *  server falls back to its own key. */
-  provider?: FixProviderKind
-  apiKey?: string
-  baseUrl?: string
   /** Hand the user off to the VS Code/Cursor-style workspace view
    *  (file tree + Monaco editor) with this finding pinned. When set,
    *  the drawer renders an "Open in editor" button next to the title.
@@ -75,12 +66,8 @@ export function FindingDrawer({
   projectPath = null,
   onFixApplied,
   intelligenceMode,
-  aiProviderMode,
   manualModelSelection,
   manualModels,
-  provider,
-  apiKey,
-  baseUrl,
   // ``onOpenInEditor`` is preserved on the interface for legacy
   // callers (see the note further down) but the inline button it
   // used to drive was removed when row-clicks started opening the
@@ -124,7 +111,6 @@ export function FindingDrawer({
       projectPath,
       finding,
       intelligenceMode,
-      aiProviderMode,
       manualModelSelection: manualMap,
       signal: controller.signal,
     })
@@ -365,11 +351,7 @@ export function FindingDrawer({
               variant="default"
               className="justify-start w-full"
               intelligenceMode={intelligenceMode}
-              aiProviderMode={aiProviderMode}
               manualModelSelection={manualMap}
-              provider={provider}
-              apiKey={apiKey}
-              baseUrl={baseUrl}
               onApplied={onFixApplied}
             />
             <Button variant="outline" className="justify-start text-muted-foreground">

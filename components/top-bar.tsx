@@ -36,6 +36,7 @@ import {
   Wrench,
   GitPullRequest,
   ArrowUpFromLine,
+  Mail,
 } from "lucide-react"
 import {
   Tooltip,
@@ -54,6 +55,7 @@ import {
 import type { Project } from "@/lib/projects"
 import type { PolicyApiResponse } from "@/lib/policy-client"
 import { fetchGitStatus, type GitStatusResponse } from "@/lib/git-client"
+import { setOnLoginRequired } from "@/lib/api-fetch"
 import {
   CommitDialog,
   PullConfirmDialog,
@@ -64,10 +66,12 @@ import {
   GithubAuthBadge,
   GithubLoginDialog,
 } from "@/components/github-login-dialog"
+import { AccountAuthDialog } from "@/components/account-auth-dialog"
 import {
   fetchGitHubAuthStatus,
   type GitHubAuthStatusResponse,
 } from "@/lib/github-client"
+import { fetchAccount, type AccountPlan, type AccountUser } from "@/lib/plan-client"
 
 interface TopBarProps {
   projectName: string
@@ -172,6 +176,11 @@ export function TopBar({
   // to "@user" without a page reload.
   const [signInOpen, setSignInOpen] = useState(false)
   const [ghAuth, setGhAuth] = useState<GitHubAuthStatusResponse | null>(null)
+  // Edge Agent AI account — the identity of record for plan + credits. The
+  // GitHub badge below is a SEPARATE, optional integration.
+  const [accountOpen, setAccountOpen] = useState(false)
+  const [account, setAccount] = useState<AccountUser | null>(null)
+  const [accountPlan, setAccountPlan] = useState<AccountPlan | null>(null)
   const refreshGhAuth = useCallback(async () => {
     try {
       const s = await fetchGitHubAuthStatus()
@@ -180,9 +189,33 @@ export function TopBar({
       setGhAuth(null)
     }
   }, [])
+  const refreshAccount = useCallback(async () => {
+    try {
+      const a = await fetchAccount()
+      setAccount(a?.user ?? null)
+      setAccountPlan(a?.plan ?? null)
+    } catch {
+      setAccount(null)
+      setAccountPlan(null)
+    }
+  }, [])
   useEffect(() => {
     void refreshGhAuth()
-  }, [refreshGhAuth])
+    void refreshAccount()
+  }, [refreshGhAuth, refreshAccount])
+
+  // When a cloud request returns 401 (account session expired/cleared), the
+  // account can't be silently re-authenticated — prompt an account re-login by
+  // opening the Edge Agent AI account dialog.
+  useEffect(() => {
+    setOnLoginRequired(() => {
+      toast.error("Session expired", {
+        description: "Sign in to your Edge Agent AI account to keep using hosted AI.",
+      })
+      setAccountOpen(true)
+    })
+    return () => setOnLoginRequired(null)
+  }, [])
 
   // Fetch a lightweight git status snapshot so the dialogs can show
   // working-tree state and the pull button can pre-warn on uncommitted
@@ -513,10 +546,55 @@ export function TopBar({
       {/* Right Section: Actions in order: Run Scan, Pull, Commit, Push, Export Report */}
       <TooltipProvider>
         <div className="flex flex-wrap items-center gap-2 gap-y-2">
-          {/* GitHub auth indicator. Renders "Sign in to GitHub" when
-            * no token/CLI is configured, and "@user signed in" once
-            * the user has authenticated. Clicking either opens the
-            * sign-in dialog so users can swap accounts or sign out. */}
+          {/* Edge Agent AI account — identity of record for plan + credits.
+            * Shows the signed-in email, or a "Sign in" button. Clicking opens
+            * the account dialog (sign up / sign in / sign out). */}
+          {account ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setAccountOpen(true)}
+              className="gap-1.5"
+              title={
+                `Signed in as ${account.email}` +
+                (accountPlan
+                  ? ` — ${accountPlan.tier} plan, ${Math.max(0, accountPlan.creditsLimit - accountPlan.creditsUsed)} credits left`
+                  : "") +
+                (account.emailVerified === false ? " — email not verified" : "")
+              }
+            >
+              <Mail className="h-4 w-4" />
+              <span className="max-w-[160px] truncate text-xs">{account.email}</span>
+              <Badge
+                variant="outline"
+                className="text-[10px] py-0 capitalize border-emerald-500/40 text-emerald-300"
+              >
+                {accountPlan?.tier ?? "free"}
+              </Badge>
+              {accountPlan && (
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {Math.max(0, accountPlan.creditsLimit - accountPlan.creditsUsed)} cr
+                </span>
+              )}
+              {account.emailVerified === false && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] py-0 border-amber-500/40 text-amber-300"
+                >
+                  unverified
+                </Badge>
+              )}
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => setAccountOpen(true)}>
+              <Mail className="h-4 w-4" />
+              Sign in
+            </Button>
+          )}
+
+          {/* GitHub auth indicator. OPTIONAL integration for repo/PR access —
+            * it does not affect the account, plan, or credits. Clicking opens
+            * the GitHub connect dialog. */}
           <GithubAuthBadge
             status={ghAuth}
             onSignInClick={() => setSignInOpen(true)}
@@ -847,14 +925,22 @@ export function TopBar({
         remoteOnlyBranches={remoteOnlyBranches ?? []}
         onCreated={handleAfterGitOp}
       />
-      {/* In-app GitHub sign-in dialog. Always mounted so the badge in
-          the header can open it regardless of which view is active. */}
+      {/* Edge Agent AI account dialog — the primary sign up / sign in. Always
+          mounted so the badge and the login-required handler can open it. */}
+      <AccountAuthDialog
+        open={accountOpen}
+        onOpenChange={setAccountOpen}
+        onAuthChanged={() => void refreshAccount()}
+      />
+      {/* In-app GitHub connect dialog (optional integration). Always mounted so
+          the badge in the header can open it regardless of which view is
+          active. */}
       <GithubLoginDialog
         open={signInOpen}
         onOpenChange={setSignInOpen}
         onAuthChanged={() => {
           void refreshGhAuth()
-          // Refresh git status too — sign-in changes which account
+          // Refresh git status too — connecting GitHub changes which account
           // is used for permission checks the next time the user
           // hits Pull/Commit/Push.
           void refreshLocalGitStatus()

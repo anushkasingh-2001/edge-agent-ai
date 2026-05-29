@@ -2,7 +2,7 @@
  * POST /api/finding/patch
  *
  * Generates (preview) or applies (apply) a single-finding fix under a
- * chosen intelligence mode. Replaces the original scaffold.
+ * chosen intelligence mode. Hosted-only contract.
  *
  * Two operations selected by `?mode=preview` (default) or `?mode=apply`:
  *
@@ -12,12 +12,17 @@
  *            score confidence, and return the preview. Never writes.
  *
  *   apply    Re-verify the file hash, back up, write, then re-scan.
- *            Only reachable after a preview the user reviewed. Refuses
- *            if the file changed since preview, if the patch is a
- *            suggestion-only (not a real fix), or if the mode forbids
- *            patch generation (Save).
+ *            Only reachable after a preview the user reviewed.
  *
- * Hard invariants:
+ * Hosted contract:
+ *   - The request body NEVER carries `apiKey` / `baseUrl` / `provider`.
+ *     Any such fields from a legacy client are silently ignored.
+ *   - The provider credential is read server-side via
+ *     `resolveAiProviderForRequest`. The response never echoes the key.
+ *   - Authentication is asserted via `assertSession`.
+ *   - Plan + per-mode + quota gates run BEFORE the upstream call.
+ *
+ * Hard invariants (unchanged from BYOK era):
  *   - Scanner remains the arbiter: a patch that doesn't clear the
  *     finding on re-scan is never marked applied/fixed.
  *   - Real-fix gate: a TODO/comment/whitespace/AST-equivalent diff is
@@ -29,19 +34,21 @@
 import path from "node:path"
 import fs from "node:fs"
 import { NextResponse } from "next/server"
-import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+import {
+  assertHostedRequest,
+  RouteGuardError,
+} from "@/lib/server-route-guards"
+import { generateFindingPatch } from "@/lib/server-patch-generation-gateway"
 
 import { getScanAllowRoot, isPathInside } from "@/lib/server-path-utils"
 import { planFix, type PlannerFinding } from "@/lib/fix-planner"
 import {
-  generatePatchPreview,
   applyPatch,
   type PatchPreview,
   type PatchResult,
 } from "@/lib/server-patch-pipeline"
 import { cacheList, type CacheNamespace } from "@/lib/fix-cache"
 import { runScannerOn } from "@/lib/server-scan"
-import type { ProviderKind } from "@/lib/server-model-router"
 import {
   MODE_POLICIES,
   scoreComplexity,
@@ -51,31 +58,31 @@ import type { IntelligenceMode } from "@/lib/context-bundle"
 import { isRealFixDiff } from "@/lib/patch-confidence-realfix"
 
 export const dynamic = "force-dynamic"
-export const maxDuration = 300
+// This route runs on the desktop's local standalone server, where
+// `maxDuration` is a no-op (no platform function timeout). The value only
+// matters if the app is deployed to Vercel; 60 keeps such a deploy buildable
+// on any plan (Hobby caps at 60s). AI generation itself is delegated to the
+// cloud `/api/cloud/...` endpoints, so the long local pipeline is unaffected.
+export const maxDuration = 60
 
 interface PatchBody {
   projectPath?: string
   finding?: Partial<PlannerFinding>
   /** Intelligence mode (defaults to "auto"). */
   intelligenceMode?: IntelligenceMode
-  /** Provider config — BYOK. */
-  apiKey?: string
-  baseUrl?: string | null
-  provider?: ProviderKind
-  privateCodeMode?: boolean
-  /** Hosted (server-side key) vs BYOK (caller-supplied). The
-   *  resolver in lib/server-ai-provider-resolver.ts uses this to pick
-   *  the actual key + base URL + model id. */
+  /** Wire-level value retained for backward compat. Always treated as
+   *  hosted; the resolver is hosted-only. */
   aiProviderMode?: "hosted" | "byok"
-  /** Manual mode: per-task model overrides keyed by task slot
-   *  (explain/root_cause/suggest/patch/bulk/verify). Two names exist
-   *  for historical reasons — the v2 canonical key is
-   *  ``manualModelSelection``; ``manualModels`` is the legacy alias
-   *  from the Step-1 wiring and is accepted for backward compatibility. */
+  privateCodeMode?: boolean
+  /** Manual mode: per-task model overrides. Two names exist for
+   *  historical reasons — canonical is ``manualModelSelection``;
+   *  ``manualModels`` is the legacy alias. */
   manualModelSelection?: Record<string, string>
   manualModels?: import("@/lib/intelligence-mode").ManualOverrides
   /** apply only: the previewId the user reviewed. */
   previewId?: string
+  /** Optional IR neighborhood for the bundle builder. */
+  neighborhood?: import("@/lib/server-context-bundle").IRNeighborhoodInput
 }
 
 function bad(msg: string, status = 400) {
@@ -113,6 +120,22 @@ function coerceFinding(raw: Partial<PlannerFinding> | undefined): PlannerFinding
       typeof raw.evidence_path_files === "number" ? raw.evidence_path_files : undefined,
     evidence_path_len:
       typeof raw.evidence_path_len === "number" ? raw.evidence_path_len : undefined,
+    agent: typeof raw.agent === "string" ? raw.agent : null,
+    evidence_path: Array.isArray(raw.evidence_path)
+      ? raw.evidence_path
+          .filter(
+            (n): n is { kind: string; label: string; file?: string | null; line?: number | null } =>
+              !!n &&
+              typeof (n as Record<string, unknown>).kind === "string" &&
+              typeof (n as Record<string, unknown>).label === "string",
+          )
+          .map((n) => ({
+            kind: n.kind,
+            label: n.label,
+            file: typeof n.file === "string" ? n.file : null,
+            line: typeof n.line === "number" ? n.line : null,
+          }))
+      : undefined,
   }
 }
 
@@ -127,6 +150,16 @@ export async function POST(req: Request) {
     return bad("invalid JSON body")
   }
   if (!body.projectPath) return bad("projectPath is required")
+
+  let session
+  try {
+    session = assertHostedRequest(req, body as unknown as Record<string, unknown>)
+  } catch (e) {
+    if (e instanceof RouteGuardError) {
+      return NextResponse.json(e.body, { status: e.status })
+    }
+    throw e
+  }
 
   const allowRoot = getScanAllowRoot()
   const resolved = path.resolve(body.projectPath.trim())
@@ -170,9 +203,6 @@ export async function POST(req: Request) {
     if (!preview) {
       return bad("preview not found or expired; re-run preview", 409)
     }
-    // Real-fix gate: a suggestion-only preview can never be applied as a fix.
-    // We re-check the unified diff per file so a multi-file preview with one
-    // suggestion-only entry can't sneak through alongside a real change.
     const realFix = preview.patches.every(
       (p) => isRealFixDiff(preview.unifiedDiff, p.file).isRealFix,
     )
@@ -202,7 +232,6 @@ export async function POST(req: Request) {
     if (!result.applied) {
       return NextResponse.json({ status: "refused", ...result }, { status: 200 })
     }
-    // Post-apply re-scan = the true arbiter.
     let stillPresent = false
     try {
       const report = await runScannerOn(resolved, { timeoutMs: 90_000 })
@@ -223,14 +252,6 @@ export async function POST(req: Request) {
   }
 
   /* --------------------------- PREVIEW --------------------------- */
-  // BYOK-only: the caller must supply provider/apiKey/baseUrl/model.
-  // The resolver enforces plan gating + manual-mode policy and
-  // returns the tuple to use upstream; missing/invalid keys return
-  // a structured 400 with the canonical UX message.
-  const aiProviderMode = "byok" as const
-  // Normalise the manual-model picks: canonical name is
-  // ``manualModelSelection``; ``manualModels`` is the legacy alias.
-  // Accept either; pass both onwards.
   const manualPicks: Record<string, string> | undefined =
     (body.manualModelSelection && typeof body.manualModelSelection === "object"
       ? (body.manualModelSelection as Record<string, string>)
@@ -244,34 +265,12 @@ export async function POST(req: Request) {
     evidencePathFiles: finding.evidence_path_files,
     evidencePathLen: finding.evidence_path_len,
   })
-  const resolution = resolveAiProviderForRequest({
-    userId: "local-user",
-    workspaceId: "local-workspace",
-    aiProviderMode,
-    intelligenceMode,
-    task: "patch",
-    complexity,
-    manualModelSelection: manualPicks,
-    byokApiKey: typeof body.apiKey === "string" ? body.apiKey : null,
-    byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
-    byokProvider: body.provider,
-  })
-  if (!resolution.ok) {
-    const httpStatus =
-      resolution.code === "missing_api_key" || resolution.code === "invalid_api_key"
-        ? 400
-        : 403
-    return NextResponse.json(
-      { status: "refused", reason: resolution.reason, code: resolution.code, upgrade: resolution.upgrade ?? false },
-      { status: httpStatus },
-    )
-  }
-  const provider = resolution.provider
-  const apiKey = resolution.apiKey
 
   const plan = planFix(finding)
 
-  // Save: no LLM patch; return the plan + suggestion guidance.
+  // Save: no LLM patch; return the plan + suggestion guidance. (Decided
+  // locally in BOTH web and desktop modes — no model call, so nothing to
+  // delegate to the cloud.)
   if (!policy.allowPatchGeneration) {
     return NextResponse.json({
       status: "suggestion_only",
@@ -282,36 +281,46 @@ export async function POST(req: Request) {
     })
   }
 
-  const preview: PatchResult = await generatePatchPreview({
+  // Generation gateway: in-process (web) OR relayed to the cloud generation
+  // endpoint (desktop). Either way the returned preview is validated in a
+  // local temp workspace; apply still happens locally above.
+  const gen = await generateFindingPatch({
+    req,
+    session,
     projectPath: resolved,
     finding,
     plan,
-    provider,
-    apiKey,
-    baseUrl: resolution.baseUrl ?? null,
-    privateCodeMode: !!body.privateCodeMode,
     intelligenceMode,
     complexity,
-    manualModels: manualPicks as import("@/lib/intelligence-mode").ManualOverrides | undefined,
-    // v2: lock the resolver's choice into the pipeline so the pipeline
-    // can't silently re-route to a different model. ``forceModel`` /
-    // ``forceTwoStep`` only override fields on the routing decision;
-    // budget gates, ContextBundle build, and validation are unchanged.
-    forceModel: resolution.model,
-    forceTwoStep: resolution.twoStep,
+    manualModelSelection: manualPicks,
+    privateCodeMode: !!body.privateCodeMode,
+    neighborhood: body.neighborhood,
+    task: "patch",
+    cloudEndpoint: "/api/cloud/finding/patch-generate",
   })
+
+  if (gen.blocked) {
+    return NextResponse.json(
+      {
+        status: "refused",
+        reason: gen.blocked.reason,
+        code: gen.blocked.code,
+        upgrade: gen.blocked.upgrade ?? false,
+        remaining: gen.blocked.remaining,
+        needed: gen.blocked.needed,
+      },
+      { status: gen.blocked.status },
+    )
+  }
+
+  const preview = gen.preview as PatchResult
 
   if ("refused" in preview && preview.refused) {
     return NextResponse.json({ status: "refused", intelligenceMode, ...preview }, { status: 200 })
   }
 
-  // BYOK-only: no credit consumption. The user's upstream provider
-  // bills them directly. (The resolver still returns an
-  // ``estimatedCostUsd`` for the UI to display, informational only.)
-
   const p = preview as PatchPreview
-  // Stamp the suggestion/fix role from the real-fix gate so the UI can
-  // render "Suggestion only" vs "Real fix candidate".
+
   const realFix = isRealFixDiff(p.unifiedDiff, p.patches[0]?.file ?? finding.file)
   return NextResponse.json({
     status: "preview",
@@ -320,5 +329,11 @@ export async function POST(req: Request) {
     role: realFix.isRealFix && p.resolved ? "fix" : "suggestion",
     realFixReason: realFix.reason,
     preview: p,
+    // Hosted contract metadata (no key).
+    apiKeySource: "hosted" as const,
+    provider: gen.provider ?? "hosted",
+    model: gen.model ?? p.modelUsed,
+    creditsUsed: gen.creditsUsed,
+    quotaRemaining: gen.quotaRemaining,
   })
 }

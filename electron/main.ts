@@ -564,6 +564,14 @@ async function startStandaloneServer(): Promise<string> {
     PORT: String(port),
     HOSTNAME: hostname,
     EDGE_AGENT_DESKTOP: "1",
+    // Tell the local server it must proxy hosted-AI/billing/auth to the
+    // cloud backend. Baked at desktop build time via the matching
+    // NEXT_PUBLIC_CLOUD_API_BASE; mirrored here so any server-side code
+    // path (future local→cloud proxy) can read it at runtime too.
+    EDGE_AGENT_CLOUD_API_BASE:
+      process.env.EDGE_AGENT_CLOUD_API_BASE?.trim() ||
+      process.env.NEXT_PUBLIC_CLOUD_API_BASE?.trim() ||
+      "",
     EDGE_AGENT_SCAN_ALLOWLIST:
       process.env.EDGE_AGENT_SCAN_ALLOWLIST?.trim() || os.homedir(),
     // Diagnostics envelope — read by /api/system/health (and only there
@@ -600,6 +608,34 @@ async function startStandaloneServer(): Promise<string> {
           "Python venv fallback if EDGE_AGENT_PYTHON is set, or fail until one is configured."
       )
     }
+  }
+
+  // SECURITY: strip provider keys / billing secrets / DATABASE_URL from
+  // the local server's env. The desktop server runs on the user's machine
+  // and must never hold these — hosted AI, billing, and the database live
+  // ONLY on the cloud backend. Mirrors lib/desktop-secret-denylist.ts;
+  // parity is enforced by tests/desktop-cloud-split.test.ts.
+  const DESKTOP_FORBIDDEN_ENV_KEYS = [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "EDGE_AGENT_CUSTOM_API_KEY",
+    "DATABASE_URL",
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+  ]
+  const strippedSecrets: string[] = []
+  for (const key of DESKTOP_FORBIDDEN_ENV_KEYS) {
+    if (childEnv[key] !== undefined) {
+      delete childEnv[key]
+      strippedSecrets.push(key)
+    }
+  }
+  if (strippedSecrets.length > 0) {
+    console.log(
+      `[main] stripped ${strippedSecrets.length} secret(s) from local server env: ${strippedSecrets.join(", ")}`,
+    )
   }
 
   // Spawn. cwd is the standalone dir so the server's relative

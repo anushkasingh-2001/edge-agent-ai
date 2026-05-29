@@ -12,7 +12,7 @@ import {
 } from "@/components/intelligence-mode-toggle"
 import { ModelSelector, type ManualModelMap } from "@/components/model-selector"
 import type { LlmSlot } from "@/lib/model-keys"
-import { usePlanSummary } from "@/lib/plan-client"
+import { usePlanAccess } from "@/lib/plan-client"
 import {
   Play,
   Square,
@@ -128,7 +128,7 @@ interface ScanCenterProps {
   //   2. The Findings tab toolbar reads/writes the same state — the
   //      user's pick survives switching tabs.
   //
-  // NOTE: The Hosted-vs-BYOK toggle was intentionally removed; the
+  // NOTE: The Hosted-vs-key toggle was intentionally removed; the
   // app ships with the in-package model providers only. Anything
   // user-facing that mentioned "your own key" is gone. The internal
   // `aiProviderMode` is hardcoded to "hosted" at the page level so
@@ -138,6 +138,10 @@ interface ScanCenterProps {
   setIntelligenceMode: (mode: IntelligenceMode) => void
   manualModelSelection: ManualModelMap
   setManualModelSelection: (selection: ManualModelMap) => void
+  /** Navigate to the Plan & Billing page. Wired so clicking a locked
+   *  AI mode (anonymous / plan doesn't include it) sends the user to
+   *  subscribe / sign in. */
+  onNavigateToPlan?: () => void
 }
 
 export function ScanCenter({
@@ -163,33 +167,29 @@ export function ScanCenter({
   setIntelligenceMode,
   manualModelSelection,
   setManualModelSelection,
+  onNavigateToPlan,
 }: ScanCenterProps) {
-  // Plan summary drives both the AiProviderToggle "credits remaining"
-  // chip and the soft mode-downgrade effect below. Same hook the
-  // Findings toolbar uses; safe to call from both tabs because
-  // usePlanSummary memoises.
-  const { plan } = usePlanSummary()
+  // Plan access drives the credits chip, the mode-lock UI, and the soft
+  // mode-downgrade effect below. `allowedModes` already accounts for the
+  // anonymous case (only "save") and the plan tier for signed-in users.
+  const { authenticated, plan, allowedModes, loading: planLoading } = usePlanAccess()
 
-  // Soft downgrade: if the user's plan no longer allows the selected
-  // mode (e.g. they were on Pro but their workspace dropped to a
-  // Save+Auto-only tier), bounce them to Auto so the next scan still
-  // works. This mirrors the same effect inside Findings — both tabs
-  // agree on the allowed-mode set so the user never sees a "stuck"
-  // mode that the server would refuse anyway.
+  // Soft downgrade: if the selected mode isn't in the effective allowed
+  // set (anonymous picked an AI mode, or a paid mode the plan dropped),
+  // bounce to the safest still-allowed mode so the next scan works and
+  // the toggle never shows a "stuck" selection the server would refuse.
+  // Anonymous → "save" (deterministic only); signed-in → "auto".
   useEffect(() => {
-    if (
-      plan &&
-      Array.isArray(plan.allowedModes) &&
-      !plan.allowedModes.includes(intelligenceMode)
-    ) {
-      setIntelligenceMode("auto")
+    if (planLoading) return
+    if (!allowedModes.includes(intelligenceMode)) {
+      setIntelligenceMode(authenticated ? "auto" : "save")
     }
-  }, [plan, intelligenceMode, setIntelligenceMode])
+  }, [authenticated, allowedModes, planLoading, intelligenceMode, setIntelligenceMode])
 
   // Manual-mode picker is limited to the in-package providers
   // (openai / anthropic / google). The `custom` slot — which used to
-  // accept a self-hosted / OpenAI-compatible BYOK endpoint — is gone
-  // along with the Hosted-vs-BYOK toggle. Same gating in Findings.
+  // accept a self-hosted / OpenAI-compatible custom endpoint — is gone
+  // along with the Hosted-vs-key toggle. Same gating in Findings.
   const availableManualSlots: LlmSlot[] = useMemo(
     () => ["openai", "anthropic", "google"],
     [],
@@ -506,7 +506,7 @@ export function ScanCenter({
           {/* Analysis mode card.
               ────────────────────
               Pre-scan picker for the five intelligence modes
-              (Save / Auto / Pro / Max / Manual) + Hosted-vs-BYOK
+              (Save / Auto / Pro / Max / Manual) — hosted credits only
               provider + per-task model selection in Manual.
 
               The selection here is the SINGLE source of truth for
@@ -525,6 +525,32 @@ export function ScanCenter({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
+              {/* Hosted AI banner — replaces the legacy key UI. AI is
+                  included in the plan; the server owns provider credentials.
+                  Credits visible on the right so the user can see
+                  what's left before kicking off a Pro/Max scan. */}
+              <div className="rounded-md border border-accent/30 bg-accent/[0.04] px-3 py-2 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-3.5 w-3.5 text-accent" />
+                  <span>
+                    <span className="font-medium text-foreground">
+                      AI included in your plan.
+                    </span>{" "}
+                    <span className="text-muted-foreground">
+                      No API key required.
+                    </span>
+                  </span>
+                </div>
+                {plan ? (
+                  <span
+                    className="text-muted-foreground"
+                    title={`Plan: ${plan.tier} · ${plan.creditsUsed}/${plan.creditsTotal} credits used`}
+                  >
+                    {plan.creditsRemaining} / {plan.creditsTotal} credits
+                  </span>
+                ) : null}
+              </div>
+
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">Mode</span>
@@ -535,8 +561,47 @@ export function ScanCenter({
                 <IntelligenceModeToggle
                   value={intelligenceMode}
                   onChange={setIntelligenceMode}
+                  allowedModes={allowedModes}
+                  onLockedModeClick={() => onNavigateToPlan?.()}
                 />
               </div>
+
+              {/* Access gate banner. Two cases:
+                  1. Anonymous — only deterministic "Save Resources" runs;
+                     AI modes are locked. Point them to sign in / plans.
+                  2. Signed in but the selected mode isn't on their plan.
+                  In both cases the server enforces the same rule; this
+                  just surfaces it pre-scan and links to Plan & Billing. */}
+              {!planLoading && !authenticated ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-300">
+                  <span>
+                    You&apos;re not signed in. Scans run deterministic checks
+                    only (Save Resources). Sign in and subscribe to unlock
+                    Auto, Pro, Max, and Manual AI modes.
+                  </span>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onNavigateToPlan?.()}>
+                    Sign in / View plans
+                  </Button>
+                </div>
+              ) : !planLoading && plan && !allowedModes.includes(intelligenceMode) ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-300">
+                  <span>
+                    {intelligenceMode.toUpperCase()} mode is not included in
+                    your {plan.tier} plan. Upgrade to use it — no provider
+                    key needed.
+                  </span>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onNavigateToPlan?.()}>
+                    Upgrade
+                  </Button>
+                </div>
+              ) : null}
+              {plan && plan.creditsRemaining === 0 ? (
+                <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-300">
+                  You&apos;ve used all your AI credits for this billing
+                  period. Upgrade or wait until your next billing cycle
+                  to run AI-driven fixes.
+                </div>
+              ) : null}
 
               {intelligenceMode === "manual" ? (
                 <div className="rounded-lg border border-border/70 bg-secondary/30 p-3">

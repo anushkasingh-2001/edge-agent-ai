@@ -49,24 +49,47 @@ export interface BundleInputFinding {
   line: number
   confidence?: number
   fingerprint?: string | null
+  /** Owning agent name (e.g. "research-agent") if the scanner ties this
+   *  finding to an agent. Used to rank related-prompt/tool/route slices
+   *  by same-agent proximity before falling back to same-file. */
+  agent?: string | null
+  /** Taint flow from the scanner's IR analyzer. Order is source → … →
+   *  sink; each node carries kind/label and a (file, line) anchor when
+   *  the analyzer could pin one. Guard nodes have kind containing
+   *  "guard"; missing-guard sentinels are kinds containing "missing". */
   evidence_path?: Array<{
     kind: string
     label: string
     file?: string | null
     line?: number | null
   }>
+  /** Optional pre-derived list of guard NAMES the analyzer says are
+   *  absent for this finding (e.g. ["parameterization", "auth-check"]).
+   *  When omitted, the builder derives a best-effort list from
+   *  evidence_path nodes whose kind contains "missing". */
+  guardsMissing?: string[]
 }
 
-/** Optional IR neighborhood the caller can pass from `/api/ir`. */
+/** A single (file, line) IR hit. `agent` lets the proximity sort
+ *  rank same-agent hits above generic ones; `symbol` is informational. */
+export interface IRHit {
+  file: string
+  line: number
+  symbol?: string
+  agent?: string | null
+}
+
+/** Optional IR neighborhood the caller can pass from `/api/ir` (or the
+ *  scan report's top-level inventories). All arrays default to empty. */
 export interface IRNeighborhoodInput {
-  callers?: Array<{ file: string; line: number; symbol?: string }>
-  callees?: Array<{ file: string; line: number; symbol?: string }>
-  prompts?: Array<{ file: string; line: number; symbol?: string }>
-  routes?: Array<{ file: string; line: number; symbol?: string }>
-  tools?: Array<{ file: string; line: number; symbol?: string }>
+  callers?: IRHit[]
+  callees?: IRHit[]
+  prompts?: IRHit[]
+  routes?: IRHit[]
+  tools?: IRHit[]
   models?: Array<{ provider: string; id: string }>
-  configKeys?: Array<{ file: string; line: number; symbol?: string }>
-  tests?: Array<{ file: string; line: number; symbol?: string }>
+  configKeys?: IRHit[]
+  tests?: IRHit[]
 }
 
 export interface BuildBundleArgs {
@@ -125,19 +148,58 @@ function windowSlice(
 /**
  * Build a ContextBundle for one finding under a given mode.
  *
- * Slice radii scale with mode so cheap modes stay tiny and Pro/Max get
- * richer neighborhoods — but always via bounded slices, never whole
- * files (except the explicit, capped max-patch path).
+ * Per-mode shape (what gets included, before budget trimming):
+ *   save-explain  primary + immediate taint nodes (no slices for hops).
+ *   auto-small    primary + surrounding + taint-source/sink slices +
+ *                 1-hop callers (small radius).
+ *   auto-large    everything above, plus 2-hop callers + callees, plus
+ *                 the rest of the taint path.
+ *   pro           auto-large set + related prompts / routes / tools /
+ *                 model inventory.
+ *   max-plan      pro set + config keys + nearby tests.
+ *   max-patch     same shape as max-plan, but the prompt that *uses*
+ *                 this bundle is allowed to attach the full file
+ *                 separately (capped by token budget). The bundle
+ *                 builder itself still slices everything.
+ *
+ * Slices are added in the priority order listed in the spec and the
+ * trimmer drops them in reverse-priority when the budget is tight, so
+ * the irreducible core (primary line + taint source + taint sink) is
+ * always preserved.
  */
 export function buildContextBundle(args: BuildBundleArgs): ContextBundle {
   const { projectPath, mode, finding } = args
   const cap = BUNDLE_INPUT_TOKEN_CAP[mode]
 
-  // Mode-scaled slice radii.
-  const primaryRadius = mode === "save-explain" ? 3 : mode === "auto-small" ? 6 : 10
-  const callerRadius = mode === "pro" || mode.startsWith("max") ? 8 : 4
+  // Mode-scaled slice radii. Caps are deliberately well under the
+  // MAX_NON_FULLFILE_SLICE_LINES = 80 guard so a single fat function
+  // body can't blow through the per-mode budget by itself.
+  const primaryRadius =
+    mode === "save-explain"
+      ? 3
+      : mode === "auto-small"
+        ? 6
+        : mode === "auto-large"
+          ? 10
+          : 12
+  const callerRadius =
+    mode === "save-explain"
+      ? 0
+      : mode === "auto-small"
+        ? 3 // tight 1-hop window
+        : mode === "auto-large"
+          ? 5
+          : 8
+  const taintRadius =
+    mode === "save-explain"
+      ? 0 // save: nodes only, no slices
+      : mode === "auto-small"
+        ? 2
+        : mode === "auto-large"
+          ? 4
+          : 5
 
-  // ---- primary evidence slice (always present) ----
+  // ---- primary evidence slice (always present, never dropped) ------
   const primarySlice =
     windowSlice(projectPath, finding.file, finding.line, primaryRadius, "primary") ??
     ({
@@ -154,12 +216,14 @@ export function buildContextBundle(args: BuildBundleArgs): ContextBundle {
         undefined
       : undefined
 
-  // ---- taint path nodes + slices ----
+  // ---- taint path nodes + slices -----------------------------------
+  // Build IR nodes first, then materialise slices in source → sink →
+  // guard → other order so the trimmer can preserve the irreducible
+  // core (source + sink) when budget is tight.
   const taintNodes: IRNode[] = []
   const taintEdges: IREdge[] = []
-  const taintSlices: CodeSlice[] = []
   const guardsPresent: string[] = []
-  const guardsMissing: string[] = []
+  const guardsMissingDerived: string[] = []
 
   const ep = finding.evidence_path ?? []
   let prevId: string | null = null
@@ -176,61 +240,128 @@ export function buildContextBundle(args: BuildBundleArgs): ContextBundle {
     })
     if (prevId) taintEdges.push({ from: prevId, to: id, kind: "flows_to" })
     prevId = id
-    if (kind === "Guard") guardsPresent.push(node.label)
-    // Only slice taint nodes for modes above save (keeps Save cheap).
-    if (mode !== "save-explain" && node.file && node.line) {
-      const sl = windowSlice(projectPath, node.file, node.line, 3, "taint-node")
-      if (sl) taintSlices.push(sl)
+    if (kind === "Guard") {
+      guardsPresent.push(node.label)
+    }
+    // Scanner convention: kinds containing "missing" represent a guard
+    // the analyzer expected but did NOT find. They're emitted as
+    // sentinels in evidence_path so the bundle can carry the
+    // "missing guards" summary the prompt template surfaces.
+    if (/missing/i.test(node.kind)) {
+      guardsMissingDerived.push(node.label)
     }
   })
 
-  // ---- neighborhood (callers/callees) — Pro/Max/auto-large only ----
+  // Rank slice creation by IR role: Source first, Sink last, Guard +
+  // others in between. This is the order the trimmer drops in REVERSE
+  // (function/guard first, sink before source). save-explain
+  // intentionally skips slice creation entirely.
+  const ROLE_FOR_KIND: Record<IRNode["kind"], CodeSlice["role"]> = {
+    Source: "taint-source",
+    Sink: "taint-sink",
+    Guard: "taint-guard",
+    Prompt: "taint-node",
+    Model: "taint-node",
+    Route: "taint-node",
+    Tool: "taint-node",
+    Config: "taint-node",
+    Test: "taint-node",
+    Function: "taint-node",
+  }
+  const PRIORITY_FOR_KIND: Record<IRNode["kind"], number> = {
+    Source: 0,
+    Sink: 1,
+    Guard: 2,
+    Prompt: 3,
+    Model: 3,
+    Route: 3,
+    Tool: 3,
+    Config: 3,
+    Test: 3,
+    Function: 4,
+  }
+  const taintSlices: CodeSlice[] =
+    mode === "save-explain"
+      ? []
+      : taintNodes
+          .filter((n) => n.file && Number.isFinite(n.line))
+          .sort((a, b) => PRIORITY_FOR_KIND[a.kind] - PRIORITY_FOR_KIND[b.kind])
+          .map((n) => {
+            const sl = windowSlice(projectPath, n.file, n.line, taintRadius, ROLE_FOR_KIND[n.kind])
+            if (sl) sl.irNodeId = n.id
+            return sl
+          })
+          .filter((s): s is CodeSlice => s !== null)
+
+  // Caller-supplied list always wins, otherwise we surface the names
+  // the scanner sentinel-tagged as missing.
+  const guardsMissing: string[] = Array.isArray(finding.guardsMissing)
+    ? [...finding.guardsMissing]
+    : guardsMissingDerived
+
+  // ---- neighborhood (callers / callees) ---------------------------
+  // Save mode never includes a neighborhood (too noisy for the budget).
+  // Auto-small carries 1-hop callers at a tight radius (catches the
+  // "who passes this tainted value in?" question without ballooning
+  // the prompt). Auto-large / Pro / Max get callers + callees, both
+  // potentially at 2-hop, supplied by the caller.
   const callers: CodeSlice[] = []
   const callees: CodeSlice[] = []
-  const includeNeighborhood =
-    mode === "auto-large" || mode === "pro" || mode.startsWith("max")
-  if (includeNeighborhood && args.neighborhood) {
-    for (const c of args.neighborhood.callers ?? []) {
+  const includeCallers = mode !== "save-explain"
+  const includeCallees =
+    mode === "auto-large" || mode === "pro" || mode.startsWith("max") || mode === "manual"
+
+  if (includeCallers && args.neighborhood) {
+    const callerHits = sortByProximity(args.neighborhood.callers ?? [], finding)
+    for (const c of callerHits) {
       const sl = windowSlice(projectPath, c.file, c.line, callerRadius, "caller")
       if (sl) callers.push(sl)
     }
-    for (const c of args.neighborhood.callees ?? []) {
+  }
+  if (includeCallees && args.neighborhood) {
+    const calleeHits = sortByProximity(args.neighborhood.callees ?? [], finding)
+    for (const c of calleeHits) {
       const sl = windowSlice(projectPath, c.file, c.line, callerRadius, "callee")
       if (sl) callees.push(sl)
     }
   }
 
-  // ---- related prompt/model/route/tool nodes — Pro/Max ----
+  // ---- related prompt/model/route/tool nodes — Pro / Max ----------
+  // Sorted same way: same-agent first, then same-file as the finding,
+  // then anything else. This gives the LLM the most-relevant context
+  // first, so when the budget trim drops the tail it loses the least
+  // useful slices.
   const prompts: CodeSlice[] = []
   const routes: CodeSlice[] = []
   const tools: CodeSlice[] = []
   const models: { provider: string; id: string }[] = []
-  const includeRelated = mode === "pro" || mode.startsWith("max")
+  const includeRelated =
+    mode === "pro" || mode.startsWith("max") || mode === "manual"
   if (includeRelated && args.neighborhood) {
-    for (const p of args.neighborhood.prompts ?? []) {
+    for (const p of sortByProximity(args.neighborhood.prompts ?? [], finding)) {
       const sl = windowSlice(projectPath, p.file, p.line, 5, "prompt")
       if (sl) prompts.push(sl)
     }
-    for (const r of args.neighborhood.routes ?? []) {
+    for (const r of sortByProximity(args.neighborhood.routes ?? [], finding)) {
       const sl = windowSlice(projectPath, r.file, r.line, 4, "route")
       if (sl) routes.push(sl)
     }
-    for (const t of args.neighborhood.tools ?? []) {
+    for (const t of sortByProximity(args.neighborhood.tools ?? [], finding)) {
       const sl = windowSlice(projectPath, t.file, t.line, 4, "tool")
       if (sl) tools.push(sl)
     }
     for (const m of args.neighborhood.models ?? []) models.push(m)
   }
 
-  // ---- config + tests — Max only ----
+  // ---- config + tests — Max only ----------------------------------
   const config: CodeSlice[] = []
   const tests: CodeSlice[] = []
   if (mode.startsWith("max") && args.neighborhood) {
-    for (const c of args.neighborhood.configKeys ?? []) {
+    for (const c of sortByProximity(args.neighborhood.configKeys ?? [], finding)) {
       const sl = windowSlice(projectPath, c.file, c.line, 3, "config")
       if (sl) config.push(sl)
     }
-    for (const t of args.neighborhood.tests ?? []) {
+    for (const t of sortByProximity(args.neighborhood.tests ?? [], finding)) {
       const sl = windowSlice(projectPath, t.file, t.line, 12, "test")
       if (sl) tests.push(sl)
     }
@@ -281,6 +412,30 @@ export function buildContextBundle(args: BuildBundleArgs): ContextBundle {
   bundle.redaction.secretsRedacted = countAllRedactions(bundle)
 
   return bundle
+}
+
+/**
+ * Order an array of `(file, line)` IR hits by relevance to a finding:
+ *   1. same-agent (when both finding and hit declare an agent),
+ *   2. same-file as the finding,
+ *   3. otherwise stable original order.
+ *
+ * This is a deterministic preference function used everywhere we have
+ * a list of related IR nodes — it stops the trimmer from accidentally
+ * dropping the only same-file related slice while keeping ten
+ * unrelated ones.
+ */
+function sortByProximity<
+  T extends { file: string; line: number; agent?: string | null | undefined },
+>(items: T[], finding: BundleInputFinding): T[] {
+  const findingAgent = (finding.agent ?? "").trim()
+  const score = (t: T): number => {
+    let s = 0
+    if (findingAgent && (t.agent ?? "").trim() === findingAgent) s -= 2
+    if (t.file === finding.file) s -= 1
+    return s
+  }
+  return [...items].sort((a, b) => score(a) - score(b))
 }
 
 function mapKind(scannerKind: string): IRNode["kind"] {
@@ -338,23 +493,68 @@ function countAllRedactions(b: ContextBundle): number {
 }
 
 /**
- * Drop the lowest-priority slices until the bundle fits the cap. The
- * primary evidence slice and taint-path nodes are never dropped (they
- * are the irreducible core); everything else is shed in reverse
- * priority: tests → config → tools → routes → prompts → callees →
- * callers → surrounding → taint slices.
+ * Drop the lowest-priority slices until the bundle fits the cap.
+ *
+ * Spec priority (high → low; trimmer drops in REVERSE):
+ *
+ *   1. primary finding line               — NEVER dropped
+ *   2. source/sink taint slices           — dropped last, sinks before sources
+ *   3. guards present/missing             — dropped after intermediate hops
+ *   4. direct caller/callee               — dropped after related/config/tests
+ *   5. related prompt/tool/route/config   — Pro/Max tail
+ *   6. tests                              — first to go
+ *
+ * Within taint slices we drop function/intermediate nodes first,
+ * then guards, then sinks, never sources unless absolutely necessary.
+ * The surroundingSlice is treated as "context for the primary line"
+ * and dropped just before we'd start cutting into the taint sinks.
  */
 function trimToBudget(b: ContextBundle, cap: number): ContextBundle {
-  const droppers: Array<() => void> = [
-    () => (b.tests = b.tests.slice(0, Math.max(0, b.tests.length - 1))),
-    () => (b.config = b.config.slice(0, Math.max(0, b.config.length - 1))),
-    () => (b.related.tools = b.related.tools.slice(0, Math.max(0, b.related.tools.length - 1))),
-    () => (b.related.routes = b.related.routes.slice(0, Math.max(0, b.related.routes.length - 1))),
-    () => (b.related.prompts = b.related.prompts.slice(0, Math.max(0, b.related.prompts.length - 1))),
-    () => (b.neighborhood.callees = b.neighborhood.callees.slice(0, Math.max(0, b.neighborhood.callees.length - 1))),
-    () => (b.neighborhood.callers = b.neighborhood.callers.slice(0, Math.max(0, b.neighborhood.callers.length - 1))),
-    () => (b.evidence.surroundingSlice = undefined),
-    () => (b.taintPath.slices = b.taintPath.slices.slice(0, Math.max(0, b.taintPath.slices.length - 1))),
+  // Drop one slice of a given internal-role from a CodeSlice array.
+  // Stable: walks from the END (least relevant after proximity sort).
+  const dropOneByRole = (arr: CodeSlice[], roles: Array<CodeSlice["role"]>): boolean => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (roles.includes(arr[i].role)) {
+        arr.splice(i, 1)
+        return true
+      }
+    }
+    return false
+  }
+  const dropOneFromEnd = (arr: CodeSlice[]): boolean => {
+    if (arr.length === 0) return false
+    arr.pop()
+    return true
+  }
+
+  const droppers: Array<() => boolean> = [
+    // 6. tests
+    () => dropOneFromEnd(b.tests),
+    // 5b. config
+    () => dropOneFromEnd(b.config),
+    // 5a. related (tools → routes → prompts; lowest signal first)
+    () => dropOneFromEnd(b.related.tools),
+    () => dropOneFromEnd(b.related.routes),
+    () => dropOneFromEnd(b.related.prompts),
+    // 4. direct caller/callee
+    () => dropOneFromEnd(b.neighborhood.callees),
+    () => dropOneFromEnd(b.neighborhood.callers),
+    // 2/3. taint intermediate nodes first, then guards
+    () => dropOneByRole(b.taintPath.slices, ["taint-node"]),
+    () => dropOneByRole(b.taintPath.slices, ["taint-guard"]),
+    // Surrounding evidence is context for the primary line — drop it
+    // just before we'd start cutting into the source/sink slices.
+    () => {
+      if (b.evidence.surroundingSlice) {
+        b.evidence.surroundingSlice = undefined
+        return true
+      }
+      return false
+    },
+    // 2a. taint sinks (still preserves sources when possible)
+    () => dropOneByRole(b.taintPath.slices, ["taint-sink"]),
+    // 2b. taint sources — last resort
+    () => dropOneByRole(b.taintPath.slices, ["taint-source"]),
   ]
 
   let guard = 0
@@ -362,9 +562,7 @@ function trimToBudget(b: ContextBundle, cap: number): ContextBundle {
     let droppedSomething = false
     for (const drop of droppers) {
       if (sumTokens(b) <= cap) break
-      const before = sumTokens(b)
-      drop()
-      if (sumTokens(b) < before) droppedSomething = true
+      if (drop()) droppedSomething = true
     }
     if (!droppedSomething) break // only primary+meta left
     guard++

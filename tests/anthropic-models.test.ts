@@ -120,13 +120,12 @@ test("Max mode → claude-opus-4-7 (Anthropic), two-step", () => {
 
 test("Manual mode honours the exact Anthropic id from the user", () => {
   enterprise()
+  process.env.ANTHROPIC_API_KEY = "sk-hosted-test"
   const r = resolveAiProviderForRequest({
     userId: "u",
     workspaceId: "w",
-    aiProviderMode: "byok",
     intelligenceMode: "manual",
     task: "patch",
-    byokApiKey: "sk-user",
     manualModelSelection: { patch: "anthropic:claude-haiku-4-5" },
   })
   assert.equal(r.ok, true)
@@ -138,16 +137,15 @@ test("Manual mode honours the exact Anthropic id from the user", () => {
 
 test("Max + Manual on Anthropic uses the user pick, not the auto-opus override", () => {
   enterprise()
+  process.env.ANTHROPIC_API_KEY = "sk-hosted-test"
   // A user explicitly picking Sonnet in Manual mode under Max must
   // get Sonnet — the Max→Opus override only fires for the auto tier
   // lookup, never for an explicit Manual id.
   const r = resolveAiProviderForRequest({
     userId: "u",
     workspaceId: "w",
-    aiProviderMode: "byok",
     intelligenceMode: "manual",
     task: "patch",
-    byokApiKey: "sk-user",
     manualModelSelection: { patch: "anthropic:claude-sonnet-4-6" },
   })
   assert.equal(r.ok, true)

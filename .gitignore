@@ -74,3 +74,4 @@ tsconfig.tsbuildinfo
 # README_APPLY/DELETE_AFTER_MIGRATION docs inside it are migration notes,
 # not user-facing docs.
 new_changes/
+.vercel

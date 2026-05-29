@@ -3,26 +3,44 @@
  *
  * Returns an AI-personalized explanation for ONE finding.
  *
- * Behaviour (enforced here + in lib/server-finding-explanations.ts):
- *   - One finding per request. No batch endpoints; no auto-explain of unopened
- *     findings. The drawer triggers this route exactly when the user opens a
- *     finding row.
- *   - Cache-first: a fingerprint hit at `.edgeagent/cache/explanations.json`
- *     short-circuits to `source: "cached_ai"` without contacting the model.
- *   - Template fallback: when the API key is missing or the model call fails
- *     / times out, we return the scanner's deterministic structured `reason`
- *     under `source: "template_fallback"` so the UI degrades gracefully.
- *   - Severity / category / file / line / evidence / rule_id are NEVER taken
- *     from the model. The route only returns the model's free-text fields,
- *     and the scanner's data flows through unchanged in the response envelope.
- *   - Per-process session cap (20 calls) protects users from runaway costs.
- *   - Validates the project path against the same allow-root the scan route
- *     uses; refuses to touch paths outside it.
+ * Hosted-only contract (post BYOK-removal):
+ *   - The route NEVER reads `apiKey` / `baseUrl` / `provider` from the
+ *     request body. Even if a legacy client still sends them, they
+ *     are silently ignored — never forwarded upstream, never logged,
+ *     never echoed.
+ *   - The provider credential comes from server env / secret manager
+ *     via `resolveAiProviderForRequest`. The result of the resolver is
+ *     passed through `redactForClient` before any echo; the public
+ *     response never includes `apiKey`.
+ *   - Authentication is asserted via `assertSession()`. Anonymous AI
+ *     calls return `not_authenticated`.
+ *   - Plan + per-mode + quota gates run BEFORE the upstream call.
+ *     Credits are debited via `recordConsumption` only after a
+ *     successful explanation (not on cache hits, not on template
+ *     fallback).
+ *
+ * Behaviour:
+ *   - One finding per request. The drawer triggers this route exactly
+ *     when the user opens a finding row.
+ *   - Cache-first: a fingerprint hit short-circuits to
+ *     `source: "cached_ai"` without contacting the model.
+ *   - Template fallback when hosted AI is unavailable (operator
+ *     misconfig) or when the model call fails — so the UI degrades.
+ *   - Severity / category / file / line / evidence / rule_id are NEVER
+ *     taken from the model. The model's free-text fields flow through;
+ *     scanner-owned fields are re-stamped from the validated input.
  */
 
 import path from "node:path"
 import { NextResponse } from "next/server"
-import { resolveAiProviderForRequest } from "@/lib/server-ai-provider-resolver"
+import {
+  resolveAiProviderForRequestAsync as resolveAiProviderForRequest,
+  recordConsumptionAsync,
+} from "@/lib/server-ai-provider-resolver"
+import {
+  assertHostedRequest,
+  RouteGuardError,
+} from "@/lib/server-route-guards"
 
 import {
   ExplanationError,
@@ -46,29 +64,17 @@ interface RouteBody {
     code_snippet?: string
     line?: number | string
   }
-  /** REQUIRED for any AI call. BYOK-only — there is no env fallback.
-   *  Sourced from the user's Settings → provider slot in the browser. */
-  apiKey?: string
-  /** OpenAI-compatible base URL override (Together / Groq / local). */
-  baseUrl?: string
-  /** Caller's chosen model id from Settings. */
-  model?: string
   /** Intelligence mode (save/auto/pro/max/manual). Forwarded to the
-   *  resolver (key/provider/model selection) and to ``explainOneFinding``
-   *  (model tier per mode). The scanner-owned fields
-   *  (severity/category/file/line/evidence) are NEVER taken from the
-   *  model regardless of mode. */
+   *  resolver. Defaults to "auto". */
   intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
-  /** Retained on the wire for backward-compat. Treated as "byok"
-   *  regardless of value post-MVP — there is no hosted path. */
+  /** Wire-level value retained for backward compat. Always treated as
+   *  hosted; the resolver is hosted-only. */
   aiProviderMode?: "hosted" | "byok"
   /** Manual-mode per-task model picks. The canonical name is
    *  ``manualModelSelection``; ``manualModels`` is accepted as a
    *  backward-compatible alias so older clients still work. */
   manualModelSelection?: Record<string, string>
   manualModels?: Record<string, string>
-  /** Caller's chosen provider kind (defaults to openai_compatible). */
-  provider?: "openai_compatible" | "anthropic" | "google" | "custom"
 }
 
 function clampCodeSnippet(input: unknown): string {
@@ -124,6 +130,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 })
   }
 
+  // Authenticated user is REQUIRED for any AI call. The guard also
+  // rejects any incoming BYOK-era field (apiKey/baseUrl/providerKey)
+  // with 400 so a misbehaving client can't silently send secrets.
+  let session
+  try {
+    session = assertHostedRequest(req, body as unknown as Record<string, unknown>)
+  } catch (e) {
+    if (e instanceof RouteGuardError) {
+      return NextResponse.json(e.body, { status: e.status })
+    }
+    throw e
+  }
+
   let resolved: string
   try {
     resolved = resolveAndValidateProjectPath(body.projectPath).resolved
@@ -150,24 +169,13 @@ export async function POST(req: Request) {
     projectType: body.projectType ?? null,
   }
 
-  // The body-supplied `apiKey` is the user's Settings key. BYOK-only:
-  // there is NO env / hosted fallback. The key is used ONLY for this
-  // request — not logged, not echoed, not persisted to the explanation
-  // cache (cache keys are content hashes — see `fingerprintFinding`).
-  const bodyApiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
-  const effectiveKeyForRedaction = bodyApiKey
-
-  const bodyModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined
-
-  // ---- BYOK resolution + plan eligibility ---------------------------
-  // The resolver enforces plan limits and gates Save/Manual modes
-  // BEFORE the model call, then returns the (provider, model, key,
-  // base URL) tuple to use upstream. There is no hosted path.
+  // ---- Hosted resolution + plan + quota ----
+  // The resolver enforces auth identity, plan eligibility (modes +
+  // manual gate), quota (estimated credit cost vs remaining), and
+  // hands back the server-managed provider/key/model tuple to use
+  // upstream. The body NEVER carries an apiKey — anything sent by a
+  // legacy client is intentionally not read here.
   const intelligenceMode = body.intelligenceMode ?? "auto"
-  const aiProviderMode = "byok" as const
-  // Normalise the manual map so callers that sent only the legacy
-  // ``manualModels`` name still influence the Manual route. Both
-  // names mean the same thing on the wire.
   const manualPicksForResolver: Record<string, string> | undefined =
     (body.manualModelSelection && typeof body.manualModelSelection === "object"
       ? (body.manualModelSelection as Record<string, string>)
@@ -176,25 +184,20 @@ export async function POST(req: Request) {
       ? (body.manualModels as Record<string, string>)
       : undefined)
 
-  const resolution = resolveAiProviderForRequest({
-    userId: "local-user",
-    workspaceId: "local-workspace",
-    aiProviderMode,
+  const resolution = await resolveAiProviderForRequest({
+    userId: session.userId,
+    workspaceId: session.workspaceId,
     intelligenceMode,
     task: "explain",
     manualModelSelection: manualPicksForResolver,
-    byokApiKey: bodyApiKey || null,
-    byokBaseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
-    byokProvider: body.provider,
   })
+
   if (!resolution.ok) {
-    // For missing/invalid key we ALSO return a template_fallback
-    // payload so the drawer can still render the scanner's structured
-    // reason alongside the CTA. Other refusals (mode_not_in_plan,
-    // task_not_allowed_in_mode) return a plain error so the UI can
-    // show the upgrade prompt without misleading "AI explanation"
-    // framing.
-    if (resolution.code === "missing_api_key" || resolution.code === "invalid_api_key") {
+    // For missing_hosted_key (operator misconfig) we still want the UI
+    // to show the scanner's structured reason — so we return a
+    // template_fallback envelope. Plan/quota refusals bubble up as
+    // structured errors so the UI can show "upgrade" CTA.
+    if (resolution.code === "missing_hosted_key") {
       const fallback = buildTemplateFallback(finding, "template_fallback")
       return NextResponse.json({
         ...fallback,
@@ -209,20 +212,32 @@ export async function POST(req: Request) {
         code: resolution.code,
       })
     }
+    const httpStatus =
+      resolution.code === "not_authenticated" ? 401 :
+      resolution.code === "quota_exceeded" ? 402 :
+      resolution.code === "task_not_allowed_in_mode" ? 200 :
+      403
     return NextResponse.json(
-      { error: resolution.reason, code: resolution.code, upgrade: resolution.upgrade ?? false },
-      { status: 403 },
+      {
+        error: resolution.reason,
+        code: resolution.code,
+        upgrade: resolution.upgrade ?? false,
+        remaining: resolution.remaining,
+        needed: resolution.needed,
+      },
+      { status: httpStatus },
     )
   }
+
+  // Server-side credentials. NEVER include `resolution.apiKey` in the
+  // response. The constant below is in-process only.
   const resolvedApiKey: string = resolution.apiKey
   const resolvedBaseUrl: string | undefined = resolution.baseUrl ?? undefined
-  const resolvedModel: string = bodyModel ?? resolution.model
+  const resolvedModel: string = resolution.model
 
   let payload
+  let aiSucceeded = false
   try {
-    // Normalise the manual-model picks: ``manualModelSelection`` is the
-    // v2 canonical name; ``manualModels`` is the legacy name from the
-    // Step-1 wiring. Either is accepted; the explainer sees one map.
     const manualPicks =
       (body.manualModelSelection && typeof body.manualModelSelection === "object"
         ? body.manualModelSelection
@@ -232,30 +247,22 @@ export async function POST(req: Request) {
         : undefined)
 
     payload = await explainOneFinding(finding, project, {
-      // The Hosted/BYOK resolver above already chose the provider key,
-      // base URL, and a concrete model id. Forward those — that's how
-      // Hosted plans avoid leaking the server key to the client.
       apiKey: resolvedApiKey,
       baseUrl: resolvedBaseUrl,
       model: resolvedModel,
-      // Forward the mode + manual map so the explainer tiering / per-task
-      // selection still applies when the resolver didn't override.
       intelligenceMode:
         typeof body.intelligenceMode === "string" ? body.intelligenceMode : undefined,
       manualModels: manualPicks,
     })
+    aiSucceeded = payload?.source === "ai" || payload?.source === "cached_ai" || false
   } catch (e) {
-    // Defensive: never let an unexpected error block the UI — fall back so
-    // the panel still shows the scanner's structured reason.
     const fallback = buildTemplateFallback(finding, "template_fallback")
-    // Sanitise debug output before sending it to the client. The key must
-    // not appear in error messages even in dev mode.
     const rawErr = String((e as Error)?.message ?? e)
-    const safeErr = redactKey(rawErr, effectiveKeyForRedaction)
+    // Use a benign placeholder for redaction; we want NO chance of the
+    // server key leaking into client error strings.
+    const safeErr = redactKey(rawErr, resolvedApiKey)
     return NextResponse.json({
       ...fallback,
-      // Echo the static scanner identity so the client can verify nothing
-      // about the finding itself was mutated by the AI layer.
       finding_id: finding.finding_id,
       rule_id: finding.rule_id,
       severity: finding.severity,
@@ -267,30 +274,57 @@ export async function POST(req: Request) {
     })
   }
 
-  // No credit accounting in BYOK-only MVP — the user's upstream
-  // provider bills them directly. recordConsumption is intentionally
-  // a no-op (kept on the resolver's public surface so the API
-  // signature stays stable if hosted is re-introduced later).
+  // Debit credits ONLY on a successful AI call (not cache hits, not
+  // template fallback). The resolver already reserved the cost so the
+  // ledger debit matches what the quota check saw.
+  if (aiSucceeded && payload?.source === "ai") {
+    await recordConsumptionAsync({
+      userId: session.userId,
+      workspaceId: session.workspaceId,
+      apiKeySource: "hosted",
+      estimatedCredits: resolution.estimatedCredits,
+      requestId: resolution.requestId,
+      status: "success",
+      task: "explain",
+      intelligenceMode,
+      model: resolution.model,
+      provider: resolution.provider,
+    })
+  } else if (resolution.requestId) {
+    await recordConsumptionAsync({
+      userId: session.userId,
+      workspaceId: session.workspaceId,
+      apiKeySource: "hosted",
+      estimatedCredits: 0,
+      requestId: resolution.requestId,
+      status: "failed",
+      task: "explain",
+      intelligenceMode,
+      model: resolution.model,
+      provider: resolution.provider,
+      errorClass: payload?.source ?? "no_ai",
+    })
+  }
 
   return NextResponse.json({
     ...payload,
-    // Re-stamp the scanner-owned fields from the validated input so any
-    // client that diffs against the original finding can prove the AI
-    // layer didn't tamper with them.
     finding_id: finding.finding_id,
     rule_id: finding.rule_id,
     severity: finding.severity,
     category: finding.category,
     file: finding.file,
     line: finding.line,
-    model_planned: bodyModel ?? pickModel(finding),
-    // explainOneFinding sets `debug_error` only in non-prod and only when
-    // the AI failed; in prod we strip it as belt-and-braces.
+    model_planned: resolvedModel,
+    // Hosted contract metadata the UI may surface (no key).
+    apiKeySource: "hosted" as const,
+    provider: resolution.provider,
+    creditsUsed: aiSucceeded && payload?.source === "ai" ? resolution.estimatedCredits : 0,
+    quotaRemaining: resolution.quotaStatus.remaining,
     debug_error:
       process.env.NODE_ENV === "production"
         ? undefined
         : payload.debug_error
-          ? redactKey(payload.debug_error, effectiveKeyForRedaction)
+          ? redactKey(payload.debug_error, resolvedApiKey)
           : undefined,
   })
 }

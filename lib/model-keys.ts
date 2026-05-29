@@ -1,14 +1,24 @@
 /**
- * Browser-side storage for model provider configurations.
+ * Model selection metadata (browser-side).
  *
- * Configurations live in `localStorage` under `STORAGE_KEY`. Each entry is a
- * single (provider, base URL, api key, default model) tuple — the same
- * provider can appear multiple times with different models so the user can
- * compare GPT-4o vs GPT-4o-mini with the same key.
+ * Hosted-only contract: this module USED to manage user-supplied
+ * provider API keys + base URLs in localStorage. Those have been
+ * removed entirely. The browser:
  *
- * Security note: keys are kept in `localStorage`, which is acceptable for a
- * local dev tool but never appropriate for a multi-user deployment. The UI
- * masks the key by default and surfaces this trade-off in the Settings card.
+ *   - NEVER stores an `apiKey`.
+ *   - NEVER stores a `baseUrl`.
+ *   - NEVER sends a provider key on the wire.
+ *
+ * The only browser-side state that survives is:
+ *   - Manual-mode model-id picks (per task slot). These are plain
+ *     strings like `"claude-sonnet-4-6"` — not credentials.
+ *   - The Anthropic stale-id migration helper, kept so any residual
+ *     legacy localStorage data (from older BYOK builds) gets cleaned
+ *     up gracefully on next boot.
+ *
+ * `purgeLegacyProviderKeys()` wipes any pre-hosted localStorage
+ * entries on startup. Call it once from the top-level layout client
+ * mount so users upgrading from BYOK builds don't carry stale secrets.
  */
 
 export const PROVIDER_TYPES = ["openai_compatible", "anthropic", "google"] as const
@@ -20,134 +30,182 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
   google: "Google",
 }
 
-/**
- * All three providers now have a real runner in /api/playground/run:
- *   - openai_compatible: chat completions (also Ollama/Groq/Together via baseUrl)
- *   - anthropic: Messages API
- *   - google: Gemini generateContent
- * Listed here so anyone iterating on provider plumbing knows the
- * playground will dispatch to a real implementation for each.
- */
 export const SUPPORTED_PROVIDER_TYPES: ProviderType[] = [
   "openai_compatible",
   "anthropic",
   "google",
 ]
 
-export type ModelProviderConfig = {
-  id: string
-  type: ProviderType
-  /** Friendly label shown in UI dropdowns. */
-  label: string
-  /** Default model id (e.g. "gpt-4o", "gpt-4o-mini"). */
-  model: string
-  /**
-   * API key — never logged. Forwarded only to the configured provider or
-   * to a local Edge Agent API route for the duration of a single request
-   * (Prompt Playground, Chat Assistant, and the finding-explanation
-   * endpoint). It is never persisted server-side, never written to the
-   * explanation cache, and never included in error messages or telemetry.
-   */
-  apiKey: string
-  /** Optional override for OpenAI-compatible endpoints (Together, Groq, Ollama, etc). */
-  baseUrl?: string
-  createdAt: string
-  updatedAt: string
-}
-
+/** Legacy storage keys (provider configs + migration notices). */
 const STORAGE_KEY = "edge-agent-ai.modelKeys"
+const MIGRATION_NOTICE_KEY = "edge-agent-ai.modelKeys.migrationNotices"
 
 function isBrowser(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined"
 }
 
-function isConfig(v: unknown): v is ModelProviderConfig {
-  if (!v || typeof v !== "object") return false
-  const o = v as Record<string, unknown>
-  return (
-    typeof o.id === "string" &&
-    typeof o.type === "string" &&
-    PROVIDER_TYPES.includes(o.type as ProviderType) &&
-    typeof o.label === "string" &&
-    typeof o.model === "string" &&
-    typeof o.apiKey === "string"
-  )
+// ---------------------------------------------------------------------------
+// Anthropic legacy-model migration (kept — pure model-id rewrite, no secrets)
+// ---------------------------------------------------------------------------
+
+export const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4-6"
+
+const ANTHROPIC_LEGACY_TO_CURRENT: Record<string, string> = {
+  "claude-3-7-sonnet-latest": "claude-sonnet-4-6",
+  "claude-3-5-sonnet-latest": "claude-sonnet-4-6",
+  "claude-3-5-sonnet-20241022": "claude-sonnet-4-6",
+  "claude-3-5-sonnet-20240620": "claude-sonnet-4-6",
+  "claude-3-sonnet-20240229": "claude-sonnet-4-6",
+  "claude-3-opus-20240229": "claude-opus-4-7",
+  "claude-3-opus-latest": "claude-opus-4-7",
+  "claude-3-haiku-20240307": "claude-haiku-4-5",
+  "claude-3-5-haiku-latest": "claude-haiku-4-5",
+  "claude-3-5-haiku-20241022": "claude-haiku-4-5",
+  "claude-opus-4-1-20250805": "claude-opus-4-7",
+  "claude-sonnet-4-5-20250929": "claude-sonnet-4-6",
 }
 
-function safeRead(): ModelProviderConfig[] {
+const ANTHROPIC_CURRENT_MODELS = new Set<string>([
+  "claude-haiku-4-5",
+  "claude-sonnet-4-6",
+  "claude-opus-4-7",
+])
+
+export function migrateAnthropicModel(model: string): {
+  migrated: boolean
+  oldModel: string
+  newModel: string
+} {
+  const trimmed = (model ?? "").trim()
+  if (!trimmed) {
+    return { migrated: false, oldModel: trimmed, newModel: trimmed }
+  }
+  if (ANTHROPIC_CURRENT_MODELS.has(trimmed)) {
+    return { migrated: false, oldModel: trimmed, newModel: trimmed }
+  }
+  const explicit = ANTHROPIC_LEGACY_TO_CURRENT[trimmed]
+  if (explicit) {
+    return { migrated: true, oldModel: trimmed, newModel: explicit }
+  }
+  if (/^claude[-_]/i.test(trimmed)) {
+    return { migrated: true, oldModel: trimmed, newModel: ANTHROPIC_DEFAULT_MODEL }
+  }
+  return { migrated: false, oldModel: trimmed, newModel: trimmed }
+}
+
+export interface MigrationNotice {
+  slot: LlmSlot
+  oldModel: string
+  newModel: string
+  at: string
+}
+
+function readMigrationNotices(): MigrationNotice[] {
   if (!isBrowser()) return []
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = window.localStorage.getItem(MIGRATION_NOTICE_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(isConfig)
+    return parsed.filter(
+      (n): n is MigrationNotice =>
+        !!n &&
+        typeof n === "object" &&
+        typeof (n as MigrationNotice).slot === "string" &&
+        typeof (n as MigrationNotice).oldModel === "string" &&
+        typeof (n as MigrationNotice).newModel === "string",
+    )
   } catch {
     return []
   }
 }
 
-function safeWrite(configs: ModelProviderConfig[]): void {
+function writeMigrationNotices(notices: MigrationNotice[]): void {
   if (!isBrowser()) return
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(configs))
-  } catch {
-    // Quota exceeded is unrealistic for this small payload; swallow to avoid
-    // crashing the UI on weird browser environments.
-  }
+    if (notices.length === 0) {
+      window.localStorage.removeItem(MIGRATION_NOTICE_KEY)
+    } else {
+      window.localStorage.setItem(MIGRATION_NOTICE_KEY, JSON.stringify(notices))
+    }
+  } catch { /* ignore quota */ }
 }
 
-export function loadProviderConfigs(): ModelProviderConfig[] {
-  return [...safeRead()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+export function consumeMigrationNotices(): MigrationNotice[] {
+  const notices = readMigrationNotices()
+  if (notices.length > 0) writeMigrationNotices([])
+  return notices
 }
 
-export function saveProviderConfig(config: ModelProviderConfig): ModelProviderConfig[] {
-  const current = safeRead()
-  const filtered = current.filter((c) => c.id !== config.id)
-  safeWrite([config, ...filtered])
-  return loadProviderConfigs()
-}
-
-export function deleteProviderConfig(id: string): ModelProviderConfig[] {
-  const current = safeRead()
-  safeWrite(current.filter((c) => c.id !== id))
-  return loadProviderConfigs()
-}
-
-export function clearProviderConfigs(): void {
-  if (!isBrowser()) return
-  try {
-    window.localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    // ignore
-  }
-}
-
-export function newProviderConfigId(): string {
-  return `prov-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
+// ---------------------------------------------------------------------------
+// Legacy-key purge — wipes pre-hosted localStorage entries on startup
+// ---------------------------------------------------------------------------
 
 /**
- * Mask the key for display. Always shows the first 4 and last 4 characters so
- * the user can confirm a key without exposing it to a screen recording.
+ * Wipe any provider keys / base URLs left over from the BYOK era. On
+ * first run after the hosted-only upgrade, this surfaces ONE migration
+ * notice per stale Anthropic entry so the user sees "your saved
+ * Anthropic model was updated…" and then drops the entire localStorage
+ * slot so no apiKey survives on disk.
+ *
+ * Safe to call repeatedly: no-op after the slot is empty.
  */
-export function maskKey(key: string): string {
-  if (!key) return ""
-  if (key.length <= 12) return "•".repeat(key.length)
-  return `${key.slice(0, 4)}${"•".repeat(Math.max(4, key.length - 8))}${key.slice(-4)}`
+export function purgeLegacyProviderKeys(): { purged: boolean; noticesAdded: number } {
+  if (!isBrowser()) return { purged: false, noticesAdded: 0 }
+  let raw: string | null
+  try {
+    raw = window.localStorage.getItem(STORAGE_KEY)
+  } catch {
+    return { purged: false, noticesAdded: 0 }
+  }
+  if (!raw) return { purged: false, noticesAdded: 0 }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Corrupt — just drop it.
+    try { window.localStorage.removeItem(STORAGE_KEY) } catch {}
+    return { purged: true, noticesAdded: 0 }
+  }
+
+  let noticesAdded = 0
+  if (Array.isArray(parsed)) {
+    const now = new Date().toISOString()
+    const newNotices: MigrationNotice[] = []
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue
+      const e = entry as Record<string, unknown>
+      if (e.type === "anthropic" && typeof e.model === "string") {
+        const m = migrateAnthropicModel(e.model)
+        if (m.migrated) {
+          newNotices.push({ slot: "anthropic", oldModel: m.oldModel, newModel: m.newModel, at: now })
+        }
+      }
+    }
+    if (newNotices.length > 0) {
+      const merged = [...readMigrationNotices(), ...newNotices]
+      writeMigrationNotices(merged)
+      noticesAdded = newNotices.length
+    }
+  }
+
+  // Drop the entire slot. Anything that USED to live here (apiKey,
+  // baseUrl, provider configs) is gone for good — the hosted contract
+  // does not need any of it.
+  try { window.localStorage.removeItem(STORAGE_KEY) } catch {}
+  return { purged: true, noticesAdded }
 }
 
 // ---------------------------------------------------------------------------
-// Named provider slots (Settings UX)
+// Named provider slots — kept for the Manual-mode model picker UI
 // ---------------------------------------------------------------------------
 
 /**
- * The Settings page exposes a fixed set of named slots — OpenAI, Anthropic,
- * Gemini, and a custom OpenAI-compatible endpoint — so users see the
- * familiar provider names instead of a generic "add provider" form. Each
- * slot maps to a single `ModelProviderConfig` with a stable id, which means
- * the Prompt Playground / Chat Assistant continue to read from the same
- * underlying list.
+ * The Settings page no longer renders these slots (no key fields), but
+ * the Manual-mode model picker in the scan/findings toolbars still uses
+ * the slot identity to organise the model dropdown. The constants are
+ * pure presentational metadata — no secrets, no localStorage.
  */
 export const LLM_SLOTS = ["openai", "anthropic", "google", "custom"] as const
 export type LlmSlot = (typeof LLM_SLOTS)[number]
@@ -168,17 +226,13 @@ export const SLOT_META: Record<
   openai: {
     label: "OpenAI",
     type: "openai_compatible",
-    // gpt-4.1-mini is the Edge Agent AI default for finding explanations
-    // (cheap, strong, widely entitled). Settings shows it as the placeholder
-    // so a user who hasn't picked an explicit model lands on the same model
-    // the server-side default would use.
     defaultModel: "gpt-4.1-mini",
     runnerImplemented: true,
   },
   anthropic: {
     label: "Anthropic",
     type: "anthropic",
-    defaultModel: "claude-3-5-sonnet-latest",
+    defaultModel: "claude-sonnet-4-6",
     runnerImplemented: true,
   },
   google: {
@@ -188,45 +242,10 @@ export const SLOT_META: Record<
     runnerImplemented: true,
   },
   custom: {
-    label: "Custom OpenAI-compatible",
+    label: "Custom",
     type: "openai_compatible",
     defaultModel: "llama3.1:8b",
     defaultBaseUrl: "http://localhost:11434/v1",
     runnerImplemented: true,
   },
-}
-
-export function slotConfigId(slot: LlmSlot): string {
-  return `slot-${slot}`
-}
-
-/** Find the saved config for a named slot, if the user has filled it in. */
-export function getSlotConfig(
-  slot: LlmSlot,
-  configs: ModelProviderConfig[]
-): ModelProviderConfig | undefined {
-  const id = slotConfigId(slot)
-  return configs.find((c) => c.id === id)
-}
-
-/**
- * Pick the provider the chat assistant should default to. Order of
- * preference: OpenAI → Custom (OpenAI-compatible) → Anthropic → Gemini. We
- * skip configs whose runner isn't implemented yet so the default is always
- * usable when possible.
- */
-export function pickPrimaryProvider(
-  configs: ModelProviderConfig[]
-): ModelProviderConfig | null {
-  if (configs.length === 0) return null
-  const order: LlmSlot[] = ["openai", "custom", "anthropic", "google"]
-  for (const slot of order) {
-    const c = getSlotConfig(slot, configs)
-    if (c && SUPPORTED_PROVIDER_TYPES.includes(c.type)) return c
-  }
-  // Fall back to the first supported config (e.g. legacy entries from the
-  // generic add-form built earlier).
-  const supported = configs.find((c) => SUPPORTED_PROVIDER_TYPES.includes(c.type))
-  if (supported) return supported
-  return configs[0]
 }

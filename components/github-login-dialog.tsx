@@ -121,7 +121,12 @@ export function GithubLoginDialog({ open, onOpenChange, onAuthChanged }: Props) 
     try {
       const resp = await loginWithGitHubToken(t)
       if (resp.ok && resp.login) {
-        toast.success(`Signed in to GitHub as @${resp.login}.`)
+        // GitHub is an OPTIONAL integration for repo/PR access only — it does
+        // NOT establish the cloud session or change billing identity. The
+        // Edge Agent AI account (email/password) owns the subscription and
+        // credits. The GitHub token stays on the local server's disk and is
+        // never returned to the renderer.
+        toast.success(`Connected GitHub as @${resp.login}.`)
         setToken("")
         await refresh()
         onAuthChanged?.()
@@ -141,7 +146,10 @@ export function GithubLoginDialog({ open, onOpenChange, onAuthChanged }: Props) 
     try {
       const resp = await logoutGitHub()
       if (resp.ok) {
-        toast.success("Signed out of GitHub.")
+        // Disconnecting GitHub does NOT sign the user out of their Edge Agent
+        // AI account — the account session is independent of this optional
+        // integration.
+        toast.success("Disconnected GitHub.")
         await refresh()
         onAuthChanged?.()
       } else {
@@ -162,12 +170,12 @@ export function GithubLoginDialog({ open, onOpenChange, onAuthChanged }: Props) 
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Github className="h-5 w-5" />
-            {isAuthed ? "GitHub account" : "Sign in to GitHub"}
+            {isAuthed ? "GitHub connection" : "Connect GitHub (optional)"}
           </DialogTitle>
           <DialogDescription>
             {isAuthed
-              ? "Edge Agent AI uses this account to push branches, open pull requests, and check repo permissions."
-              : "Connect a GitHub account so Edge Agent AI can push branches, open pull requests, and check permissions on your behalf — no GitHub CLI required."}
+              ? "Edge Agent AI uses this optional connection to push branches, open pull requests, and check repo permissions. It does not affect your account, plan, or credits."
+              : "Optional: connect GitHub for repo/PR access so Edge Agent AI can push branches and open pull requests. Your subscription and credits live on your Edge Agent AI account — GitHub is not required to use hosted AI."}
           </DialogDescription>
         </DialogHeader>
 

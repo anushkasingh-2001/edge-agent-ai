@@ -2,7 +2,18 @@
  * Client-side mirror of the fix-engine contract + the fetcher used by
  * the three "Fix" dropdowns (FindingDrawer, Findings table top bar,
  * Behavioral test row).
+ *
+ * **Hosted-only contract.** The browser NEVER sends `apiKey` /
+ * `baseUrl` / `provider`. Hosted AI is included in the user's plan;
+ * the server resolves the credential from env.
+ *
+ * Routed through `apiFetch`, which today keeps fix/patch on the LOCAL
+ * server (they read & write the user's files). Their model-generation
+ * step is the part that needs the cloud backend — see the
+ * "generation/apply split" TODO in docs/DESKTOP-PACKAGING.md.
  */
+
+import { apiFetch } from "@/lib/api-fetch"
 
 export type FixMode = "suggest" | "apply"
 export type FixRisk = "safe-insert" | "edits-line" | "no-op"
@@ -39,10 +50,7 @@ export interface FixProposal {
   retryable: boolean
   backup_path: string | null
   /** True when the "fix" is just a TODO/Manual-suggestion comment
-   *  (fallback template), NOT a real code change. The UI uses this to
-   *  render "Manual suggestion" instead of "Applied" and to leave the
-   *  finding in the table — a TODO marker doesn't clear the finding.
-   *  Always present (default false) so consumers can rely on it. */
+   *  (fallback template), NOT a real code change. */
   marker_only: boolean
 }
 
@@ -53,11 +61,19 @@ export interface RunFixesResult {
   skipped: number
   failed: number
   proposals: FixProposal[]
+  /** Hosted contract metadata (never a key). */
+  apiKeySource?: "hosted"
+  creditsUsed?: number
+  quotaRemaining?: number
+  /** Set when the resolver refused (plan/quota/missing hosted key). */
+  error?: string
+  code?: string
+  upgrade?: boolean
 }
 
-/** Provider kinds the server-side resolver understands today. Mirrors
- *  ``ProviderKind`` in ``lib/server-model-router.ts``; redefined here
- *  so client code doesn't import server-only modules. */
+/** Provider kinds the server-side resolver understands. Kept on the
+ *  type so older callers compile, but the client never sends this
+ *  field anymore — the resolver chooses the provider. */
 export type FixProviderKind =
   | "openai_compatible"
   | "anthropic"
@@ -67,44 +83,21 @@ export type FixProviderKind =
 /**
  * Submit a fix request. `mode: "suggest"` is a pure read; `mode: "apply"`
  * writes files (with `.edge-agent.bak` backups) before returning.
+ *
+ * Hosted contract: no apiKey, no baseUrl, no provider. The server
+ * resolves the credential from env.
  */
 export async function runFindingFixesApi(args: {
   projectPath: string
   mode: FixMode
   targets: FixTarget[]
-  /** Intelligence mode selected in the Findings toolbar. Server uses
-   *  it to size context, pick model tier, and decide whether the LLM
-   *  patch path runs at all. */
   intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
-  /** Retained on the type for legacy callers. The server forces
-   *  BYOK regardless; this is just informational. */
-  aiProviderMode?: "hosted" | "byok"
-  /** BYOK provider type (openai_compatible / anthropic / google /
-   *  custom). Always forwarded — required when the mode actually
-   *  needs an LLM call. */
-  provider?: FixProviderKind
-  /** Caller's API key from Settings. REQUIRED for any AI upgrade
-   *  (Auto/Pro/Max/Manual) — the route returns a structured
-   *  ``missing_api_key`` error when omitted, which we surface as
-   *  the canonical CTA in the UI. */
-  apiKey?: string
-  /** Optional override for OpenAI-compatible endpoints (Together,
-   *  Groq, Ollama, etc). Forwarded alongside ``apiKey``. */
-  baseUrl?: string
-  /** Manual-mode per-task model picks. Both ``manualModelSelection``
-   *  (canonical) and ``manualModels`` (legacy alias) are accepted and
-   *  forwarded. */
   manualModelSelection?: Record<string, string>
-  /** Backward-compat alias; same shape as ``manualModelSelection``. */
   manualModels?: Record<string, string>
   signal?: AbortSignal
 }): Promise<RunFixesResult> {
-  // Normalise the manual map: a caller may pass either name. The
-  // server normalises again, but doing it here keeps the wire payload
-  // stable. BYOK fields are always forwarded — the server is the
-  // single point of truth for "is this key/model valid?".
   const manualMap = args.manualModelSelection ?? args.manualModels
-  const res = await fetch("/api/findings/fix", {
+  const res = await apiFetch("/api/findings/fix", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -112,14 +105,11 @@ export async function runFindingFixesApi(args: {
       mode: args.mode,
       targets: args.targets,
       intelligenceMode: args.intelligenceMode,
-      // BYOK-only post-MVP. We still send the field so older server
-      // builds that branched on it stay compatible.
-      aiProviderMode: "byok",
-      provider: args.provider,
-      apiKey: args.apiKey,
-      baseUrl: args.baseUrl,
+      // Hosted contract: aiProviderMode is informational; the server
+      // defaults to hosted regardless. We send it for parity with the
+      // explain client and to make the wire shape obvious in logs.
+      aiProviderMode: "hosted" as const,
       manualModelSelection: manualMap,
-      // Backward-compat for the legacy patch name. Server normalises both.
       manualModels: manualMap,
     }),
     signal: args.signal,

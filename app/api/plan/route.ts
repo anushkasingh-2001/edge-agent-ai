@@ -6,27 +6,96 @@
  * selection is permitted, and remaining AI credits. No provider keys,
  * ever.
  *
- * The UI uses this to:
- *   - disable Pro/Max/Manual when the plan doesn't include them,
- *   - show "Hosted AI — included in your plan" + credits,
- *   - in Manual mode, only offer models the plan allows.
- *
- * Auth/identity is stubbed to a single workspace user for now; swap
- * `resolveIdentity` for the real session lookup.
+ * Anonymous callers (no session) get a "Free" preview so unauthenticated
+ * pages can still surface the plan banner. AI routes still reject
+ * anonymous calls via `assertHostedRequest`.
  */
 
 import { NextResponse } from "next/server"
-import { loadSubscription, planSummary } from "@/lib/server-subscription"
+import { getOptionalSession } from "@/lib/server-auth"
+import { planSummary } from "@/lib/server-subscription"
+import {
+  BillingMisconfiguredError,
+  ensureBootstrap,
+  getAsyncBillingStore,
+  getBillingBackendTag,
+} from "@/lib/server-billing-bootstrap"
+import {
+  hostedProviderReadiness,
+  stripeReadiness,
+} from "@/lib/server-stripe-config"
+import { billingMockEnabled } from "@/lib/server-billing-mock"
+import { PLAN_ENTITLEMENTS } from "@/lib/server-subscription"
 
 export const dynamic = "force-dynamic"
 
-function resolveIdentity(_req: Request): { userId: string; workspaceId: string } {
-  // TODO: replace with real session/workspace resolution.
-  return { userId: "local-user", workspaceId: "local-workspace" }
-}
-
 export async function GET(req: Request) {
-  const { userId, workspaceId } = resolveIdentity(req)
-  const sub = loadSubscription(userId, workspaceId)
-  return NextResponse.json({ plan: planSummary(sub) })
+  const session = getOptionalSession(req)
+  const stripeOk = stripeReadiness().ok
+  const hostedOk = hostedProviderReadiness().ok
+  const mockBilling = billingMockEnabled()
+  const boot = await ensureBootstrap()
+  const backend = getBillingBackendTag()
+
+  const capabilities = {
+    stripeReady: stripeOk,
+    hostedReady: hostedOk,
+    billingBackend: backend,
+    billingReady: boot.ok,
+    billingMock: mockBilling,
+  }
+
+  if (!session) {
+    return NextResponse.json({
+      plan: {
+        tier: "free",
+        allowedModes: PLAN_ENTITLEMENTS.free.allowedModes,
+        allowManualModelSelection: false,
+        creditsTotal: 50,
+        creditsUsed: 0,
+        creditsRemaining: 50,
+        subscriptionStatus: "none",
+        billingPeriodEnd: null,
+      },
+      authenticated: false,
+      capabilities,
+    })
+  }
+
+  try {
+    const sub = await getAsyncBillingStore().loadSubscription(
+      session.userId,
+      session.workspaceId,
+    )
+    const entitlement = PLAN_ENTITLEMENTS[sub.planTier] ?? PLAN_ENTITLEMENTS.free
+    return NextResponse.json({
+      plan: {
+        ...planSummary({
+          userId: sub.userId,
+          workspaceId: sub.workspaceId,
+          tier: sub.planTier,
+          allowedModes: [...entitlement.allowedModes],
+          allowManualModelSelection: entitlement.allowManualModelSelection,
+          creditsTotal: sub.creditsLimit,
+          creditsUsed: sub.creditsUsed,
+          subscriptionStatus: sub.subscriptionStatus,
+          billingPeriodEnd: sub.billingPeriodEnd,
+        }),
+      },
+      authenticated: true,
+      userId: session.userId,
+      workspaceId: session.workspaceId,
+      email: session.email ?? null,
+      authSource: session.authSource,
+      capabilities,
+    })
+  } catch (e) {
+    if (e instanceof BillingMisconfiguredError) {
+      return NextResponse.json(
+        { error: e.message, code: e.code },
+        { status: e.status },
+      )
+    }
+    throw e
+  }
 }

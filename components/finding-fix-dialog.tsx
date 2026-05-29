@@ -26,7 +26,6 @@ import {
   runFindingFixesApi,
   type FixMode,
   type FixProposal,
-  type FixProviderKind,
   type FixTarget,
   type RunFixesResult,
 } from "@/lib/finding-fixes-client"
@@ -47,19 +46,10 @@ interface FindingFixDialogProps {
   /** Selected intelligence mode, threaded from the Findings view →
    *  drawer → button → here → runFindingFixesApi. */
   intelligenceMode?: "save" | "auto" | "pro" | "max" | "manual"
-  /** Hosted (server-side key) vs BYOK (caller-supplied). */
-  aiProviderMode?: "hosted" | "byok"
-  /** Manual-mode per-task model picks. ``manualModelSelection`` is
-   *  the v2 canonical name; ``manualModels`` is kept as a legacy
-   *  alias to preserve compatibility with the Step-1 wiring. */
+  /** Manual-mode per-task model picks. `manualModelSelection` is the
+   *  canonical name; `manualModels` is the legacy alias. */
   manualModelSelection?: Record<string, string>
   manualModels?: Record<string, string>
-  /** BYOK provider config, forwarded to the fix API. Only sent on
-   *  the wire when ``aiProviderMode === "byok"``; the client
-   *  enforces that gate inside ``runFindingFixesApi``. */
-  provider?: FixProviderKind
-  apiKey?: string
-  baseUrl?: string
   /** Optional after-apply callback so callers can refresh state (e.g.
    *  re-run a scan after auto-fixing all findings). */
   onApplied?: (result: RunFixesResult) => void
@@ -87,12 +77,8 @@ export function FindingFixDialog({
   projectPath,
   title,
   intelligenceMode,
-  aiProviderMode,
   manualModelSelection,
   manualModels,
-  provider,
-  apiKey,
-  baseUrl,
   onApplied,
 }: FindingFixDialogProps) {
   // Single normalised manual-model map for everything below.
@@ -131,10 +117,6 @@ export function FindingFixDialog({
           mode: m,
           targets,
           intelligenceMode,
-          aiProviderMode,
-          provider,
-          apiKey,
-          baseUrl,
           manualModelSelection: manualMap,
         })
         setResult(r)
@@ -146,17 +128,7 @@ export function FindingFixDialog({
         setBusy(false)
       }
     },
-    [
-      projectPath,
-      targets,
-      onApplied,
-      intelligenceMode,
-      aiProviderMode,
-      manualMap,
-      provider,
-      apiKey,
-      baseUrl,
-    ]
+    [projectPath, targets, onApplied, intelligenceMode, manualMap]
   )
 
   // Auto-run on first open. Closing + reopening re-runs so we always

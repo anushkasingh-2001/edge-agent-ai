@@ -116,13 +116,12 @@ test("M2: an unknown slot is preserved (defensive)", () => {
 test("M2: resolver path also returns a prefix-stripped manual model", () => {
   _resetLedgerForTests()
   enterprise()
+  process.env.ANTHROPIC_API_KEY = "sk-hosted-test"
   const r = resolveAiProviderForRequest({
     userId: "u-m2",
     workspaceId: "w",
-    aiProviderMode: "byok",
     intelligenceMode: "manual",
     task: "explain",
-    byokApiKey: "sk-byok",
     manualModelSelection: { explain: "anthropic:claude-3-7-sonnet" },
   })
   assert.equal(r.ok, true)
@@ -133,10 +132,11 @@ test("M2: resolver path also returns a prefix-stripped manual model", () => {
 })
 
 // ===================================================================
-// H1: BYOK fix request must include apiKey / baseUrl / provider
+// H1 (hosted contract): Fix request must NEVER carry apiKey / baseUrl /
+// provider on the wire. The hosted resolver runs server-side from env.
 // ===================================================================
 
-test("H1: runFindingFixesApi sends apiKey/baseUrl/provider when BYOK", async () => {
+test("H1: runFindingFixesApi never sends apiKey/baseUrl/provider on the wire", async () => {
   const captured: { body?: Record<string, unknown> } = {}
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
@@ -159,133 +159,49 @@ test("H1: runFindingFixesApi sends apiKey/baseUrl/provider when BYOK", async () 
       mode: "suggest",
       targets: [],
       intelligenceMode: "auto",
-      aiProviderMode: "byok",
-      provider: "anthropic",
-      apiKey: "sk-user-anthropic",
-      baseUrl: undefined,
-      manualModelSelection: { patch: "anthropic:claude-3-7-sonnet" },
+      manualModelSelection: { patch: "anthropic:claude-sonnet-4-6" },
     })
   } finally {
     globalThis.fetch = originalFetch
   }
   const body = captured.body as Record<string, unknown>
-  assert.equal(body.aiProviderMode, "byok")
-  assert.equal(body.provider, "anthropic")
-  assert.equal(body.apiKey, "sk-user-anthropic")
+  assert.equal(body.apiKey, undefined, "client must never put apiKey on the wire")
+  assert.equal(body.baseUrl, undefined, "client must never put baseUrl on the wire")
+  assert.equal(
+    body.provider,
+    undefined,
+    "client must never select a provider for the server",
+  )
   assert.deepEqual(body.manualModelSelection, {
-    patch: "anthropic:claude-3-7-sonnet",
-  })
-  // ``manualModels`` legacy alias also present for older servers.
-  assert.deepEqual(body.manualModels, {
-    patch: "anthropic:claude-3-7-sonnet",
+    patch: "anthropic:claude-sonnet-4-6",
   })
 })
 
-test("H1: hosted mode does NOT leak BYOK secrets even if passed", async () => {
-  // Defence-in-depth: callers that mistakenly supply an apiKey under
-  // Hosted mode (e.g. shared state between toolbar + drawer) must not
-  // have it forwarded to the server. The client strips BYOK fields
-  // when aiProviderMode is "hosted".
-  const captured: { body?: Record<string, unknown> } = {}
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
-    captured.body = JSON.parse(init?.body ?? "{}")
-    return new Response(
-      JSON.stringify({
-        mode: "suggest",
-        total: 0,
-        applied: 0,
-        skipped: 0,
-        failed: 0,
-        proposals: [],
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    )
-  }) as typeof fetch
-  try {
-    // BYOK-only MVP: the client always forwards the caller's apiKey /
-    // provider / baseUrl. The legacy Hosted "drop BYOK fields" branch
-    // is gone — there is no hosted path to protect anymore — and the
-    // user explicitly opted in by entering the key in Settings.
-    await runFindingFixesApi({
-      projectPath: "/p",
-      mode: "suggest",
-      targets: [],
-      intelligenceMode: "auto",
-      aiProviderMode: "hosted",
-      provider: "anthropic",
-      apiKey: "sk-leaked-key",
-      baseUrl: "https://attacker.example",
-    })
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-  const body = captured.body as Record<string, unknown>
-  // The wire enum is forced to "byok" by the client. The fields are
-  // forwarded verbatim — the user typed them and the server is the
-  // single point of truth for validating them.
-  assert.equal(body.aiProviderMode, "byok")
-  assert.equal(body.provider, "anthropic")
-  assert.equal(body.apiKey, "sk-leaked-key")
-  assert.equal(body.baseUrl, "https://attacker.example")
-})
-
 // ===================================================================
-// C1: BYOK-only MVP — recordConsumption is a no-op
+// C1 (hosted contract): recordConsumption DEBITS credits on success.
 // ===================================================================
-//
-// We assert the underlying primitive — recordConsumption — because the
-// explain route itself sits behind Next/server which would require a
-// full route runner. The route's call site uses these exact params,
-// and the credit-ledger contract is what actually matters.
-//
-// BYOK-only contract: no `apiKeySource` value (hosted OR byok) draws
-// down the local credit ledger. The user's upstream provider bills
-// them directly. This pins the contract against a regression that
-// re-introduces a silent app-owned billing path.
 
-test("C1: BYOK-only recordConsumption never decrements credits (hosted code path)", () => {
+test("C1: hosted recordConsumption debits the credit ledger", () => {
   _resetLedgerForTests()
   enterprise()
   const before = planSummary(loadSubscription("u-c1", "w")).creditsRemaining
-  recordConsumption({
+  const debited = recordConsumption({
     userId: "u-c1",
     workspaceId: "w",
     apiKeySource: "hosted",
-    actualCostUsd: 0.0015,
+    estimatedCredits: 3,
   })
+  assert.equal(debited, 3, "credits returned equal credits debited")
   const after = planSummary(loadSubscription("u-c1", "w")).creditsRemaining
-  assert.equal(
-    after,
-    before,
-    "BYOK-only build must never debit the credit ledger, even when a legacy call site passes apiKeySource='hosted'",
-  )
-})
-
-test("C1: BYOK explain-style recordConsumption does NOT touch credits", () => {
-  _resetLedgerForTests()
-  enterprise()
-  const before = planSummary(loadSubscription("u-c1b", "w")).creditsRemaining
-  recordConsumption({
-    userId: "u-c1b",
-    workspaceId: "w",
-    apiKeySource: "byok",
-    actualCostUsd: 0.5,
-  })
-  const after = planSummary(loadSubscription("u-c1b", "w")).creditsRemaining
-  assert.equal(after, before, "BYOK callers pay their own provider directly")
+  assert.equal(after, before - 3, "hosted call must debit the user's ledger")
 })
 
 // ===================================================================
-// U1: The Behavioral row's Fix button must forward toolbar state
+// U1: The Behavioral row's Fix button must forward toolbar state, but
+// only the hosted-safe fields (intelligenceMode + manual model picks).
 // ===================================================================
-//
-// We assert this at the wire level: a Behavioral-row Fix that flows
-// through runFindingFixesApi must produce the same payload shape as
-// the toolbar Fix would have. Anything else means the row got stale
-// defaults instead of the live toolbar selection.
 
-test("U1: Fix request from a Behavioral-row state forwards mode/provider/manual", async () => {
+test("U1: Fix request from a Behavioral row forwards mode + manual, never keys", async () => {
   const captured: { body?: Record<string, unknown> } = {}
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
@@ -303,9 +219,6 @@ test("U1: Fix request from a Behavioral-row state forwards mode/provider/manual"
     )
   }) as typeof fetch
   try {
-    // Simulate what the BehavioralTestRow now sends via the threaded
-    // toolbar state (intelligenceMode=pro, BYOK Anthropic with a
-    // manual model pick).
     await runFindingFixesApi({
       projectPath: "/p",
       mode: "apply",
@@ -313,20 +226,17 @@ test("U1: Fix request from a Behavioral-row state forwards mode/provider/manual"
         { ref_id: "r1", rule_id: "behavioral.test", file: "a.py", line: 1 },
       ],
       intelligenceMode: "pro",
-      aiProviderMode: "byok",
-      provider: "anthropic",
-      apiKey: "sk-anth",
-      manualModelSelection: { patch: "anthropic:claude-3-7-sonnet" },
+      manualModelSelection: { patch: "anthropic:claude-sonnet-4-6" },
     })
   } finally {
     globalThis.fetch = originalFetch
   }
   const body = captured.body as Record<string, unknown>
   assert.equal(body.intelligenceMode, "pro")
-  assert.equal(body.aiProviderMode, "byok")
-  assert.equal(body.provider, "anthropic")
-  assert.equal(body.apiKey, "sk-anth")
   assert.deepEqual(body.manualModelSelection, {
-    patch: "anthropic:claude-3-7-sonnet",
+    patch: "anthropic:claude-sonnet-4-6",
   })
+  assert.equal(body.apiKey, undefined)
+  assert.equal(body.baseUrl, undefined)
+  assert.equal(body.provider, undefined)
 })
