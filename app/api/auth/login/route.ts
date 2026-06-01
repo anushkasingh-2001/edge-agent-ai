@@ -23,15 +23,22 @@ import {
   isValidEmail,
   issueAccountSession,
   issueRefreshToken,
+  issueVerificationCode,
   rateLimitedResponse,
+  reissuePendingCode,
   sessionCookie,
+  verificationCodePayload,
 } from "@/lib/server-account"
 import {
   clientIp,
+  enforceRateLimit,
   isRateLimited,
   recordFailure,
+  HOUR,
   MIN,
 } from "@/lib/server-rate-limit"
+import { emailVerificationEnforced } from "@/lib/server-email-verification"
+import { sendVerificationCodeEmail } from "@/lib/server-email"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -42,9 +49,9 @@ export async function OPTIONS(req: Request) {
 }
 
 const INVALID = { error: "Invalid email or password.", code: "invalid_credentials" } as const
-// Max 5 failed attempts per (email+IP) per 15 minutes. Successful logins don't
+// Max 10 failed attempts per (email+IP) per 15 minutes. Successful logins don't
 // consume the budget.
-const LOGIN_MAX_FAILURES = 5
+const LOGIN_MAX_FAILURES = 10
 const LOGIN_WINDOW_MS = 15 * MIN
 
 export async function POST(req: Request) {
@@ -79,6 +86,31 @@ export async function POST(req: Request) {
     return accountJson(req, { error: "Login failed.", code: "login_failed" }, status)
   }
   if (!user) {
+    // No real account — but they may have registered and not verified yet
+    // (pending registration; no users row exists until the OTP is entered).
+    // If the password matches the parked signup, guide them to verify instead
+    // of returning a confusing "invalid credentials".
+    if (emailVerificationEnforced()) {
+      const pending = await users.getPendingRegistration(email)
+      if (pending && (await verifyPassword(password, pending.passwordHash))) {
+        const reissued = await reissuePendingCode(email)
+        let emailSent = false
+        if (reissued) {
+          emailSent = (await sendVerificationCodeEmail(email, reissued.code)).ok
+        }
+        return accountJson(
+          req,
+          {
+            error:
+              "Please verify your email to finish creating your account. We've emailed you a new code.",
+            code: "email_not_verified",
+            email,
+            ...(reissued ? verificationCodePayload(reissued.code, !emailSent) : {}),
+          },
+          403,
+        )
+      }
+    }
     await recordFailure("login:fail", limitKey, LOGIN_WINDOW_MS)
     return accountJson(req, INVALID, 401)
   }
@@ -87,6 +119,35 @@ export async function POST(req: Request) {
   if (!ok) {
     await recordFailure("login:fail", limitKey, LOGIN_WINDOW_MS)
     return accountJson(req, INVALID, 401)
+  }
+
+  // STRICT FLOW: a correct password is not enough — the email must be verified
+  // before a session is issued (production default; off in dev). We (re)send a
+  // fresh verification link so the user can complete the step, then return a
+  // dedicated 403 the client renders as "verify your email".
+  if (emailVerificationEnforced() && user.emailVerified === false) {
+    // Best-effort resend of a fresh code, rate-limited so login spam can't
+    // blast emails.
+    let verification: { code: string; expiresAt: string } | null = null
+    let emailSent = false
+    const resendRl = await enforceRateLimit("login-verify-resend:user", user.id, 10, HOUR)
+    if (resendRl.ok) {
+      verification = await issueVerificationCode(user.id)
+      if (verification) {
+        const res = await sendVerificationCodeEmail(user.email, verification.code)
+        emailSent = res.ok
+      }
+    }
+    return accountJson(
+      req,
+      {
+        error: "Please verify your email before signing in. We've emailed you a new verification code.",
+        code: "email_not_verified",
+        email: user.email,
+        ...(verification ? verificationCodePayload(verification.code, !emailSent) : {}),
+      },
+      403,
+    )
   }
 
   const workspace = await users.getWorkspaceForUser(user.id)

@@ -44,6 +44,14 @@ const nextConfig = {
   // in `outputFileTracingIncludes` — adding it there would force-copy
   // mermaid + d3 + katex + cytoscape + elkjs into every traced route and
   // inflate the standalone bundle by hundreds of MB.
+  // `pg` (the Postgres driver) is loaded through an obfuscated dynamic
+  // import (`new Function("p", "return import(p)")`) so it stays an optional
+  // peer dep that never breaks edge/desktop builds. That trick also hides it
+  // from Next's dependency tracer, so on Vercel the driver was missing from
+  // the serverless bundle ("Cannot find package 'pg'"). Marking it external
+  // keeps it un-bundled but guarantees it's shipped in the lambda's
+  // node_modules and required at runtime.
+  serverExternalPackages: ["pg"],
   typescript: {
     ignoreBuildErrors: true,
   },

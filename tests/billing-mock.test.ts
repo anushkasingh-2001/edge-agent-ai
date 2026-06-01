@@ -135,6 +135,9 @@ describe("billing mock mode", () => {
     env.NODE_ENV = "production"
     env.USER_STORE = "file"
     env.BILLING_STORE = "file"
+    // This test exercises dev-checkout in production mock mode, not the email
+    // verification gate — opt out so register returns a session directly.
+    env.EDGE_AGENT_REQUIRE_EMAIL_VERIFICATION = "0"
     delete env.DATABASE_URL
 
     const reg = await registerPOST(

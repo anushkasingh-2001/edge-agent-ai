@@ -10,8 +10,12 @@
 
 import { Suspense, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
+import { verifyEmail } from "@/lib/plan-client"
 
 type State = "working" | "ok" | "error"
+
+// Seconds to show the success message before redirecting into the app.
+const REDIRECT_DELAY_MS = 1500
 
 function VerifyInner() {
   const params = useSearchParams()
@@ -21,37 +25,40 @@ function VerifyInner() {
 
   useEffect(() => {
     let cancelled = false
+    let redirectTimer: ReturnType<typeof setTimeout> | undefined
     async function run() {
       if (!token) {
         setState("error")
         setMessage("This verification link is missing its token.")
         return
       }
-      try {
-        const res = await fetch("/api/auth/verify-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        })
-        const data = (await res.json()) as { ok?: boolean; error?: string }
-        if (cancelled) return
-        if (res.ok && data.ok) {
-          setState("ok")
-          setMessage("Your email is verified. You can return to the app and sign in.")
-        } else {
-          setState("error")
-          setMessage(data.error ?? "This verification link is invalid or has expired.")
+      // verifyEmail() confirms the token AND stores the session the server
+      // issues on success (access + refresh token), so the app is signed in.
+      const res = await verifyEmail(token)
+      if (cancelled) return
+      if (res.ok) {
+        setState("ok")
+        setMessage("Your email is verified. Taking you to Edge Agent AI…")
+        // Mark onboarding complete so the app loads straight into the
+        // authenticated experience instead of the welcome gate.
+        try {
+          window.localStorage.setItem("edge-agent-ai.onboarded", "1")
+        } catch {
+          /* best-effort */
         }
-      } catch {
-        if (!cancelled) {
-          setState("error")
-          setMessage("Could not reach the server. Please try again.")
-        }
+        // Auto-redirect into the app, now authenticated.
+        redirectTimer = setTimeout(() => {
+          window.location.assign("/")
+        }, REDIRECT_DELAY_MS)
+      } else {
+        setState("error")
+        setMessage(res.error ?? "This verification link is invalid or has expired.")
       }
     }
     void run()
     return () => {
       cancelled = true
+      if (redirectTimer) clearTimeout(redirectTimer)
     }
   }, [token])
 
@@ -64,7 +71,7 @@ function VerifyInner() {
         </p>
         {state !== "working" && (
           <a href="/" style={link}>
-            Go to Edge Agent AI
+            {state === "ok" ? "Continue to Edge Agent AI" : "Go to Edge Agent AI"}
           </a>
         )}
       </div>

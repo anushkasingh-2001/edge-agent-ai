@@ -64,6 +64,29 @@ export interface WorkspaceRecord {
   createdAt: string
 }
 
+/**
+ * A signup that hasn't verified its email yet. Holds the credentials + a hashed
+ * OTP code, keyed by email. No `users`/`workspaces` row exists until the code
+ * is verified — that's what makes "no account until verified" true. We store a
+ * scrypt password hash and a SHA-256 code hash only (never plaintext / raw OTP).
+ */
+export interface PendingRegistration {
+  email: string
+  passwordHash: string
+  name?: string
+  codeHash: string
+  expiresAt: string
+  createdAt: string
+}
+
+export interface CreatePendingRegistrationInput {
+  email: string
+  passwordHash: string
+  name?: string
+  codeHash: string
+  expiresAt: string
+}
+
 export interface LinkedAccount {
   id: string
   userId: string
@@ -122,6 +145,17 @@ export interface UserStore {
   getUserByEmail(email: string): Promise<UserRecord | null>
   getUserById(id: string): Promise<UserRecord | null>
   getWorkspaceForUser(userId: string): Promise<WorkspaceRecord | null>
+
+  // --- pending (unverified) registrations ------------------------------ //
+  /** Create or REPLACE the pending registration for an email (upsert by email).
+   *  Re-registering simply refreshes the parked credentials + OTP code. */
+  createPendingRegistration(input: CreatePendingRegistrationInput): Promise<void>
+  /** Return the pending registration for an email if it exists and hasn't
+   *  expired; otherwise null. */
+  getPendingRegistration(email: string): Promise<PendingRegistration | null>
+  /** Remove the pending registration for an email (after it's been promoted to
+   *  a real account, or on cleanup). */
+  deletePendingRegistration(email: string): Promise<void>
 
   /** Replace a user's password hash (password reset). */
   updatePassword(userId: string, passwordHash: string): Promise<void>
@@ -212,6 +246,7 @@ interface OnDisk {
   verificationTokens: AuthTokenRecord[]
   resetTokens: AuthTokenRecord[]
   refreshTokens: RefreshTokenRecord[]
+  pendingRegistrations: Record<string, PendingRegistration>
 }
 
 function emptyDisk(): OnDisk {
@@ -223,6 +258,7 @@ function emptyDisk(): OnDisk {
     verificationTokens: [],
     resetTokens: [],
     refreshTokens: [],
+    pendingRegistrations: {},
   }
 }
 
@@ -238,6 +274,7 @@ function readDisk(): OnDisk {
       verificationTokens: Array.isArray(parsed.verificationTokens) ? parsed.verificationTokens : [],
       resetTokens: Array.isArray(parsed.resetTokens) ? parsed.resetTokens : [],
       refreshTokens: Array.isArray(parsed.refreshTokens) ? parsed.refreshTokens : [],
+      pendingRegistrations: parsed.pendingRegistrations ?? {},
     }
   } catch {
     return emptyDisk()
@@ -311,6 +348,36 @@ export class FileUserStore implements UserStore {
   async getWorkspaceForUser(userId: string): Promise<WorkspaceRecord | null> {
     const disk = readDisk()
     return Object.values(disk.workspaces).find((w) => w.ownerUserId === userId) ?? null
+  }
+
+  async createPendingRegistration(input: CreatePendingRegistrationInput): Promise<void> {
+    const disk = readDisk()
+    const email = normalizeEmail(input.email)
+    disk.pendingRegistrations[email] = {
+      email,
+      passwordHash: input.passwordHash,
+      name: input.name?.trim() || undefined,
+      codeHash: input.codeHash,
+      expiresAt: input.expiresAt,
+      createdAt: isoNow(),
+    }
+    writeDisk(disk)
+  }
+
+  async getPendingRegistration(email: string): Promise<PendingRegistration | null> {
+    const rec = readDisk().pendingRegistrations[normalizeEmail(email)]
+    if (!rec) return null
+    if (Date.parse(rec.expiresAt) <= Date.now()) return null
+    return rec
+  }
+
+  async deletePendingRegistration(email: string): Promise<void> {
+    const disk = readDisk()
+    const key = normalizeEmail(email)
+    if (disk.pendingRegistrations[key]) {
+      delete disk.pendingRegistrations[key]
+      writeDisk(disk)
+    }
   }
 
   async updatePassword(userId: string, passwordHash: string): Promise<void> {
@@ -476,12 +543,21 @@ export class FileUserStore implements UserStore {
       return !expired && !revokedLongAgo
     })
 
+    // Sweep expired pending registrations too (not part of the reported counts).
+    let pendingRemoved = 0
+    for (const [key, rec] of Object.entries(disk.pendingRegistrations)) {
+      if (Date.parse(rec.expiresAt) <= now) {
+        delete disk.pendingRegistrations[key]
+        pendingRemoved++
+      }
+    }
+
     const result: TokenCleanupResult = {
       verification: verifyBefore - disk.verificationTokens.length,
       reset: resetBefore - disk.resetTokens.length,
       refresh: refreshBefore - disk.refreshTokens.length,
     }
-    if (result.verification || result.reset || result.refresh) writeDisk(disk)
+    if (result.verification || result.reset || result.refresh || pendingRemoved) writeDisk(disk)
     return result
   }
 

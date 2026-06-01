@@ -31,6 +31,9 @@ function misconfiguredStore(reason: string): UserStore {
     getUserByEmail: reject,
     getUserById: reject,
     getWorkspaceForUser: reject,
+    createPendingRegistration: reject,
+    getPendingRegistration: reject,
+    deletePendingRegistration: reject,
     updatePassword: reject,
     markEmailVerified: reject,
     createVerificationToken: reject,
@@ -52,7 +55,10 @@ function misconfiguredStore(reason: string): UserStore {
   }
 }
 
+export type UserBackend = "postgres" | "file" | "misconfigured" | "test"
+
 let store: UserStore = new FileUserStore()
+let backendTag: UserBackend = "file"
 let bootstrapped = false
 let bootstrapPromise: Promise<void> | null = null
 
@@ -60,9 +66,14 @@ export function getAsyncUserStore(): UserStore {
   return store
 }
 
+export function getUserBackendTag(): UserBackend {
+  return backendTag
+}
+
 /** Test seam — inject a mock and mark bootstrap complete. */
-export function setAsyncUserStore(next: UserStore): void {
+export function setAsyncUserStore(next: UserStore, tag: UserBackend = "test"): void {
   store = next
+  backendTag = tag
   bootstrapped = true
 }
 
@@ -86,11 +97,16 @@ interface PgPoolLike {
 
 let pgPool: PgPoolLike | null = null
 
+type PgModule = {
+  Pool: new (cfg: { connectionString: string; max?: number; ssl?: unknown }) => PgPoolLike
+}
+
 async function createPgPool(connectionString: string): Promise<PgPoolLike> {
-  const dynImport = new Function("p", "return import(p)") as (p: string) => Promise<unknown>
-  const pg = (await dynImport("pg")) as {
-    Pool: new (cfg: { connectionString: string; max?: number; ssl?: unknown }) => PgPoolLike
-  }
+  // Plain dynamic import (not a `new Function(...)` trick) so Next.js's
+  // tracer ships `pg` in the serverless bundle. Still lazy: it only loads
+  // when a Postgres-backed store is actually constructed at runtime.
+  const mod = (await import("pg")) as unknown as PgModule & { default?: PgModule }
+  const pg: PgModule = mod.Pool ? mod : (mod.default as PgModule)
   const wantSsl = (process.env.PGSSLMODE ?? "").toLowerCase() !== "disable"
   return new pg.Pool({
     connectionString,
@@ -102,6 +118,7 @@ async function createPgPool(connectionString: string): Promise<PgPoolLike> {
 export async function bootstrapUserStore(): Promise<void> {
   if (forceFile()) {
     store = new FileUserStore()
+    backendTag = "file"
     bootstrapped = true
     return
   }
@@ -109,6 +126,7 @@ export async function bootstrapUserStore(): Promise<void> {
     store = misconfiguredStore(
       "Production account store requires DATABASE_URL. Set DATABASE_URL=postgres://… or USER_STORE=file (desktop only).",
     )
+    backendTag = "misconfigured"
     bootstrapped = true
     return
   }
@@ -116,12 +134,14 @@ export async function bootstrapUserStore(): Promise<void> {
     try {
       if (!pgPool) pgPool = await createPgPool(databaseUrl())
       store = new SqlUserStore(pgPool)
+      backendTag = "postgres"
       bootstrapped = true
       return
     } catch (e) {
       const reason = `Failed to initialize Postgres user store: ${e instanceof Error ? e.message : String(e)}`
       if (isProd()) {
         store = misconfiguredStore(reason)
+        backendTag = "misconfigured"
         bootstrapped = true
         return
       }
@@ -130,12 +150,25 @@ export async function bootstrapUserStore(): Promise<void> {
     }
   }
   store = new FileUserStore()
+  backendTag = "file"
   bootstrapped = true
 }
 
 export async function ensureUserBootstrap(): Promise<void> {
-  if (bootstrapped && !databaseUrl() && !isProd()) return
-  if (bootstrapped && databaseUrl()) return
+  // Already on Postgres (or a test mock) — nothing to do.
+  if (bootstrapped && backendTag !== "file" && backendTag !== "misconfigured") return
+  // Dev file backend with no DATABASE_URL — stable, skip re-bootstrap.
+  if (bootstrapped && backendTag === "file" && !databaseUrl() && !isProd()) return
+  // Recover from an earlier misconfigured boot once DATABASE_URL appears.
+  if (bootstrapped && backendTag === "misconfigured" && databaseUrl()) {
+    bootstrapped = false
+    bootstrapPromise = null
+  }
+  // Promote dev file → Postgres when DATABASE_URL is added without restart.
+  if (bootstrapped && backendTag === "file" && databaseUrl()) {
+    bootstrapped = false
+    bootstrapPromise = null
+  }
   if (!bootstrapPromise) bootstrapPromise = bootstrapUserStore()
   await bootstrapPromise
 }
@@ -152,4 +185,5 @@ export async function _resetUserBootstrapForTests(): Promise<void> {
   bootstrapped = false
   bootstrapPromise = null
   store = new FileUserStore()
+  backendTag = "file"
 }

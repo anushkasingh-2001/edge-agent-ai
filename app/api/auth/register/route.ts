@@ -22,14 +22,16 @@ import {
   accountPreflight,
   isValidEmail,
   issueAccountSession,
+  issuePendingRegistration,
   issueRefreshToken,
-  issueVerificationToken,
+  issueVerificationCode,
   rateLimitedResponse,
   sessionCookie,
-  tokensVisibleToClient,
+  verificationCodePayload,
 } from "@/lib/server-account"
 import { clientIp, enforceRateLimit, HOUR } from "@/lib/server-rate-limit"
-import { sendVerificationEmail } from "@/lib/server-email"
+import { sendVerificationCodeEmail } from "@/lib/server-email"
+import { emailVerificationEnforced } from "@/lib/server-email-verification"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -40,8 +42,8 @@ export async function OPTIONS(req: Request) {
 }
 
 export async function POST(req: Request) {
-  // Abuse brake: max 5 new accounts per IP per hour.
-  const rl = await enforceRateLimit("register:ip", clientIp(req), 5, HOUR)
+  // Abuse brake: max 20 new accounts per IP per hour.
+  const rl = await enforceRateLimit("register:ip", clientIp(req), 20, HOUR)
   if (!rl.ok) return rateLimitedResponse(req, rl.retryAfterSec)
 
   let body: { email?: unknown; password?: unknown; name?: unknown }
@@ -66,9 +68,84 @@ export async function POST(req: Request) {
   await ensureUserBootstrap()
   const users = getAsyncUserStore()
 
+  // (1) An account that ALREADY EXISTS must never be recreated.
+  let existing
+  try {
+    existing = await users.getUserByEmail(email)
+  } catch (e) {
+    const status = (e as { status?: number })?.status === 503 ? 503 : 500
+    return accountJson(req, { error: "Could not create account.", code: "register_failed" }, status)
+  }
+  if (existing) {
+    if (existing.emailVerified) {
+      // Real, verified account — tell them to sign in instead.
+      return accountJson(
+        req,
+        { error: "An account already exists for this email. Please sign in.", code: "user_exists" },
+        409,
+      )
+    }
+    // Legacy unverified account (created before the pending-registration flow).
+    // Treat a re-register as "resend my code": refresh the password + reissue.
+    if (emailVerificationEnforced()) {
+      await users.updatePassword(existing.id, await hashPassword(password))
+      const verification = await issueVerificationCode(existing.id)
+      let emailSent = false
+      if (verification) {
+        emailSent = (await sendVerificationCodeEmail(existing.email, verification.code)).ok
+      }
+      return accountJson(
+        req,
+        {
+          ok: true,
+          requiresVerification: true,
+          email: existing.email,
+          ...(verification ? verificationCodePayload(verification.code, !emailSent) : {}),
+        },
+        201,
+      )
+    }
+    return accountJson(
+      req,
+      { error: "An account already exists for this email. Please sign in.", code: "user_exists" },
+      409,
+    )
+  }
+
+  const passwordHash = await hashPassword(password)
+
+  // (2) STRICT FLOW (production default): the account is NOT created yet. We
+  // park the signup as a pending registration with an OTP and email the code.
+  // The real users/workspaces rows are created only when the code is verified
+  // (see /api/auth/verify-email) — so "no account until verified" holds, and
+  // re-registering simply refreshes the parked credentials + code.
+  if (emailVerificationEnforced()) {
+    const pending = await issuePendingRegistration({ email, passwordHash, name })
+    if (!pending) {
+      return accountJson(
+        req,
+        { error: "Could not start registration.", code: "register_failed" },
+        500,
+      )
+    }
+    const sent = await sendVerificationCodeEmail(email, pending.code)
+    return accountJson(
+      req,
+      {
+        ok: true,
+        requiresVerification: true,
+        email,
+        // Surfaced only in dev / when the email couldn't be delivered.
+        ...verificationCodePayload(pending.code, !sent.ok),
+      },
+      201,
+    )
+  }
+
+  // (3) DEV / self-hosted (enforcement off): create the account immediately and
+  // auto-login so local development and tests aren't gated on email delivery.
   let created
   try {
-    const passwordHash = await hashPassword(password)
     created = await users.createUser({ email, passwordHash, name })
   } catch (e) {
     if (e instanceof UserExistsError) {
@@ -76,11 +153,7 @@ export async function POST(req: Request) {
     }
     const status = (e as { status?: number })?.status ?? 500
     const code = (e as { code?: string })?.code ?? "register_failed"
-    return accountJson(
-      req,
-      { error: "Could not create account.", code },
-      status === 503 ? 503 : 500,
-    )
+    return accountJson(req, { error: "Could not create account.", code }, status === 503 ? 503 : 500)
   }
 
   const { user, workspace } = created
@@ -98,6 +171,13 @@ export async function POST(req: Request) {
     /* non-fatal */
   }
 
+  const verification = await issueVerificationCode(user.id)
+  let emailSent = false
+  if (verification) {
+    const res = await sendVerificationCodeEmail(user.email, verification.code)
+    emailSent = res.ok
+  }
+
   const issued = issueAccountSession(user, workspace.id)
   if (!issued) {
     // Account exists but we can't sign a token (no JWT_SECRET). Surface a
@@ -109,16 +189,7 @@ export async function POST(req: Request) {
     )
   }
 
-  // Create an email-verification token and a refresh token so the client can
-  // renew without re-login.
-  const verification = await issueVerificationToken(user.id)
   const refresh = await issueRefreshToken(user.id, workspace.id)
-
-  // Send the verification email (best-effort; never blocks account creation,
-  // never logs the token/link).
-  if (verification) {
-    await sendVerificationEmail(user.email, verification.token)
-  }
 
   return accountJsonWithCookie(
     req,
@@ -129,9 +200,7 @@ export async function POST(req: Request) {
       refreshToken: refresh?.token,
       user: issued.publicUser,
       // Dev/test convenience only — never returned in production.
-      ...(tokensVisibleToClient() && verification
-        ? { verificationToken: verification.token }
-        : {}),
+      ...(verification ? verificationCodePayload(verification.code, !emailSent) : {}),
     },
     201,
     sessionCookie(issued.token, issued.expiresIn),

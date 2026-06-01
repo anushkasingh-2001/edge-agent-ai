@@ -201,6 +201,19 @@ export async function sendVerificationEmail(to: string, token: string): Promise<
   })
 }
 
+export async function sendVerificationCodeEmail(to: string, code: string): Promise<EmailResult> {
+  return sendEmail({
+    to,
+    subject: `Your ${APP} verification code: ${code}`,
+    text: `Welcome to ${APP}.\n\nYour email verification code is:\n\n${code}\n\nEnter it in the app to verify your email. This code expires in 15 minutes. If you didn't create an account, you can ignore this email.`,
+    html: `<p>Welcome to <strong>${APP}</strong>.</p>
+<p>Your email verification code is:</p>
+<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:16px 0;color:#10b981">${code}</p>
+<p>Enter it in the app to verify your email.</p>
+<p style="color:#888;font-size:12px">This code expires in 15 minutes. If you didn't create an account, you can ignore this email.</p>`,
+  })
+}
+
 export async function sendPasswordResetEmail(to: string, token: string): Promise<EmailResult> {
   const link = resetPasswordLink(token)
   return sendEmail({

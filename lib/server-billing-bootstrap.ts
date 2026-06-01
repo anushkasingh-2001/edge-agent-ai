@@ -195,16 +195,21 @@ interface PgPoolLike {
 
 let pgPool: PgPoolLike | null = null
 
-async function createPgPool(connectionString: string): Promise<PgPoolLike> {
-  // Dynamic import so the optional `pg` peer dep doesn't force a
-  // require at module-load time in tests that never touch Postgres.
-  const dynImport = new Function("p", "return import(p)") as (p: string) => Promise<unknown>
-  const pg = (await dynImport("pg")) as {
-    Pool: new (cfg: { connectionString: string; max?: number; ssl?: unknown }) => {
-      query: SqlClient["query"]
-      end(): Promise<void>
-    }
+type PgModule = {
+  Pool: new (cfg: { connectionString: string; max?: number; ssl?: unknown }) => {
+    query: SqlClient["query"]
+    end(): Promise<void>
   }
+}
+
+async function createPgPool(connectionString: string): Promise<PgPoolLike> {
+  // Lazy dynamic import so the optional `pg` peer dep doesn't load at
+  // module-evaluation time (tests / edge / desktop never touch Postgres).
+  // We use a plain `import("pg")` — NOT a `new Function(...)` trick — so
+  // Next.js's dependency tracer can see it and ship `pg` in the serverless
+  // bundle. `serverExternalPackages: ["pg"]` keeps it un-bundled at runtime.
+  const mod = (await import("pg")) as unknown as PgModule & { default?: PgModule }
+  const pg: PgModule = mod.Pool ? mod : (mod.default as PgModule)
   // SSL on by default for hosted Postgres (Neon / Supabase / RDS).
   // `PGSSLMODE=disable` opts out for local dev against plain Postgres.
   const wantSsl = (process.env.PGSSLMODE ?? "").toLowerCase() !== "disable"

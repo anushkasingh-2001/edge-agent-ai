@@ -39,6 +39,7 @@ import { POST as checkoutPOST } from "../app/api/billing/checkout/route"
 import { POST as loginPOST } from "../app/api/auth/login/route"
 
 import { verifyPassword, hashToken } from "../lib/server-password"
+import { findVerificationCode } from "../lib/server-account"
 import {
   ensureUserBootstrap,
   getAsyncUserStore,
@@ -110,8 +111,13 @@ interface RegResponse {
   ok: boolean
   token: string
   refreshToken?: string
-  verificationToken?: string
+  verificationCode?: string
   user: { id: string; email: string; workspaceId: string; emailVerified?: boolean }
+}
+
+/** Build a 6-digit code guaranteed to differ from `code`. */
+function otherCode(code: string): string {
+  return String((Number(code) + 1) % 1_000_000).padStart(6, "0")
 }
 
 async function register(email: string, password: string): Promise<RegResponse> {
@@ -155,19 +161,19 @@ describe("account-auth production features", () => {
   })
 
   // (1) ---------------------------------------------------------------------
-  it("(1) register creates a user, workspace, and verification token", async () => {
+  it("(1) register creates a user, workspace, and verification code", async () => {
     const data = await register("verify@edge.test", "password12345")
     assert.equal(data.ok, true)
     assert.match(data.user.id, /^usr_/)
     assert.match(data.user.workspaceId, /^ws_/)
     assert.equal(data.user.emailVerified, false, "new account starts unverified")
-    assert.ok(data.verificationToken, "dev build surfaces the raw verification token")
+    assert.match(data.verificationCode ?? "", /^\d{6}$/, "dev build surfaces the 6-digit code")
     assert.ok(data.refreshToken, "a refresh token is issued at register")
 
     await ensureUserBootstrap()
-    const stored = await getAsyncUserStore().findVerificationToken(hashToken(data.verificationToken!))
-    assert.ok(stored, "the verification token is persisted (by hash)")
-    assert.notEqual(stored!.tokenHash, data.verificationToken, "stored value is a hash, not the raw token")
+    const stored = await findVerificationCode(data.user.id, data.verificationCode!)
+    assert.ok(stored, "the verification code is persisted (by hash, per-user)")
+    assert.notEqual(stored!.tokenHash, data.verificationCode, "stored value is a hash, not the raw code")
   })
 
   // (2) ---------------------------------------------------------------------
@@ -180,39 +186,147 @@ describe("account-auth production features", () => {
   })
 
   // (4) ---------------------------------------------------------------------
-  it("(4) verify-email marks emailVerified true and consumes the token", async () => {
+  it("(4) verify-email with the OTP code marks emailVerified and consumes the code", async () => {
     const data = await register("v4@edge.test", "password12345")
-    const token = data.verificationToken!
+    const code = data.verificationCode!
+    const email = "v4@edge.test"
 
+    // A wrong code is rejected.
+    const bad = await verifyEmailPOST(
+      jsonReq("https://cloud.test/api/auth/verify-email", "POST", { email, code: otherCode(code) }),
+    )
+    assert.equal(bad.status, 400)
+
+    // The correct code verifies and auto-issues a session.
     const res = await verifyEmailPOST(
-      jsonReq("https://cloud.test/api/auth/verify-email", "POST", { token }),
+      jsonReq("https://cloud.test/api/auth/verify-email", "POST", { email, code }),
     )
     assert.equal(res.status, 200)
+    const vout = (await res.json()) as { ok: boolean; token?: string; emailVerified?: boolean }
+    assert.equal(vout.emailVerified, true)
+    assert.ok(vout.token, "verify-email auto-issues a session token")
 
     await ensureUserBootstrap()
-    const user = await getAsyncUserStore().getUserByEmail("v4@edge.test")
+    const user = await getAsyncUserStore().getUserByEmail(email)
     assert.equal(user!.emailVerified, true)
 
-    // Single-use: replaying the same token fails.
-    const replay = await verifyEmailPOST(
-      jsonReq("https://cloud.test/api/auth/verify-email", "POST", { token }),
-    )
-    assert.equal(replay.status, 400)
+    // Single-use: the code record is consumed after a successful verify.
+    const stored = await findVerificationCode(user!.id, code)
+    assert.equal(stored, null, "the code is consumed (single-use)")
   })
 
-  it("(4b) send-verification requires a session and reissues a token", async () => {
+  it("(4b) send-verification reissues a code for a session OR a public email", async () => {
+    // Anonymous with no email → generic 200 (never reveals account existence).
     const anon = await sendVerificationPOST(
       jsonReq("https://cloud.test/api/auth/send-verification", "POST", {}),
     )
-    assert.equal(anon.status, 401)
+    assert.equal(anon.status, 200)
 
     const data = await register("resend@edge.test", "password12345")
+
+    // Authenticated resend (signed-in user) reissues a code.
     const res = await sendVerificationPOST(
       jsonReq("https://cloud.test/api/auth/send-verification", "POST", {}, data.token),
     )
     assert.equal(res.status, 200)
-    const out = (await res.json()) as { ok: boolean; verificationToken?: string }
-    assert.ok(out.verificationToken, "a fresh token is issued")
+    const out = (await res.json()) as { ok: boolean; verificationCode?: string }
+    assert.match(out.verificationCode ?? "", /^\d{6}$/, "a fresh code is issued for the signed-in user")
+
+    // Public resend by email (no session) — used by the "verify your email"
+    // screen before the user can sign in. Generic 200, code surfaced in dev.
+    const pub = await sendVerificationPOST(
+      jsonReq("https://cloud.test/api/auth/send-verification", "POST", {
+        email: "resend@edge.test",
+      }),
+    )
+    assert.equal(pub.status, 200)
+    const pubOut = (await pub.json()) as { ok: boolean; verificationCode?: string }
+    assert.match(pubOut.verificationCode ?? "", /^\d{6}$/, "a fresh code is issued for the public email path")
+  })
+
+  // (3b) Strict flow: NO account until the OTP is verified ------------------
+  it("(3b) strict: registration is pending (no account) until the OTP is verified", async () => {
+    env.EDGE_AGENT_REQUIRE_EMAIL_VERIFICATION = "1"
+
+    // Register: pending only — no session, no users row yet.
+    const res = await registerPOST(
+      jsonReq("https://cloud.test/api/auth/register", "POST", {
+        email: "strict@edge.test",
+        password: "password12345",
+      }),
+    )
+    assert.equal(res.status, 201)
+    const reg = (await res.json()) as {
+      ok: boolean
+      requiresVerification?: boolean
+      token?: string
+      verificationCode?: string
+    }
+    assert.equal(reg.requiresVerification, true, "registration requires verification")
+    assert.equal(reg.token, undefined, "no session token is issued before verification")
+    assert.match(reg.verificationCode ?? "", /^\d{6}$/, "dev surfaces the verification code")
+
+    // The account does NOT exist yet — it's only a pending registration.
+    await ensureUserBootstrap()
+    assert.equal(
+      await getAsyncUserStore().getUserByEmail("strict@edge.test"),
+      null,
+      "no users row is created before verification",
+    )
+
+    // Login before verifying is blocked with a dedicated 403, and a fresh code
+    // is (re)sent so the user can finish.
+    const blocked = await loginPOST(
+      jsonReq("https://cloud.test/api/auth/login", "POST", {
+        email: "strict@edge.test",
+        password: "password12345",
+      }),
+    )
+    assert.equal(blocked.status, 403)
+    const bout = (await blocked.json()) as { code: string; email?: string; verificationCode?: string }
+    assert.equal(bout.code, "email_not_verified")
+    assert.match(bout.verificationCode ?? "", /^\d{6}$/, "login resends a fresh verification code")
+
+    // Verifying with the freshest code CREATES the account and signs in.
+    const verify = await verifyEmailPOST(
+      jsonReq("https://cloud.test/api/auth/verify-email", "POST", {
+        email: "strict@edge.test",
+        code: bout.verificationCode,
+      }),
+    )
+    assert.equal(verify.status, 200)
+    const vout = (await verify.json()) as { ok: boolean; token?: string; emailVerified?: boolean }
+    assert.equal(vout.emailVerified, true)
+    assert.ok(vout.token, "verify-email auto-issues a session token")
+
+    // The account now exists and is verified; the pending row is gone.
+    const created = await getAsyncUserStore().getUserByEmail("strict@edge.test")
+    assert.ok(created && created.emailVerified === true, "account created + verified on OTP")
+    assert.equal(
+      await getAsyncUserStore().getPendingRegistration("strict@edge.test"),
+      null,
+      "pending registration is consumed",
+    )
+
+    // Login now succeeds and returns a session.
+    const okLogin = await loginPOST(
+      jsonReq("https://cloud.test/api/auth/login", "POST", {
+        email: "strict@edge.test",
+        password: "password12345",
+      }),
+    )
+    assert.equal(okLogin.status, 200)
+    assert.ok(((await okLogin.json()) as { token?: string }).token, "verified login returns a token")
+
+    // (1) Re-registering an EXISTING verified email is refused (no new account).
+    const dup = await registerPOST(
+      jsonReq("https://cloud.test/api/auth/register", "POST", {
+        email: "strict@edge.test",
+        password: "password12345",
+      }),
+    )
+    assert.equal(dup.status, 409)
+    assert.equal((await dup.json() as { code?: string }).code, "user_exists")
   })
 
   // (5) + (6) ---------------------------------------------------------------
@@ -298,9 +412,11 @@ describe("account-auth production features", () => {
 
   // (3) ---------------------------------------------------------------------
   it("(3) unverified email blocks paid checkout and paid AI when enforced", async () => {
-    env.EDGE_AGENT_REQUIRE_EMAIL_VERIFICATION = "1"
     env.OPENAI_API_KEY = "sk-server-side-key"
+    // Register with the gate OFF so we obtain an (unverified) session token,
+    // then turn enforcement ON to assert the paid actions are blocked.
     const data = await register("gate@edge.test", "password12345")
+    env.EDGE_AGENT_REQUIRE_EMAIL_VERIFICATION = "1"
 
     // Seed a paid plan on the account so the only thing blocking is verification.
     const store = new FileBillingStore()

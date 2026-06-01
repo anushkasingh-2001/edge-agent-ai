@@ -1,11 +1,11 @@
 /**
  * Next.js server-startup hook.
  *
- * Bootstraps the billing store ONCE per Node process. With
- * `DATABASE_URL` set the singleton becomes `SqlBillingStore` backed
- * by `pg.Pool`; without it (dev only) we fall back to
- * `FileBillingStore`. In production without `DATABASE_URL`, every
- * billing/AI route returns 503 `billing_db_unconfigured`.
+ * Bootstraps the billing + account stores ONCE per Node process. With
+ * `DATABASE_URL` set the singletons become Postgres-backed stores; without
+ * it (dev only) we fall back to file storage. In production without
+ * `DATABASE_URL`, billing/AI routes return 503 `billing_db_unconfigured`
+ * and account routes return 503 `user_db_unconfigured`.
  *
  * Optionally runs `migrations/*.sql` against the DB when
  * `AUTO_MIGRATE_BILLING=1` is set — handy for preview environments
@@ -38,8 +38,13 @@ export async function register(): Promise<void> {
         }`,
       )
     }
+
+    const { bootstrapUserStore, getUserBackendTag } = await import("./lib/server-user-bootstrap")
+    await bootstrapUserStore()
+    // eslint-disable-next-line no-console
+    console.log(`[edge-agent] user store ready: backend=${getUserBackendTag()}`)
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.error("[edge-agent] billing bootstrap failed:", e)
+    console.error("[edge-agent] server bootstrap failed:", e)
   }
 }

@@ -17,7 +17,7 @@ import {
   isValidEmail,
   issueResetToken,
   rateLimitedResponse,
-  tokensVisibleToClient,
+  resetLinkPayload,
 } from "@/lib/server-account"
 import { clientIp, enforceRateLimit, HOUR } from "@/lib/server-rate-limit"
 import { sendPasswordResetEmail } from "@/lib/server-email"
@@ -36,8 +36,8 @@ const GENERIC = {
 } as const
 
 export async function POST(req: Request) {
-  // Per-IP brake (20/hour) so the endpoint can't be used to enumerate/spam.
-  const ipRl = await enforceRateLimit("forgot:ip", clientIp(req), 20, HOUR)
+  // Per-IP brake (60/hour) so the endpoint can't be used to enumerate/spam.
+  const ipRl = await enforceRateLimit("forgot:ip", clientIp(req), 60, HOUR)
   if (!ipRl.ok) return rateLimitedResponse(req, ipRl.retryAfterSec)
 
   let body: { email?: unknown } = {}
@@ -52,9 +52,9 @@ export async function POST(req: Request) {
     return accountJson(req, GENERIC, 200)
   }
 
-  // Max 3 reset requests per email per hour. The 429 is returned generically
+  // Max 8 reset requests per email per hour. The 429 is returned generically
   // (same shape as the success path would never reveal account existence).
-  const emailRl = await enforceRateLimit("forgot:email", email, 3, HOUR)
+  const emailRl = await enforceRateLimit("forgot:email", email, 8, HOUR)
   if (!emailRl.ok) return rateLimitedResponse(req, emailRl.retryAfterSec)
 
   await ensureUserBootstrap()
@@ -64,16 +64,19 @@ export async function POST(req: Request) {
   }
 
   const reset = await issueResetToken(user.id)
+  let emailSent = false
   if (reset) {
-    await sendPasswordResetEmail(user.email, reset.token)
+    const res = await sendPasswordResetEmail(user.email, reset.token)
+    emailSent = res.ok
   }
 
   return accountJson(
     req,
     {
       ...GENERIC,
-      // Dev/test only — never returned in production (emailed instead).
-      ...(tokensVisibleToClient() && reset ? { resetToken: reset.token } : {}),
+      // Surfaced in demo mode (no provider, or the email bounced) or dev opt-in;
+      // once a real provider delivers successfully the link is email-only.
+      ...(reset ? resetLinkPayload(reset.token, !emailSent) : {}),
     },
     200,
   )

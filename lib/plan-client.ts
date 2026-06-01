@@ -312,58 +312,118 @@ export interface AccountPlan {
   creditsUsed: number
 }
 
-type AccountResult =
-  | { ok: true; user: AccountUser }
-  | { ok: false; error: string; code?: string }
+interface RawAccountResponse {
+  ok?: boolean
+  token?: string
+  refreshToken?: string
+  user?: AccountUser
+  error?: string
+  code?: string
+  requiresVerification?: boolean
+  email?: string
+  /** Demo-only fallback (no provider / undeliverable): the 6-digit OTP code. */
+  verificationCode?: string
+}
 
-async function postAccount(
-  route: string,
-  payload: Record<string, unknown>,
-): Promise<AccountResult> {
-  try {
-    const res = await apiFetch(route, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-    const data = (await res.json()) as {
-      ok?: boolean
-      token?: string
-      refreshToken?: string
-      user?: AccountUser
-      error?: string
-      code?: string
-    }
-    if (!res.ok || !data.ok || !data.token || !data.user) {
-      return { ok: false, error: data.error ?? `Request failed (HTTP ${res.status})`, code: data.code }
-    }
-    // Store the session JWT (+ refresh token) so every subsequent cloud call
-    // carries the access token and can renew silently on expiry.
+/** Store the session JWT (+ refresh token) when the response carries one, so
+ *  every subsequent cloud call sends the Bearer and can renew silently. */
+function storeSessionFromResponse(data: RawAccountResponse): void {
+  if (typeof data.token === "string" && data.token) {
     setCloudAuthToken(data.token)
     if (typeof data.refreshToken === "string" && data.refreshToken) {
       setCloudRefreshToken(data.refreshToken)
     }
+  }
+}
+
+export type RegisterResult =
+  | {
+      ok: true
+      requiresVerification: true
+      email: string
+      /** Present ONLY when the verification email couldn't be delivered (demo /
+       *  no domain) so the UI can show the code. Absent when a real email was
+       *  sent — the user reads the code from their inbox. */
+      verificationCode?: string
+    }
+  | { ok: true; requiresVerification?: false; user: AccountUser }
+  | { ok: false; error: string; code?: string }
+
+/** Create an Edge Agent AI account. In production the account is created but
+ *  NOT signed in — the user must verify their email first (requiresVerification
+ *  is true). In dev (enforcement off) a session is returned and stored. */
+export async function registerAccount(input: {
+  email: string
+  password: string
+  name?: string
+}): Promise<RegisterResult> {
+  try {
+    const res = await apiFetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    })
+    const data = (await res.json()) as RawAccountResponse
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error ?? `Request failed (HTTP ${res.status})`, code: data.code }
+    }
+    if (data.requiresVerification) {
+      return {
+        ok: true,
+        requiresVerification: true,
+        email: data.email ?? input.email,
+        verificationCode: data.verificationCode,
+      }
+    }
+    if (!data.token || !data.user) {
+      return { ok: false, error: data.error ?? "Registration failed.", code: data.code }
+    }
+    storeSessionFromResponse(data)
     return { ok: true, user: data.user }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Network error" }
   }
 }
 
-/** Create an Edge Agent AI account and sign in. */
-export async function registerAccount(input: {
-  email: string
-  password: string
-  name?: string
-}): Promise<AccountResult> {
-  return postAccount("/api/auth/register", input)
-}
+export type LoginResult =
+  | { ok: true; user: AccountUser }
+  | {
+      ok: false
+      error: string
+      code?: string
+      /** Set when code === "email_not_verified". */
+      email?: string
+      verificationCode?: string
+    }
 
-/** Sign in to an existing Edge Agent AI account. */
+/** Sign in to an existing Edge Agent AI account. Returns
+ *  `code: "email_not_verified"` (HTTP 403) when the email hasn't been verified
+ *  yet — the caller should prompt the user to verify. */
 export async function loginAccount(input: {
   email: string
   password: string
-}): Promise<AccountResult> {
-  return postAccount("/api/auth/login", input)
+}): Promise<LoginResult> {
+  try {
+    const res = await apiFetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    })
+    const data = (await res.json()) as RawAccountResponse
+    if (!res.ok || !data.ok || !data.token || !data.user) {
+      return {
+        ok: false,
+        error: data.error ?? `Request failed (HTTP ${res.status})`,
+        code: data.code,
+        email: data.email,
+        verificationCode: data.verificationCode,
+      }
+    }
+    storeSessionFromResponse(data)
+    return { ok: true, user: data.user }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Network error" }
+  }
 }
 
 /** Sign out: clear the server cookie and drop the local session token. */
@@ -401,7 +461,7 @@ export async function logoutAllAccount(): Promise<void> {
  *  the raw token is returned so the flow is testable without email. */
 export async function sendVerificationEmail(): Promise<{
   ok: boolean
-  verificationToken?: string
+  verificationCode?: string
   error?: string
 }> {
   try {
@@ -410,16 +470,66 @@ export async function sendVerificationEmail(): Promise<{
       headers: { "Content-Type": "application/json" },
       body: "{}",
     })
-    const data = (await res.json()) as { ok?: boolean; verificationToken?: string; error?: string }
+    const data = (await res.json()) as { ok?: boolean; verificationCode?: string; error?: string }
     if (!res.ok || !data.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` }
-    return { ok: true, verificationToken: data.verificationToken }
+    return { ok: true, verificationCode: data.verificationCode }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Network error" }
   }
 }
 
-/** Confirm an email-verification token, then refresh the local session so the
- *  new `emailVerified` state is reflected in the access token. */
+/** (Re)send an email-verification link for an account that is not yet signed
+ *  in (public path, keyed by email). Used by the "verify your email" screen.
+ *  Always reports ok (no account enumeration); the link is surfaced only in
+ *  demo mode (no email provider). */
+export async function resendVerification(
+  email: string,
+): Promise<{ ok: boolean; verificationCode?: string; error?: string }> {
+  try {
+    const res = await apiFetch("/api/auth/send-verification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    })
+    const data = (await res.json()) as {
+      ok?: boolean
+      verificationCode?: string
+      error?: string
+    }
+    return {
+      ok: Boolean(data.ok),
+      verificationCode: data.verificationCode,
+      error: data.error,
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Network error" }
+  }
+}
+
+/** Verify an account by the 6-digit OTP code the user received by email. On
+ *  success the server auto-issues a session, which we store so the user is
+ *  immediately signed in and verified. */
+export async function verifyEmailCode(
+  email: string,
+  code: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await apiFetch("/api/auth/verify-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, code }),
+    })
+    const data = (await res.json()) as RawAccountResponse
+    if (!res.ok || !data.ok) return { ok: false, error: data.error ?? `Invalid or expired code.` }
+    storeSessionFromResponse(data)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Network error" }
+  }
+}
+
+/** Confirm an email-verification link token (legacy). On success the server
+ *  auto-issues a session, which we store so the user is signed in. */
 export async function verifyEmail(token: string): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await apiFetch("/api/auth/verify-email", {
@@ -427,8 +537,9 @@ export async function verifyEmail(token: string): Promise<{ ok: boolean; error?:
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
     })
-    const data = (await res.json()) as { ok?: boolean; error?: string }
+    const data = (await res.json()) as RawAccountResponse
     if (!res.ok || !data.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` }
+    storeSessionFromResponse(data)
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Network error" }
@@ -439,15 +550,25 @@ export async function verifyEmail(token: string): Promise<{ ok: boolean; error?:
  *  enumeration); the raw token is surfaced in dev only. */
 export async function forgotPassword(
   email: string,
-): Promise<{ ok: boolean; resetToken?: string; message?: string }> {
+): Promise<{ ok: boolean; resetToken?: string; resetUrl?: string; message?: string }> {
   try {
     const res = await apiFetch("/api/auth/forgot-password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
     })
-    const data = (await res.json()) as { ok?: boolean; resetToken?: string; message?: string }
-    return { ok: Boolean(data.ok), resetToken: data.resetToken, message: data.message }
+    const data = (await res.json()) as {
+      ok?: boolean
+      resetToken?: string
+      resetUrl?: string
+      message?: string
+    }
+    return {
+      ok: Boolean(data.ok),
+      resetToken: data.resetToken,
+      resetUrl: data.resetUrl,
+      message: data.message,
+    }
   } catch {
     return { ok: true }
   }

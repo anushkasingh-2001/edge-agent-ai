@@ -110,7 +110,7 @@ interface RegResponse {
   ok: boolean
   token: string
   refreshToken?: string
-  verificationToken?: string
+  verificationCode?: string
   user: { id: string; email: string; workspaceId: string; emailVerified?: boolean }
 }
 
@@ -144,28 +144,30 @@ describe("account auth hardening", () => {
   })
 
   // (1) + (2) ---------------------------------------------------------------
-  it("(1/2) register sends a verification email and does NOT return the token in production", async () => {
+  it("(1/2) register emails a verification CODE and does NOT return it in production", async () => {
     env.NODE_ENV = "production"
     env.USER_STORE = "file" // allow account store without DATABASE_URL in prod-mode test
     const data = await register("prod@edge.test", "password12345")
     assert.equal(data.ok, true)
-    assert.equal(data.verificationToken, undefined, "no raw token in production response")
+    assert.equal(data.verificationCode, undefined, "no raw code in production response")
     assert.equal(sent.length, 1, "one verification email sent")
     assert.equal(sent[0]!.to, "prod@edge.test")
-    assert.match(sent[0]!.html, /\/auth\/verify-email\?token=/, "email contains the verify link")
+    assert.match(sent[0]!.subject, /verification code/i, "subject mentions the code")
+    assert.match(sent[0]!.html, /\d{6}/, "email contains a 6-digit code")
+    assert.ok(!/\/auth\/verify-email\?token=/.test(sent[0]!.html), "no verification link in the code email")
   })
 
   // (3) ---------------------------------------------------------------------
-  it("(3) dev token return requires EDGE_AGENT_RETURN_AUTH_TOKENS=1", async () => {
-    // dev, flag OFF → no token in response (but email still 'sent').
+  it("(3) dev code return requires EDGE_AGENT_RETURN_AUTH_TOKENS=1", async () => {
+    // dev, flag OFF → no code in response (but email still 'sent').
     const off = await register("devoff@edge.test", "password12345")
-    assert.equal(off.verificationToken, undefined, "no token without the flag")
+    assert.equal(off.verificationCode, undefined, "no code without the flag")
     assert.equal(sent.length, 1)
 
-    // dev, flag ON → token surfaced.
+    // dev, flag ON → code surfaced.
     env.EDGE_AGENT_RETURN_AUTH_TOKENS = "1"
     const on = await register("devon@edge.test", "password12345", "9.9.9.9")
-    assert.ok(on.verificationToken, "token returned with the flag in dev")
+    assert.match(on.verificationCode ?? "", /^\d{6}$/, "code returned with the flag in dev")
   })
 
   // (4) ---------------------------------------------------------------------
@@ -235,23 +237,23 @@ describe("account auth hardening", () => {
   it("(8) rate limit blocks repeated forgot-password requests (per email)", async () => {
     await register("rl@edge.test", "password12345")
     let last = 200
-    // 3 allowed per email/hour; 4th is blocked. Vary IP so the email limit (not
+    // 8 allowed per email/hour; 9th is blocked. Vary IP so the email limit (not
     // the IP limit) is what trips.
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 9; i++) {
       const res = await forgotPOST(
         jsonReq("https://cloud.test/api/auth/forgot-password", { email: "rl@edge.test" }, undefined, `10.0.0.${i}`),
       )
       last = res.status
     }
-    assert.equal(last, 429, "4th forgot-password for the same email is rate limited")
+    assert.equal(last, 429, "9th forgot-password for the same email is rate limited")
   })
 
   // (9) ---------------------------------------------------------------------
   it("(9) rate limit blocks repeated login failures", async () => {
     await register("brute@edge.test", "password12345")
     let last = 401
-    // 5 failures allowed per (email+IP)/15min; the 6th attempt is blocked.
-    for (let i = 0; i < 6; i++) {
+    // 10 failures allowed per (email+IP)/15min; the 11th attempt is blocked.
+    for (let i = 0; i < 11; i++) {
       const res = await loginPOST(
         jsonReq("https://cloud.test/api/auth/login", { email: "brute@edge.test", password: "wrong" }, undefined, "11.0.0.1"),
       )
@@ -427,7 +429,7 @@ describe("account auth hardening", () => {
     assert.equal(rateLimiterKind(), "memory")
     await register("memlimit@edge.test", "password12345")
     let last = 200
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 9; i++) {
       const res = await forgotPOST(
         jsonReq("https://cloud.test/api/auth/forgot-password", { email: "memlimit@edge.test" }, undefined, `30.0.0.${i}`),
       )

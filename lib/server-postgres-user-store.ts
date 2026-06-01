@@ -16,8 +16,10 @@ import {
   normalizeEmail,
   DEFAULT_REFRESH_RETENTION_MS,
   type AuthTokenRecord,
+  type CreatePendingRegistrationInput,
   type CreateUserInput,
   type LinkedAccount,
+  type PendingRegistration,
   type RefreshTokenRecord,
   type TokenCleanupOptions,
   type TokenCleanupResult,
@@ -72,6 +74,15 @@ interface LinkRow {
   created_at: Date | string
 }
 
+interface PendingRow {
+  email: string
+  password_hash: string
+  name: string | null
+  code_hash: string
+  expires_at: Date | string
+  created_at: Date | string
+}
+
 function iso(v: Date | string): string {
   return v instanceof Date ? v.toISOString() : String(v)
 }
@@ -123,6 +134,17 @@ function rowToLink(r: LinkRow): LinkedAccount {
     provider: r.provider,
     providerUserId: r.provider_user_id,
     tokenRef: r.token_ref ?? undefined,
+    createdAt: iso(r.created_at),
+  }
+}
+
+function rowToPending(r: PendingRow): PendingRegistration {
+  return {
+    email: r.email,
+    passwordHash: r.password_hash,
+    name: r.name ?? undefined,
+    codeHash: r.code_hash,
+    expiresAt: iso(r.expires_at),
     createdAt: iso(r.created_at),
   }
 }
@@ -185,6 +207,35 @@ export class SqlUserStore implements UserStore {
       [userId],
     )
     return res.rows.length > 0 ? rowToWorkspace(res.rows[0]) : null
+  }
+
+  async createPendingRegistration(input: CreatePendingRegistrationInput): Promise<void> {
+    const email = normalizeEmail(input.email)
+    await this.client.query(
+      `INSERT INTO pending_registrations (email, password_hash, name, code_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (email) DO UPDATE
+         SET password_hash = EXCLUDED.password_hash,
+             name          = EXCLUDED.name,
+             code_hash      = EXCLUDED.code_hash,
+             expires_at     = EXCLUDED.expires_at,
+             created_at     = NOW()`,
+      [email, input.passwordHash, input.name?.trim() || null, input.codeHash, input.expiresAt],
+    )
+  }
+
+  async getPendingRegistration(email: string): Promise<PendingRegistration | null> {
+    const res = await this.client.query<PendingRow>(
+      `SELECT * FROM pending_registrations WHERE email = $1 AND expires_at > NOW() LIMIT 1`,
+      [normalizeEmail(email)],
+    )
+    return res.rows.length > 0 ? rowToPending(res.rows[0]) : null
+  }
+
+  async deletePendingRegistration(email: string): Promise<void> {
+    await this.client.query(`DELETE FROM pending_registrations WHERE email = $1`, [
+      normalizeEmail(email),
+    ])
   }
 
   async updatePassword(userId: string, passwordHash: string): Promise<void> {
@@ -332,6 +383,10 @@ export class SqlUserStore implements UserStore {
         WHERE expires_at <= $1 OR (revoked_at IS NOT NULL AND revoked_at <= $2)`,
       [now, revokedCutoff],
     )
+    // Sweep expired pending registrations too (best-effort, not in the counts).
+    await this.client
+      .query(`DELETE FROM pending_registrations WHERE expires_at <= $1`, [now])
+      .catch(() => undefined)
     const rows = (x: unknown): number => (x as { rowCount?: number }).rowCount ?? 0
     return { verification: rows(v), reset: rows(r), refresh: rows(f) }
   }
@@ -360,7 +415,7 @@ export class SqlUserStore implements UserStore {
 
   async _resetForTests(): Promise<void> {
     await this.client.query(
-      "TRUNCATE refresh_tokens, password_reset_tokens, email_verification_tokens, linked_accounts, workspaces, users",
+      "TRUNCATE pending_registrations, refresh_tokens, password_reset_tokens, email_verification_tokens, linked_accounts, workspaces, users",
     )
   }
 }

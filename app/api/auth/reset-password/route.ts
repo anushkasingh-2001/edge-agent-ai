@@ -25,8 +25,8 @@ export async function OPTIONS(req: Request) {
 }
 
 export async function POST(req: Request) {
-  // Brake brute-force of the token space: 10 attempts per IP per hour.
-  const rl = await enforceRateLimit("reset:ip", clientIp(req), 10, HOUR)
+  // Brake brute-force of the token space: 30 attempts per IP per hour.
+  const rl = await enforceRateLimit("reset:ip", clientIp(req), 30, HOUR)
   if (!rl.ok) return rateLimitedResponse(req, rl.retryAfterSec)
 
   let body: { token?: unknown; password?: unknown } = {}
