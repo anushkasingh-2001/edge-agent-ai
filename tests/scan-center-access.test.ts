@@ -1,12 +1,13 @@
 /**
  * Scan Center access-control tests.
  *
- * Covers the three states from the access spec:
+ * Modes are NOT plan-gated. The only access rule is sign-in:
  *
- *   1. Anonymous (no session)        → no hosted AI at all (every mode
- *                                       blocked with not_authenticated).
- *   2. Logged-in free user           → Auto allowed; Pro/Max/Manual locked.
- *   3. Paid user (pro / team)        → modes unlock per the saved tier.
+ *   1. Anonymous (no session)  → no hosted AI at all (every mode blocked
+ *                                with not_authenticated; effective = save).
+ *   2. Any signed-in user      → EVERY mode runs (free included). A heavier
+ *                                mode just spends more credits; the plan tier
+ *                                governs the credit allowance, not access.
  *
  * Plus the pure `effectiveAllowedModes` helper that the toggle consults.
  *
@@ -63,56 +64,36 @@ test("anonymous: every AI mode is blocked with not_authenticated", () => {
 test("anonymous: effective modes are deterministic-only (save)", () => {
   assert.deepEqual(effectiveAllowedModes(false, null), ["save"])
   // Even if a plan object leaks through, anonymous stays save-only.
-  const proPlan = { allowedModes: ["save", "auto", "pro"] } as unknown as PlanSummary
-  assert.deepEqual(effectiveAllowedModes(false, proPlan), ["save"])
+  const anyPlan = { allowedModes: ["save", "auto", "pro"] } as unknown as PlanSummary
+  assert.deepEqual(effectiveAllowedModes(false, anyPlan), ["save"])
 })
 
 // ===================================================================
-// 2. Logged-in free user — Auto on; Pro/Max/Manual locked.
+// 2. Any signed-in user — every mode runs (modes are credit-priced).
 // ===================================================================
 
-test("free user: Auto allowed, Pro/Max/Manual blocked (mode_not_in_plan)", () => {
+test("free user: EVERY mode is allowed (not plan-gated)", () => {
   setTier("free")
   setHostedKeys()
   _resetLedgerForTests()
 
-  const auto = resolveAiProviderForRequest({
-    userId: "u-free",
-    workspaceId: "u-free",
-    intelligenceMode: "auto",
-    task: "explain",
-  })
-  assert.equal(auto.ok, true, "free plan must allow Auto")
-
-  for (const mode of ["pro", "max", "manual"] as const) {
+  for (const mode of ["save", "auto", "pro", "max", "manual"] as const) {
     const r = resolveAiProviderForRequest({
       userId: "u-free",
       workspaceId: "u-free",
       intelligenceMode: mode,
       task: "explain",
     })
-    assert.equal(r.ok, false, `free plan must block ${mode}`)
-    if (!r.ok) assert.equal(r.code, "mode_not_in_plan")
+    assert.equal(r.ok, true, `free plan must allow ${mode}`)
   }
 })
 
-test("free user: effective modes are save + auto", () => {
-  const freePlan = { allowedModes: ["save", "auto"] } as unknown as PlanSummary
-  assert.deepEqual(effectiveAllowedModes(true, freePlan), ["save", "auto"])
-  // No plan loaded yet but authenticated → optimistic save+auto.
-  assert.deepEqual(effectiveAllowedModes(true, null), ["save", "auto"])
-})
-
-// ===================================================================
-// 3. Paid user — modes unlock per the saved tier.
-// ===================================================================
-
-test("paid pro user: Pro allowed, Max/Manual still locked", () => {
+test("paid pro user: every mode allowed too", () => {
   setTier("pro")
   setHostedKeys()
   _resetLedgerForTests()
 
-  for (const mode of ["auto", "pro"] as const) {
+  for (const mode of ["save", "auto", "pro", "max", "manual"] as const) {
     const r = resolveAiProviderForRequest({
       userId: "u-pro",
       workspaceId: "u-pro",
@@ -121,43 +102,17 @@ test("paid pro user: Pro allowed, Max/Manual still locked", () => {
     })
     assert.equal(r.ok, true, `pro plan must allow ${mode}`)
   }
-  for (const mode of ["max", "manual"] as const) {
-    const r = resolveAiProviderForRequest({
-      userId: "u-pro",
-      workspaceId: "u-pro",
-      intelligenceMode: mode,
-      task: "explain",
-    })
-    assert.equal(r.ok, false, `pro plan must block ${mode}`)
-    if (!r.ok) assert.equal(r.code, "mode_not_in_plan")
-  }
 })
 
-test("paid team user: Max unlocked", () => {
-  setTier("team")
-  setHostedKeys()
-  _resetLedgerForTests()
+// ===================================================================
+// 3. effectiveAllowedModes — all modes for any signed-in user.
+// ===================================================================
 
-  const max = resolveAiProviderForRequest({
-    userId: "u-team",
-    workspaceId: "u-team",
-    intelligenceMode: "max",
-    task: "explain",
-  })
-  assert.equal(max.ok, true, "team plan must allow Max")
-
-  const manual = resolveAiProviderForRequest({
-    userId: "u-team",
-    workspaceId: "u-team",
-    intelligenceMode: "manual",
-    task: "explain",
-  })
-  assert.equal(manual.ok, false, "team plan must still block Manual")
-})
-
-test("effectiveAllowedModes reflects the plan tier for signed-in users", () => {
-  const proPlan = { allowedModes: ["save", "auto", "pro"] } as unknown as PlanSummary
-  const modes = effectiveAllowedModes(true, proPlan)
-  assert.ok(modes.includes("pro"))
-  assert.ok(!modes.includes("max"))
+test("effectiveAllowedModes: signed-in users get every mode regardless of tier", () => {
+  const all = ["save", "auto", "pro", "max", "manual"]
+  // Plan tier doesn't matter — modes are not gated by it.
+  const freePlan = { allowedModes: ["save", "auto"] } as unknown as PlanSummary
+  assert.deepEqual(effectiveAllowedModes(true, freePlan), all)
+  // No plan loaded yet but authenticated → still all modes.
+  assert.deepEqual(effectiveAllowedModes(true, null), all)
 })

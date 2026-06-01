@@ -44,19 +44,20 @@ export type AnalysisMode = "save" | "auto" | "pro" | "max" | "manual"
  * plan state. This is the single source of truth the Scan Center toggle
  * consults; the server enforces the same rules independently.
  *
+ * Modes are NOT plan-gated. The plan only governs the credit allowance —
+ * a heavier mode just spends more credits per fix/explain.
+ *
  *   - Not signed in (anonymous): ONLY "save" (deterministic scan, no
- *     hosted AI). Every AI mode is locked → clicking opens Plan & Billing.
- *   - Signed in: whatever the plan grants (free = save+auto, pro adds
- *     "pro", team adds "max", enterprise adds "manual").
+ *     hosted AI). AI modes need an account to bill credits against, so
+ *     they're locked → clicking prompts sign-in.
+ *   - Signed in: every mode is available regardless of tier.
  */
 export function effectiveAllowedModes(
   authenticated: boolean,
-  plan: PlanSummary | null,
+  _plan: PlanSummary | null,
 ): AnalysisMode[] {
   if (!authenticated) return ["save"]
-  const modes = plan?.allowedModes
-  if (Array.isArray(modes) && modes.length > 0) return [...modes]
-  return ["save", "auto"]
+  return ["save", "auto", "pro", "max", "manual"]
 }
 
 export async function fetchPlanSummary(signal?: AbortSignal): Promise<PlanSummary | null> {

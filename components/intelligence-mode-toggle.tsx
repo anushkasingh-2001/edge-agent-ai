@@ -7,13 +7,19 @@
  * presentational + a callback; the parent owns the selected mode and
  * passes it to the fix/explain APIs as `intelligenceMode`.
  *
- *   save    Deterministic + Explain (cheapest)
- *   auto    Smart Routing (recommended default)
- *   pro     High Accuracy
- *   max     Deep Review (PR gate)
- *   manual  Select Model
+ * These are ANALYSIS-EFFORT modes — deliberately named differently from
+ * the billing PLANS (free/starter/pro/team). A mode is never gated by the
+ * plan; a heavier mode simply spends more credits per fix/explain. The
+ * wire IDs stay stable (save/auto/pro/max/manual) so the policy + routing
+ * layers don't change — only the user-facing labels do.
  *
- * Manual mode reveals the <ModelSelector/> (separate component).
+ *   save (Lite)        Deterministic + cheap explain. Lowest credit use.
+ *   auto (Balanced)    Smart routing. Recommended everyday default.
+ *   pro  (Deep)        Stronger model + larger graph. More credits.
+ *   max  (Exhaustive)  Best model, plan→patch→validate. Most credits.
+ *   manual (Custom)    Pick the model per task yourself.
+ *
+ * Custom mode reveals the <ModelSelector/> (separate component).
  */
 
 import { Zap, Gauge, Sparkles, ShieldCheck, SlidersHorizontal, Lock } from "lucide-react"
@@ -36,12 +42,26 @@ const MODES: Array<{
   icon: typeof Zap
   blurb: string
 }> = [
-  { id: "save", label: "Save Resources", icon: Zap, blurb: "Deterministic scanner truth + cheap explanation only. No LLM patches." },
-  { id: "auto", label: "Auto", icon: Gauge, blurb: "Smart routing: cheap→strong only when it helps. Recommended." },
-  { id: "pro", label: "Pro", icon: Sparkles, blurb: "Stronger model + larger graph neighborhood for high/critical findings." },
-  { id: "max", label: "Max", icon: ShieldCheck, blurb: "Best model, plan→patch→validate (parse/test/re-scan). PR-gate quality." },
-  { id: "manual", label: "Manual", icon: SlidersHorizontal, blurb: "Choose a model per task. Guardrails still enforced." },
+  { id: "save", label: "Lite", icon: Zap, blurb: "Deterministic scanner truth + a cheap explanation only. No LLM patches. Lowest credit use." },
+  { id: "auto", label: "Balanced", icon: Gauge, blurb: "Smart routing: cheap→strong only when it helps. Recommended everyday default." },
+  { id: "pro", label: "Deep", icon: Sparkles, blurb: "Stronger model + larger code-graph neighborhood for high/critical findings. Spends more credits." },
+  { id: "max", label: "Exhaustive", icon: ShieldCheck, blurb: "Best model with plan→patch→validate (parse/test/re-scan). PR-gate quality. Spends the most credits." },
+  { id: "manual", label: "Custom", icon: SlidersHorizontal, blurb: "Pick the model per task yourself. Guardrails still enforced." },
 ]
+
+/** Friendly mode label by wire ID — shared so every surface (toggle,
+ *  settings, billing) shows the same effort-mode names. */
+export const MODE_LABELS: Record<IntelligenceMode, string> = MODES.reduce(
+  (acc, m) => {
+    acc[m.id] = m.label
+    return acc
+  },
+  {} as Record<IntelligenceMode, string>,
+)
+
+export function modeLabel(id: IntelligenceMode): string {
+  return MODE_LABELS[id] ?? id
+}
 
 export interface IntelligenceModeToggleProps {
   value: IntelligenceMode
@@ -65,7 +85,7 @@ export function IntelligenceModeToggle({
   className,
   allowedModes,
   onLockedModeClick,
-  lockedMessage = "Subscribe or sign in to use AI modes.",
+  lockedMessage = "Sign in to use AI modes (each mode spends credits; heavier modes spend more).",
 }: IntelligenceModeToggleProps) {
   const isLocked = (id: IntelligenceMode): boolean =>
     Array.isArray(allowedModes) && !allowedModes.includes(id)

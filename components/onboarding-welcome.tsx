@@ -9,8 +9,8 @@
  *   1. Register with first/last name, email, and password → creates an
  *      Edge Agent AI account. In production the account must verify its email
  *      before it can enter the app (a "verify your email" step is shown).
- *   2. Skip → continue anonymously (only deterministic "Save Resources"
- *      scans; AI modes are locked until they sign in / subscribe).
+ *   2. Skip → continue anonymously (only the deterministic "Lite" mode
+ *      runs; AI modes are locked until they sign in).
  *   3. View plans → jump straight to Plan & Billing.
  */
 

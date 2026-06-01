@@ -169,16 +169,15 @@ export function ScanCenter({
   setManualModelSelection,
   onNavigateToPlan,
 }: ScanCenterProps) {
-  // Plan access drives the credits chip, the mode-lock UI, and the soft
-  // mode-downgrade effect below. `allowedModes` already accounts for the
-  // anonymous case (only "save") and the plan tier for signed-in users.
+  // Plan access drives the credits chip and the anonymous mode-lock. Modes
+  // are NOT plan-gated for signed-in users, so `allowedModes` is all modes
+  // when authenticated and only "save" when anonymous.
   const { authenticated, plan, allowedModes, loading: planLoading } = usePlanAccess()
 
-  // Soft downgrade: if the selected mode isn't in the effective allowed
-  // set (anonymous picked an AI mode, or a paid mode the plan dropped),
-  // bounce to the safest still-allowed mode so the next scan works and
-  // the toggle never shows a "stuck" selection the server would refuse.
-  // Anonymous → "save" (deterministic only); signed-in → "auto".
+  // Soft downgrade: only relevant for anonymous users who picked an AI mode
+  // (which needs an account). Bounce them to deterministic "save" so the
+  // toggle never shows a selection the server would refuse for lack of a
+  // session. Signed-in users keep whatever mode they chose.
   useEffect(() => {
     if (planLoading) return
     if (!allowedModes.includes(intelligenceMode)) {
@@ -555,7 +554,7 @@ export function ScanCenter({
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">Mode</span>
                   <span className="opacity-70 hidden sm:inline">
-                    Save = no LLM patches · Max = plan→patch→validate
+                    Lite = no LLM patches · Exhaustive = plan→patch→validate · heavier modes spend more credits
                   </span>
                 </div>
                 <IntelligenceModeToggle
@@ -566,32 +565,19 @@ export function ScanCenter({
                 />
               </div>
 
-              {/* Access gate banner. Two cases:
-                  1. Anonymous — only deterministic "Save Resources" runs;
-                     AI modes are locked. Point them to sign in / plans.
-                  2. Signed in but the selected mode isn't on their plan.
-                  In both cases the server enforces the same rule; this
-                  just surfaces it pre-scan and links to Plan & Billing. */}
+              {/* Access gate banner. Modes are NOT plan-gated for signed-in
+                  users — any mode runs and simply spends credits. The only
+                  gate left is sign-in: anonymous users get the deterministic
+                  Lite mode only (AI modes need an account to bill credits). */}
               {!planLoading && !authenticated ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-300">
                   <span>
                     You&apos;re not signed in. Scans run deterministic checks
-                    only (Save Resources). Sign in and subscribe to unlock
-                    Auto, Pro, Max, and Manual AI modes.
+                    only (Lite). Sign in to use the Balanced, Deep, Exhaustive,
+                    and Custom AI modes — they spend credits from your plan.
                   </span>
                   <Button type="button" size="sm" variant="outline" onClick={() => onNavigateToPlan?.()}>
                     Sign in / View plans
-                  </Button>
-                </div>
-              ) : !planLoading && plan && !allowedModes.includes(intelligenceMode) ? (
-                <div className="flex flex-wrap items-center gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-300">
-                  <span>
-                    {intelligenceMode.toUpperCase()} mode is not included in
-                    your {plan.tier} plan. Upgrade to use it — no provider
-                    key needed.
-                  </span>
-                  <Button type="button" size="sm" variant="outline" onClick={() => onNavigateToPlan?.()}>
-                    Upgrade
                   </Button>
                 </div>
               ) : null}

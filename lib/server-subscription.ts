@@ -44,31 +44,27 @@ export interface PlanSummary {
   billingPeriodEnd: string
 }
 
-/** Per-tier entitlements. Stripe webhook → planTier → these flags. */
+/** Every analysis mode. Modes are NOT a plan entitlement — any signed-in
+ *  user may pick any mode. The plan only governs the credit ALLOWANCE; a
+ *  heavier mode just spends more credits per fix/explain. (The naming the
+ *  user sees is Lite/Balanced/Deep/Exhaustive/Custom; the wire IDs below
+ *  stay stable.) */
+const ALL_MODES: IntelligenceMode[] = ["save", "auto", "pro", "max", "manual"]
+
+/** Per-tier entitlements. Stripe webhook → planTier → these flags.
+ *
+ *  Mode ACCESS is intentionally uniform across tiers — what differs between
+ *  plans is the credit allowance (see creditsLimit), not which modes you can
+ *  run. So every tier unlocks all modes + manual model selection. */
 export const PLAN_ENTITLEMENTS: Record<
   PlanTier,
   { allowedModes: IntelligenceMode[]; allowManualModelSelection: boolean }
 > = {
-  free: {
-    allowedModes: ["save", "auto"],
-    allowManualModelSelection: false,
-  },
-  starter: {
-    allowedModes: ["save", "auto"],
-    allowManualModelSelection: false,
-  },
-  pro: {
-    allowedModes: ["save", "auto", "pro"],
-    allowManualModelSelection: false,
-  },
-  team: {
-    allowedModes: ["save", "auto", "pro", "max"],
-    allowManualModelSelection: false,
-  },
-  enterprise: {
-    allowedModes: ["save", "auto", "pro", "max", "manual"],
-    allowManualModelSelection: true,
-  },
+  free: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
+  starter: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
+  pro: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
+  team: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
+  enterprise: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
 }
 
 function entitlementsFor(record: SubscriptionRecord): {

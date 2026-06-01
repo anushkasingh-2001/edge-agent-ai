@@ -48,6 +48,7 @@ import {
   type GitHubRepoPermissionResponse,
   type GitHubStatusResponse,
 } from "@/lib/github-client"
+import { modeLabel } from "@/components/intelligence-mode-toggle"
 import { GithubLoginDialog } from "@/components/github-login-dialog"
 import { PolicyRulesCard } from "@/components/views/policy-rules-card"
 import { SystemHealthGate } from "@/components/system-health-gate"
@@ -300,7 +301,7 @@ export function Settings({
               {(plan?.allowedModes ?? []).map((m) => (
                 <li key={m} className="flex items-center gap-2">
                   <Zap className="h-3 w-3 text-accent" />
-                  <span className="uppercase">{m}</span>
+                  <span className="font-medium text-foreground">{modeLabel(m)}</span>
                   <span className="opacity-70">
                     {modeBlurb(m)}
                   </span>

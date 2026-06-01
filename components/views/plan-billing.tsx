@@ -49,7 +49,7 @@ const PLANS: PlanInfo[] = [
     name: "Starter",
     price: "$9/mo",
     credits: "500 AI credits / month",
-    features: ["Save + Auto intelligence modes", "AI explanations & fixes", "Single workspace"],
+    features: ["All analysis modes included", "AI explanations & fixes", "Single workspace"],
   },
   {
     tier: "pro",
@@ -57,14 +57,14 @@ const PLANS: PlanInfo[] = [
     price: "$29/mo",
     credits: "2,000 AI credits / month",
     highlight: true,
-    features: ["Everything in Starter", "Pro intelligence mode", "Priority model routing"],
+    features: ["Everything in Starter", "4× more AI credits", "Priority model routing"],
   },
   {
     tier: "team",
     name: "Team",
     price: "$99/mo",
     credits: "10,000 AI credits / month",
-    features: ["Everything in Pro", "Max (deep review) mode", "Shared team workspace"],
+    features: ["Everything in Pro", "10,000 credits / month", "Shared team workspace"],
   },
 ]
 

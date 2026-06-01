@@ -5,7 +5,7 @@
  *   22. Hosted routes reject apiKey/baseUrl/providerKey/* fields.
  *   23. API responses never include apiKey/baseUrl.
  *   24. Audit logs never include provider keys.
- *   25. Plan-blocked Pro/Max does NOT call the model provider.
+ *   25. Pro/Max are NOT plan-gated — a free user can run them (credit-priced).
  *
  * Run: node --import tsx --test tests/hosted-security-v2.test.ts
  */
@@ -176,11 +176,16 @@ describe("hosted security v2", () => {
     }
   })
 
-  it("(25) Plan-blocked PRO mode never reaches the upstream provider", async () => {
+  // Modes are NOT plan-gated: a FREE user may run Pro/Max — they just spend
+  // more credits. The provider IS reached (no plan block before the call).
+  it("(25) PRO mode is allowed for a free user (not plan-gated)", async () => {
     let upstreamCalls = 0
     global.fetch = (async () => {
       upstreamCalls += 1
-      return new Response("{}", { status: 200 })
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok", role: "assistant" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )
     }) as typeof fetch
     const res = await chatPOST(
       new Request("http://localhost/api/hosted/chat", {
@@ -192,15 +197,18 @@ describe("hosted security v2", () => {
         }),
       }),
     )
-    assert.equal(res.status, 402, "blocked Pro mode must return 402")
-    assert.equal(upstreamCalls, 0, "provider must not be called for blocked plan")
+    assert.equal(res.status, 200, "free user may use Pro mode")
+    assert.equal(upstreamCalls, 1, "provider IS reached — Pro is not plan-blocked")
   })
 
-  it("(25b) Plan-blocked MAX mode never reaches the upstream provider", async () => {
+  it("(25b) MAX mode is allowed for a free user (not plan-gated)", async () => {
     let upstreamCalls = 0
     global.fetch = (async () => {
       upstreamCalls += 1
-      return new Response("{}", { status: 200 })
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok", role: "assistant" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )
     }) as typeof fetch
     const res = await chatPOST(
       new Request("http://localhost/api/hosted/chat", {
@@ -212,8 +220,8 @@ describe("hosted security v2", () => {
         }),
       }),
     )
-    assert.equal(res.status, 402)
-    assert.equal(upstreamCalls, 0)
+    assert.equal(res.status, 200, "free user may use Max mode")
+    assert.equal(upstreamCalls, 1, "provider IS reached — Max is not plan-blocked")
   })
 
   it("/api/finding/explain also rejects BYOK fields", async () => {

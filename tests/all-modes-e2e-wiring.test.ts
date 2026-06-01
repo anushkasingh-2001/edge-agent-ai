@@ -355,25 +355,22 @@ test("9. recordConsumption debits credits after a successful hosted call", () =>
 })
 
 // ===================================================================
-// 10. Free plan blocks Pro / Max / Manual modes before any model call.
+// 10. Modes are credit-priced, not plan-gated: a free plan can run every
+//     mode (heavier modes simply cost more credits per call).
 // ===================================================================
 
-test("10. Free plan blocks Pro/Max/Manual with mode_not_in_plan", () => {
+test("10. Free plan allows every mode (modes are credit-priced, not plan-gated)", () => {
   free()
   setHostedKeys()
   _resetLedgerForTests()
-  for (const mode of ["pro", "max", "manual"] as const) {
+  for (const mode of ["save", "auto", "pro", "max", "manual"] as const) {
     const r = resolveAiProviderForRequest({
       userId: "u-free",
       workspaceId: "w",
       intelligenceMode: mode,
       task: "explain",
     })
-    assert.equal(r.ok, false, `Free plan must block ${mode}`)
-    if (!r.ok) {
-      assert.equal(r.code, "mode_not_in_plan")
-      assert.equal(r.upgrade, true)
-    }
+    assert.equal(r.ok, true, `Free plan must allow ${mode}`)
   }
 })
 
