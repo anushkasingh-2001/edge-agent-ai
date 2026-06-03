@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   Loader2,
   TestTube,
+  FlaskConical,
   ChevronDown,
   FileCode,
   FolderOpen,
@@ -54,7 +55,12 @@ import {
   extractTargetFilesFromSuite,
   type TestSuite,
 } from "@/lib/test-cases"
-import { SECURITY_CHECKS, isCheckEnabled } from "@/lib/security-checks"
+import {
+  SECURITY_CHECKS,
+  STATIC_SECURITY_CHECKS,
+  BEHAVIORAL_SECURITY_CHECKS,
+  isCheckEnabled,
+} from "@/lib/security-checks"
 
 const securityChecks = SECURITY_CHECKS
 // Only checks backed by a real deterministic scanner rule are selectable.
@@ -757,11 +763,17 @@ export function ScanCenter({
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                {securityChecks.map((check) => {
-                  // A check is only selectable when a real deterministic
-                  // scanner rule backs it. Unbacked taxonomy scaffolds are
-                  // shown disabled + "Coming soon" so they're never
-                  // mistaken for an enabled detector that found nothing.
+                {STATIC_SECURITY_CHECKS.map((check) => {
+                  // Only STATIC code-analysis checks live here. Behavioral /
+                  // runtime evaluations (smoke tests, performance, accuracy
+                  // regression, tool-selection correctness) are rendered in
+                  // their own section below — they require Behavioral Tests,
+                  // not a static scan.
+                  //
+                  // A static check is only selectable when a real
+                  // deterministic scanner rule backs it. Unbacked taxonomy
+                  // scaffolds are shown disabled + "Coming soon" so they're
+                  // never mistaken for an enabled detector that found nothing.
                   const enabled = isCheckEnabled(check.id)
                   return (
                     <div
@@ -806,6 +818,56 @@ export function ScanCenter({
                   )
                 })}
               </div>
+
+              {/* Behavioral / runtime evaluations are intentionally kept
+               *  OUT of the static checklist above. They cannot be proven
+               *  by static code analysis — they require running Behavioral
+               *  Tests / Evaluations against a live agent. Surfaced here as
+               *  a pointer to that workflow, never as a static finding. */}
+              {BEHAVIORAL_SECURITY_CHECKS.length > 0 && (
+                <div className="rounded-lg border border-dashed border-border bg-secondary/20 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <FlaskConical className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium">
+                      Behavioral Tests &amp; Evaluations
+                    </span>
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 text-[10px] text-muted-foreground border-muted-foreground/30"
+                    >
+                      Run separately
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    These checks measure live agent behavior and can&apos;t be
+                    confirmed by a static scan. Run them under Findings →
+                    Behavioral Tests.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {BEHAVIORAL_SECURITY_CHECKS.map((check) => (
+                      <Badge
+                        key={check.id}
+                        variant="outline"
+                        className="text-[10px] text-muted-foreground border-border"
+                        title={check.description}
+                      >
+                        {check.label}
+                      </Badge>
+                    ))}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => onShowUserDefinedAndAiTests?.()}
+                    disabled={!onShowUserDefinedAndAiTests}
+                    title="Open Findings → Behavioral Tests to run live evaluations"
+                  >
+                    <TestTube className="h-3.5 w-3.5" />
+                    Open Behavioral Tests
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
 

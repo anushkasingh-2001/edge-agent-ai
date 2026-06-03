@@ -37,6 +37,13 @@ export interface SecurityCheck {
    *  check `label` for display + filtering. Empty array == no scanner
    *  rule emits this category yet. */
   scannerCategories: string[]
+  /** True for runtime/behavioral checks (live smoke tests,
+   *  performance/runtime, accuracy regression, tool-selection
+   *  correctness). These are NOT static code-analysis detectors — they
+   *  require running Behavioral Tests / Evaluations against a live agent.
+   *  They must never appear in the static Code Analysis checklist or
+   *  findings; they live under the Behavioral Tests surface instead. */
+  behavioral?: boolean
 }
 
 export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
@@ -123,32 +130,37 @@ export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
     description: "Static changes that may reduce agent accuracy and should trigger evals",
     scannerCategories: ["Accuracy risk", "Accuracy / quality risk"],
   },
-  // ---- UI-only scaffolds: kept so the dropdown taxonomy stays stable. ----
-  // These have no backing scanner rule yet and always count to 0 findings;
-  // removing them would change the existing UI surface.
+  // ---- Behavioral / runtime evaluations (NOT static code analysis). ----
+  // These require running Behavioral Tests / Evaluations against a live
+  // agent; no static rule can confirm them. They are surfaced under the
+  // Behavioral Tests panel, never as static Code Analysis checks/findings.
   {
     id: "accuracy",
     label: "Accuracy regression",
-    description: "Detect changes that may affect output quality",
+    description: "Detect output-quality regressions (requires evaluations)",
     scannerCategories: [],
+    behavioral: true,
   },
   {
     id: "performance",
     label: "Performance/runtime",
-    description: "Monitor latency and resource usage",
+    description: "Monitor latency and resource usage (requires runtime tests)",
     scannerCategories: [],
+    behavioral: true,
   },
   {
     id: "tool-selection",
     label: "Tool selection correctness",
-    description: "Verify correct tool routing",
+    description: "Verify correct tool routing (requires behavioral probes)",
     scannerCategories: [],
+    behavioral: true,
   },
   {
     id: "smoke-tests",
     label: "Live smoke tests",
-    description: "Run live validation tests",
+    description: "Run live validation tests (requires behavioral tests)",
     scannerCategories: [],
+    behavioral: true,
   },
 ] as const
 
@@ -168,6 +180,26 @@ const BACKED_CHECK_IDS: ReadonlySet<string> = new Set<string>(SCANNER_RULE_IDS)
 export function isCheckEnabled(id: string): boolean {
   return BACKED_CHECK_IDS.has(id)
 }
+
+/** IDs of runtime/behavioral checks (require Behavioral Tests, not a
+ *  static scan). */
+export const BEHAVIORAL_CHECK_IDS: ReadonlySet<string> = new Set<string>(
+  SECURITY_CHECKS.filter((c) => c.behavioral).map((c) => c.id),
+)
+
+export function isBehavioralCheck(id: string): boolean {
+  return BEHAVIORAL_CHECK_IDS.has(id)
+}
+
+/** Static code-analysis checks (everything that is NOT behavioral). These
+ *  are the only checks shown in the static Scan Center checklist. */
+export const STATIC_SECURITY_CHECKS: ReadonlyArray<SecurityCheck> =
+  SECURITY_CHECKS.filter((c) => !c.behavioral)
+
+/** Behavioral / evaluation checks, shown under the Behavioral Tests
+ *  surface — never as static Code Analysis findings. */
+export const BEHAVIORAL_SECURITY_CHECKS: ReadonlyArray<SecurityCheck> =
+  SECURITY_CHECKS.filter((c) => c.behavioral)
 
 /** UI checks that have a real, running deterministic detector today. */
 export const ENABLED_SECURITY_CHECKS: ReadonlyArray<SecurityCheck> =
