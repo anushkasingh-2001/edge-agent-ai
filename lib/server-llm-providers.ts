@@ -191,7 +191,6 @@ function extractAnthropicText(json: unknown): string {
 export async function callScanLlm(req: ScanLlmRequest): Promise<ScanLlmResult> {
   if (!req.apiKey) return { ok: false, error: "missing_api_key" }
   const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const temperature = req.temperature ?? 0
 
   let url: string
   let headers: Record<string, string>
@@ -207,10 +206,13 @@ export async function callScanLlm(req: ScanLlmRequest): Promise<ScanLlmResult> {
     body = {
       model: req.model,
       max_tokens: req.maxTokens ?? 1500,
-      temperature,
       system: req.system,
       messages: [{ role: "user", content: req.user }],
     }
+    // `temperature` is deprecated on the newest judge models (e.g.
+    // claude-opus-4-8 rejects ANY temperature). Only send it when a caller
+    // explicitly asks; otherwise use the model default.
+    if (req.temperature !== undefined) body.temperature = req.temperature
   } else {
     url = `${req.baseUrl.replace(/\/+$/, "")}/chat/completions`
     headers = {
@@ -219,14 +221,17 @@ export async function callScanLlm(req: ScanLlmRequest): Promise<ScanLlmResult> {
     }
     body = {
       model: req.model,
-      temperature,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: req.system },
         { role: "user", content: req.user },
       ],
     }
-    if (req.maxTokens) body.max_tokens = req.maxTokens
+    // OpenAI's gpt-5 family rejects `max_tokens` (requires
+    // `max_completion_tokens`) and only accepts the default temperature
+    // (omitting `temperature` keeps us compatible across gpt-4o/4.1/5.x).
+    // Older models still accept `max_completion_tokens`, so this is safe.
+    if (req.maxTokens) body.max_completion_tokens = req.maxTokens
   }
 
   let resp: Response
