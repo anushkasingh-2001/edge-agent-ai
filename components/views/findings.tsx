@@ -71,7 +71,10 @@ import type {
   FindingStatus,
 } from "@/lib/scan-report"
 import type { TestSuite } from "@/lib/test-cases"
-import { SECURITY_CHECKS, displayCategoryLabel } from "@/lib/security-checks"
+import {
+  ENABLED_SECURITY_CHECKS,
+  displayCategoryLabel,
+} from "@/lib/security-checks"
 import {
   accuracyTone,
   formatAccuracyPct,
@@ -507,7 +510,12 @@ function CodeAnalysisPanel({
     return m
   }, [findingsAfterFixes])
 
-  const knownLabels = SECURITY_CHECKS.map((c) => c.label)
+  // Only checks backed by a real scanner rule appear in the static
+  // category filter. Unbacked taxonomy scaffolds (accuracy / performance
+  // / tool-selection / smoke-tests / legacy vague-prompts) can never
+  // carry a finding, so listing them as "(0)" would imply a detector
+  // that found nothing rather than one that doesn't exist.
+  const knownLabels = ENABLED_SECURITY_CHECKS.map((c) => c.label)
   const knownLabelSet = useMemo(() => new Set(knownLabels), [knownLabels])
   const orphanLabels = useMemo(
     () =>

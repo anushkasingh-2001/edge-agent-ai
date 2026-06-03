@@ -54,9 +54,15 @@ import {
   extractTargetFilesFromSuite,
   type TestSuite,
 } from "@/lib/test-cases"
-import { SECURITY_CHECKS } from "@/lib/security-checks"
+import { SECURITY_CHECKS, isCheckEnabled } from "@/lib/security-checks"
 
 const securityChecks = SECURITY_CHECKS
+// Only checks backed by a real deterministic scanner rule are selectable.
+// The rest are taxonomy scaffolds shown as "Coming soon" (see the
+// checklist render + lib/security-checks.ts).
+const enabledCheckIds = securityChecks
+  .filter((c) => isCheckEnabled(c.id))
+  .map((c) => c.id)
 
 interface ScanCenterProps {
   selectedAgents?: string[]
@@ -193,7 +199,7 @@ export function ScanCenter({
     () => ["openai", "anthropic", "google"],
     [],
   )
-  const [selectedChecks, setSelectedChecks] = useState<string[]>(securityChecks.map((c) => c.id))
+  const [selectedChecks, setSelectedChecks] = useState<string[]>([...enabledCheckIds])
   const [allSelected, setAllSelected] = useState(true)
   const [scanProgress, setScanProgress] = useState(0)
   const [importOpen, setImportOpen] = useState(false)
@@ -246,7 +252,7 @@ export function ScanCenter({
   const handleAllChange = (checked: boolean) => {
     setAllSelected(checked)
     if (checked) {
-      setSelectedChecks(securityChecks.map((c) => c.id))
+      setSelectedChecks([...enabledCheckIds])
     } else {
       setSelectedChecks([])
     }
@@ -623,7 +629,7 @@ export function ScanCenter({
                   <p className="text-xs text-muted-foreground">Run all available security and quality checks</p>
                 </div>
                 <Badge variant="outline" className="text-xs">
-                  {selectedChecks.length}/{securityChecks.length}
+                  {selectedChecks.length}/{enabledCheckIds.length}
                 </Badge>
                 {activeSuite && (
                   <span
@@ -751,25 +757,54 @@ export function ScanCenter({
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                {securityChecks.map((check) => (
-                  <div
-                    key={check.id}
-                    className="flex items-start gap-3 p-3 rounded-lg hover:bg-secondary/30 transition-colors"
-                  >
-                    <Checkbox
-                      id={check.id}
-                      checked={selectedChecks.includes(check.id)}
-                      onCheckedChange={(checked) => handleCheckChange(check.id, checked as boolean)}
-                      className="mt-0.5"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <label htmlFor={check.id} className="text-sm font-medium cursor-pointer">
-                        {check.label}
-                      </label>
-                      <p className="text-xs text-muted-foreground truncate">{check.description}</p>
+                {securityChecks.map((check) => {
+                  // A check is only selectable when a real deterministic
+                  // scanner rule backs it. Unbacked taxonomy scaffolds are
+                  // shown disabled + "Coming soon" so they're never
+                  // mistaken for an enabled detector that found nothing.
+                  const enabled = isCheckEnabled(check.id)
+                  return (
+                    <div
+                      key={check.id}
+                      className={`flex items-start gap-3 p-3 rounded-lg transition-colors ${
+                        enabled ? "hover:bg-secondary/30" : "opacity-60"
+                      }`}
+                    >
+                      <Checkbox
+                        id={check.id}
+                        checked={enabled && selectedChecks.includes(check.id)}
+                        disabled={!enabled}
+                        onCheckedChange={(checked) =>
+                          handleCheckChange(check.id, checked as boolean)
+                        }
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <label
+                            htmlFor={check.id}
+                            className={`text-sm font-medium ${
+                              enabled ? "cursor-pointer" : "cursor-not-allowed"
+                            }`}
+                          >
+                            {check.label}
+                          </label>
+                          {!enabled && (
+                            <Badge
+                              variant="outline"
+                              className="shrink-0 text-[10px] text-muted-foreground border-muted-foreground/30"
+                            >
+                              Coming soon
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {check.description}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </CardContent>
           </Card>
@@ -852,9 +887,10 @@ export function ScanCenter({
                     variant="secondary"
                     className="w-full bg-accent/15 hover:bg-accent/25 border border-accent/40 text-accent-foreground"
                     onClick={async () => {
-                      // 1) Make sure every check is ticked so the
-                      //    scan covers all 14 categories.
-                      setSelectedChecks(securityChecks.map((c) => c.id))
+                      // 1) Make sure every BACKED check is ticked so the
+                      //    scan covers all real detectors (coming-soon
+                      //    scaffolds are not selectable).
+                      setSelectedChecks([...enabledCheckIds])
                       setAllSelected(true)
                       // 2) Kick off a *true* full scan — explicitly
                       //    bypass suite narrowing here. Without

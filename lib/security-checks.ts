@@ -26,6 +26,8 @@
  * in the dropdown so the user sees the full taxonomy; it just always
  * counts to 0 until a backing rule is added.
  */
+import { SCANNER_RULE_IDS } from "./scan-report"
+
 export interface SecurityCheck {
   id: string
   label: string
@@ -149,6 +151,31 @@ export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
     scannerCategories: [],
   },
 ] as const
+
+/**
+ * Whether a UI check is backed by a REAL deterministic scanner rule that
+ * runs today. Source of truth is `SCANNER_RULE_IDS` (the rule ids the
+ * Python scanner actually emits) — NOT the presence of a UI label.
+ *
+ * Unbacked checks (`accuracy`, `performance`, `tool-selection`,
+ * `smoke-tests`, and the legacy `vague-prompts` whose categories the
+ * IR scanner no longer emits) are kept in the taxonomy for stability but
+ * must be surfaced to the user as "coming soon / not enabled" rather than
+ * as a real detector that simply found nothing.
+ */
+const BACKED_CHECK_IDS: ReadonlySet<string> = new Set<string>(SCANNER_RULE_IDS)
+
+export function isCheckEnabled(id: string): boolean {
+  return BACKED_CHECK_IDS.has(id)
+}
+
+/** UI checks that have a real, running deterministic detector today. */
+export const ENABLED_SECURITY_CHECKS: ReadonlyArray<SecurityCheck> =
+  SECURITY_CHECKS.filter((c) => isCheckEnabled(c.id))
+
+/** UI checks that are taxonomy-only scaffolds (no backing detector yet). */
+export const COMING_SOON_SECURITY_CHECKS: ReadonlyArray<SecurityCheck> =
+  SECURITY_CHECKS.filter((c) => !isCheckEnabled(c.id))
 
 /**
  * Reverse lookup: raw scanner-category string → user-facing check label.
