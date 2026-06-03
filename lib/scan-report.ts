@@ -49,6 +49,19 @@ const SuggestedPatchSchema = z.object({
   explanation: z.string(),
 })
 
+/** Status badge added by scan-time intelligence (lib/scan-intelligence).
+ *  Defaults to "confirmed" for deterministic findings. `z.string()`-ish
+ *  via enum keeps old reports (without the field) valid since it's
+ *  optional. */
+const FindingStatusSchema = z.enum([
+  "confirmed",
+  "llm_verified",
+  "likely_false_positive",
+  "gap_audit_confirmed",
+  "needs_rule_support",
+  "needs_human_review",
+])
+
 const ScannerFindingSchema = z.object({
   id: z.string(),
   // `z.string()` (not the SCANNER_RULE_IDS enum) so old reports with
@@ -74,6 +87,21 @@ const ScannerFindingSchema = z.object({
   confidence_band: z.string().nullable().optional(),
   escalation: z.string().nullable().optional(),
   confidence_features: z.record(z.string(), z.unknown()).optional(),
+  // Scan-time intelligence metadata (lib/scan-intelligence). Metadata
+  // ONLY — the scanner-owned fields above are never changed by the LLM.
+  // All optional so pre-intelligence reports keep validating.
+  status: FindingStatusSchema.optional(),
+  verifier_verdict: z
+    .enum(["real", "likely_false_positive", "uncertain"])
+    .optional(),
+  verifier_confidence: z.number().optional(),
+  verifier_reason: z.string().optional(),
+  false_positive_reason: z.string().optional(),
+  suggested_severity_adjustment: z.enum(["none", "lower", "raise"]).optional(),
+  gap_audit_reason: z.string().optional(),
+  model_used: z.string().optional(),
+  context_hash: z.string().optional(),
+  cached: z.boolean().optional(),
 })
 
 // `kind` widened to z.string() because the IR scanner emits additional
@@ -234,6 +262,22 @@ const WorkingTreeStatusSchema = z.object({
 
 export type WorkingTreeStatus = z.infer<typeof WorkingTreeStatusSchema>
 
+/** Summary of the scan-time intelligence pass (lib/scan-intelligence).
+ *  All counts default so partial/old payloads still validate. */
+const IntelligenceSummarySchema = z.object({
+  mode: z.enum(["lite", "balanced", "deep", "exhaustive"]),
+  ai_calls_used: z.number().default(0),
+  verifier_enabled: z.boolean().default(false),
+  gap_audit_enabled: z.boolean().default(false),
+  ai_skipped_reason: z.string().optional(),
+  clusters_reviewed: z.number().default(0),
+  downranked_false_positives: z.number().default(0),
+  confirmed_gaps: z.number().default(0),
+  headline: z.string().default(""),
+})
+
+export type IntelligenceSummary = z.infer<typeof IntelligenceSummarySchema>
+
 export const ScanReportSchema = z.object({
   schema_version: z.string(),
   scan_root: z.string(),
@@ -280,6 +324,10 @@ export const ScanReportSchema = z.object({
   // in localStorage from before this field landed will simply not
   // have it (the UI treats absent === unknown, not === clean).
   working_tree: WorkingTreeStatusSchema.optional(),
+  // Scan-time intelligence summary (lib/scan-intelligence). Present when
+  // /api/scan ran the post-scan verifier/gap-audit layer. Absent on
+  // pre-intelligence reports.
+  intelligence_summary: IntelligenceSummarySchema.optional(),
 })
 
 export type ScanReport = z.infer<typeof ScanReportSchema>
@@ -316,7 +364,17 @@ export type UiFinding = {
   suggestedPatch?: SuggestedPatch | null
   confidenceBand?: string | null
   escalation?: string | null
+  // Scan-time intelligence metadata (lib/scan-intelligence). Drives the
+  // status badge + likely-false-positive downranking in the UI.
+  status?: FindingStatus
+  verifierVerdict?: "real" | "likely_false_positive" | "uncertain"
+  verifierConfidence?: number
+  verifierReason?: string
+  falsePositiveReason?: string
+  gapAuditReason?: string
 }
+
+export type FindingStatus = z.infer<typeof FindingStatusSchema>
 
 export function mapReportToUiFindings(report: ScanReport): UiFinding[] {
   return report.findings.map((f, i) => ({
@@ -337,6 +395,12 @@ export function mapReportToUiFindings(report: ScanReport): UiFinding[] {
     suggestedPatch: f.suggested_patch,
     confidenceBand: f.confidence_band,
     escalation: f.escalation,
+    status: f.status,
+    verifierVerdict: f.verifier_verdict,
+    verifierConfidence: f.verifier_confidence,
+    verifierReason: f.verifier_reason,
+    falsePositiveReason: f.false_positive_reason,
+    gapAuditReason: f.gap_audit_reason,
   }))
 }
 

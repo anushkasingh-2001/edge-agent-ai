@@ -176,6 +176,33 @@ stripped by `lib/desktop-secret-denylist.ts` + `electron/main.ts`.
 | `REFRESH_RETENTION_DAYS` | Days to keep revoked refresh tokens before cleanup (default `30`). |
 | `CRON_SECRET` | Vercel built-in cron secret (alternative to `AUTH_CLEANUP_SECRET`). |
 
+### Optional — scan-time intelligence models
+
+The post-scan LLM verifier + gap-audit layer (`lib/scan-intelligence`, used by
+`/api/scan` for Balanced/Deep/Exhaustive modes) resolves concrete models from
+these env vars. All have sensible defaults — set them only to pin a specific
+model. If neither `OPENAI_API_KEY` nor `ANTHROPIC_API_KEY` is present the layer
+**skips AI gracefully** and returns the deterministic findings with
+`intelligence_summary.ai_skipped_reason`. Scan-time AI is **not credit-metered**
+(it uses the server provider key directly); the deterministic scan is identical
+in every mode.
+
+| Variable | Default | Used by |
+| --- | --- | --- |
+| `EDGE_AGENT_OPENAI_CHEAP_MODEL` | `gpt-5.4-mini` | Balanced verifier (first pass), Balanced gap audit |
+| `EDGE_AGENT_OPENAI_ULTRA_CHEAP_MODEL` | `gpt-5.4-nano` | Reserved for ultra-cheap low-risk triage |
+| `EDGE_AGENT_OPENAI_MID_MODEL` | `gpt-5.4` | Balanced escalation (high/critical uncertain) |
+| `EDGE_AGENT_OPENAI_STRONG_MODEL` | `gpt-5.5` | Deep/Exhaustive verifier + gap audit + judge |
+| `EDGE_AGENT_ANTHROPIC_CHEAP_MODEL` | `claude-haiku-4-5` | Balanced verifier / gap audit (Anthropic) |
+| `EDGE_AGENT_ANTHROPIC_MID_MODEL` | `claude-sonnet-4-6` | Balanced escalation (Anthropic) |
+| `EDGE_AGENT_ANTHROPIC_STRONG_MODEL` | `claude-sonnet-4-6` | Deep/Exhaustive verifier + gap audit (Anthropic) |
+| `EDGE_AGENT_ANTHROPIC_EXHAUSTIVE_JUDGE_MODEL` | `claude-opus-4-8` | Deep/Exhaustive second-pass judge (critical/uncertain only) |
+| `EDGE_AGENT_SCAN_EXHAUSTIVE_MAX_CALLS` | `80` | Per-scan AI-call budget for Exhaustive mode |
+| `EDGE_AGENT_HOSTED_ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | Override Anthropic base URL |
+
+Per-scan AI-call budgets are fixed by mode: Lite `0`, Balanced `8`, Deep `30`,
+Exhaustive `80` (configurable via `EDGE_AGENT_SCAN_EXHAUSTIVE_MAX_CALLS`).
+
 ### Do **not** set in production cloud
 
 | Variable | Why |

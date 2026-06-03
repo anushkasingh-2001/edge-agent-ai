@@ -29,6 +29,7 @@ import {
   topFindingsFromReport,
   type ScanReport,
 } from "@/lib/scan-report"
+import { normalizeScanMode } from "@/lib/scan-intelligence/normalize-mode"
 import {
   loadRecentProjects,
   saveRecentProject,
@@ -526,10 +527,14 @@ export default function Home() {
             // The API no-ops the worktree path when this matches the
             // current HEAD branch.
             branch: currentBranch || undefined,
-            // Mode/provider metadata is stamped onto scan history
-            // client-side (see `scanItemFromReport` below). The /api/scan
-            // route is deterministic and does not consume those fields,
-            // so we don't add wire noise by sending them.
+            // Scan-time intelligence mode. The DETERMINISTIC scan is
+            // identical in every mode; this only tells /api/scan how hard
+            // to run the post-scan LLM verifier/gap-audit layer
+            // (lib/scan-intelligence). Sent as the canonical scan mode
+            // (lite/balanced/deep/exhaustive); the route also accepts the
+            // legacy save/auto/pro/max ids. Provider/manual-model metadata
+            // is still stamped onto scan history client-side below.
+            intelligenceMode: normalizeScanMode(intelligenceMode),
           }),
           // Wiring the AbortSignal here is what makes the Stop button
           // actually do something: aborting the controller rejects the

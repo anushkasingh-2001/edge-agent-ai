@@ -64,7 +64,12 @@ import { usePlanSummary, modeAllowedByPlan } from "@/lib/plan-client"
 import type { LlmSlot } from "@/lib/model-keys"
 import { WorkspaceView } from "@/components/workspace/workspace-view"
 import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
-import type { ScanReport, UiFinding } from "@/lib/scan-report"
+import type {
+  ScanReport,
+  UiFinding,
+  IntelligenceSummary,
+  FindingStatus,
+} from "@/lib/scan-report"
 import type { TestSuite } from "@/lib/test-cases"
 import { SECURITY_CHECKS, displayCategoryLabel } from "@/lib/security-checks"
 import {
@@ -374,6 +379,7 @@ export function Findings({
             setIntelligenceMode={setIntelligenceMode}
             manualModelSelection={manualModelSelection}
             setManualModelSelection={setManualModelSelection}
+            intelligenceSummary={scanReport?.intelligence_summary ?? null}
           />
         </TabsContent>
 
@@ -408,6 +414,7 @@ function CodeAnalysisPanel({
   setIntelligenceMode,
   manualModelSelection,
   setManualModelSelection,
+  intelligenceSummary,
 }: {
   findings: Finding[]
   projectPath: string | null
@@ -416,6 +423,7 @@ function CodeAnalysisPanel({
   setIntelligenceMode: (mode: IntelligenceMode) => void
   manualModelSelection: ManualModelMap
   setManualModelSelection: (selection: ManualModelMap) => void
+  intelligenceSummary?: IntelligenceSummary | null
 }) {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -514,17 +522,27 @@ function CodeAnalysisPanel({
   )
   const categories: string[] = [...knownLabels, ...orphanLabels]
 
-  const filteredFindings = findingsAfterFixes.filter((f) => {
-    const matchesSearch =
-      f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      f.file.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesSeverity =
-      severityFilter === "all" || f.severity === severityFilter
-    const matchesCategory =
-      categoryFilter === "all" ||
-      displayCategory(f.category) === categoryFilter
-    return matchesSearch && matchesSeverity && matchesCategory
-  })
+  const filteredFindings = findingsAfterFixes
+    .filter((f) => {
+      const matchesSearch =
+        f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        f.file.toLowerCase().includes(searchQuery.toLowerCase())
+      const matchesSeverity =
+        severityFilter === "all" || f.severity === severityFilter
+      const matchesCategory =
+        categoryFilter === "all" ||
+        displayCategory(f.category) === categoryFilter
+      return matchesSearch && matchesSeverity && matchesCategory
+    })
+    // Downrank (NEVER delete) likely-false-positives: they sort to the
+    // bottom and render muted. The scanner still produced them — the LLM
+    // verifier only flagged low confidence — so the user can still see
+    // and act on them.
+    .sort((a, b) => {
+      const aFp = a.status === "likely_false_positive" ? 1 : 0
+      const bFp = b.status === "likely_false_positive" ? 1 : 0
+      return aFp - bFp
+    })
 
   // "Fix all" targets the CURRENTLY VISIBLE rows so a filtered view fixes
   // exactly what the user sees. Findings without a ruleId can't be fixed
@@ -563,6 +581,39 @@ function CodeAnalysisPanel({
     }
   }
 
+  // Scan-time intelligence status badge (lib/scan-intelligence). Only
+  // rendered when a status is present; deterministic-only scans (Lite or
+  // AI-skipped) show "Confirmed".
+  const STATUS_META: Record<
+    FindingStatus,
+    { label: string; className: string }
+  > = {
+    confirmed: {
+      label: "Confirmed",
+      className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    },
+    llm_verified: {
+      label: "LLM verified",
+      className: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
+    },
+    likely_false_positive: {
+      label: "Likely false positive",
+      className: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
+    },
+    gap_audit_confirmed: {
+      label: "Gap-audit confirmed",
+      className: "bg-purple-500/10 text-purple-300 border-purple-500/20",
+    },
+    needs_rule_support: {
+      label: "Needs rule support",
+      className: "bg-amber-500/10 text-amber-300 border-amber-500/20",
+    },
+    needs_human_review: {
+      label: "Needs human review",
+      className: "bg-amber-500/10 text-amber-300 border-amber-500/20",
+    },
+  }
+
   // VS Code-style workspace takes over the panel when a finding is
   // opened in the editor. Rendering it here (rather than as a global
   // route) means the existing project + scan state is implicitly in
@@ -583,6 +634,22 @@ function CodeAnalysisPanel({
 
   return (
     <>
+      {intelligenceSummary ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+          <Sparkles className="h-3.5 w-3.5 text-foreground/70" />
+          <span className="text-foreground/90">{intelligenceSummary.headline}</span>
+          {intelligenceSummary.ai_skipped_reason ? (
+            <span className="opacity-70">
+              (AI skipped: {intelligenceSummary.ai_skipped_reason})
+            </span>
+          ) : (
+            <span className="opacity-70">
+              {intelligenceSummary.ai_calls_used} AI call
+              {intelligenceSummary.ai_calls_used === 1 ? "" : "s"} used
+            </span>
+          )}
+        </div>
+      ) : null}
       <Card className="bg-card border-border">
         <CardContent className="pt-4 space-y-3">
           {/* Five-tier intelligence mode selector. Sits on its own row
@@ -731,7 +798,9 @@ function CodeAnalysisPanel({
               return (
               <TableRow
                 key={finding.scannerFindingId ?? finding.id}
-                className="cursor-pointer hover:bg-secondary/50 border-border"
+                className={`cursor-pointer hover:bg-secondary/50 border-border ${
+                  finding.status === "likely_false_positive" ? "opacity-50" : ""
+                }`}
                 onClick={() => {
                   // VS Code-style workspace is the primary detail
                   // surface now: click a row → drop straight into the
@@ -759,7 +828,18 @@ function CodeAnalysisPanel({
                   {displayCategory(finding.category)}
                 </TableCell>
                 <TableCell className="font-medium truncate" title={finding.title}>
-                  {finding.title}
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="truncate">{finding.title}</span>
+                    {finding.status ? (
+                      <Badge
+                        variant="outline"
+                        className={`shrink-0 text-[10px] ${STATUS_META[finding.status].className}`}
+                        title={finding.verifierReason ?? finding.gapAuditReason ?? undefined}
+                      >
+                        {STATUS_META[finding.status].label}
+                      </Badge>
+                    ) : null}
+                  </span>
                 </TableCell>
                 <TableCell
                   className="font-mono text-xs text-muted-foreground truncate"

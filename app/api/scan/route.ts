@@ -20,6 +20,8 @@ import {
   buildScannerCommand,
   type ScannerCommand,
 } from "@/lib/server-scan"
+import { enhanceScanReport } from "@/lib/scan-intelligence/enhance-scan-report"
+import { normalizeScanMode } from "@/lib/scan-intelligence/normalize-mode"
 
 export async function POST(request: Request) {
   let body: {
@@ -37,15 +39,18 @@ export async function POST(request: Request) {
      *  for branches they aren't currently checked out on (the fix
      *  for "select gt in dropdown → still see main's findings"). */
     branch?: string
-    // NOTE: intelligenceMode / aiProviderMode / manualModelSelection are
-    // intentionally NOT on this body. The scanner is deterministic and
-    // doesn't consult them; routes that DO consume them are
-    //   /api/scan/estimate, /api/finding/explain, /api/finding/patch,
-    //   /api/findings/fix, /api/findings/fix-filtered.
-    // The client stamps the mode onto scan history via
-    // `scanItemFromReport`, so the round-trip preserves it without
-    // a server-side echo. See the audit in
-    // tests/all-modes-e2e-wiring.test.ts for the contract.
+    /** Scan-time intelligence mode: "lite" | "balanced" | "deep" |
+     *  "exhaustive" (legacy "save"/"auto"/"pro"/"max"/"manual" accepted
+     *  and normalized). This is NEVER passed to the Python scanner — the
+     *  deterministic scan is identical in every mode. It only controls
+     *  the post-scan LLM verifier/gap-audit layer (lib/scan-intelligence),
+     *  which adds review metadata and deterministically-confirmed gap
+     *  findings on top of the unchanged scanner output. */
+    intelligenceMode?: string
+    // NOTE: aiProviderMode / manualModelSelection are intentionally NOT on
+    // this body. Routes that consume them are /api/scan/estimate,
+    // /api/finding/explain, /api/finding/patch, /api/findings/fix,
+    // /api/findings/fix-filtered.
   } = {}
   try {
     body = await request.json()
@@ -497,6 +502,44 @@ export async function POST(request: Request) {
       // the whole response. The client schema layer will surface any
       // remaining issues.
       report = primary.report
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* Scan-time intelligence (post-scan LLM verifier + gap audit).      */
+    /* ---------------------------------------------------------------- */
+    //
+    // Runs AFTER the deterministic scanner and NEVER changes scanner
+    // truth — it only adds review metadata (status badges, verifier
+    // verdicts) and appends gap-audit findings that pass a deterministic
+    // confirmation gate. If AI is unavailable (no key / error / budget),
+    // the scan still returns every deterministic finding, with
+    // `intelligence_summary.ai_skipped_reason` set. We read source from
+    // `scanTarget` (the dir the scanner actually walked: the working
+    // tree, or the temp worktree for a virtual-branch scan).
+    if (report) {
+      const mode = normalizeScanMode(body.intelligenceMode)
+      try {
+        report = await enhanceScanReport(report, {
+          projectPath: scanTarget,
+          mode,
+        })
+      } catch (err) {
+        // Belt-and-suspenders: enhanceScanReport already degrades
+        // gracefully, but if it throws we still return deterministic
+        // findings with a skip reason rather than failing the scan.
+        report.intelligence_summary = {
+          mode,
+          ai_calls_used: 0,
+          verifier_enabled: false,
+          gap_audit_enabled: false,
+          ai_skipped_reason:
+            err instanceof Error ? `error:${err.message.slice(0, 80)}` : "error",
+          clusters_reviewed: 0,
+          downranked_false_positives: 0,
+          confirmed_gaps: 0,
+          headline: "AI review skipped; deterministic findings only.",
+        }
+      }
     }
 
     const out = report ? JSON.stringify(report) : ""
