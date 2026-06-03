@@ -75,27 +75,45 @@ export interface ResolvedScanProvider {
   baseUrl: string
 }
 
-/**
- * Pick the first configured provider. OpenAI is preferred when both keys
- * are present (cheaper default), Anthropic otherwise. Returns null when
- * neither key is set — the caller skips AI gracefully.
- */
-export function resolveScanProvider(): ResolvedScanProvider | null {
+function resolveOpenAi(): ResolvedScanProvider | null {
   const openaiKey = (process.env.OPENAI_API_KEY ?? "").trim()
-  if (openaiKey) {
-    return {
-      provider: "openai",
-      apiKey: openaiKey,
-      baseUrl: envOr("EDGE_AGENT_HOSTED_OPENAI_BASE_URL", DEFAULT_OPENAI_BASE),
-    }
+  if (!openaiKey) return null
+  return {
+    provider: "openai",
+    apiKey: openaiKey,
+    baseUrl: envOr("EDGE_AGENT_HOSTED_OPENAI_BASE_URL", DEFAULT_OPENAI_BASE),
   }
+}
+
+function resolveAnthropic(): ResolvedScanProvider | null {
   const anthropicKey = (process.env.ANTHROPIC_API_KEY ?? "").trim()
-  if (anthropicKey) {
-    return {
-      provider: "anthropic",
-      apiKey: anthropicKey,
-      baseUrl: envOr("EDGE_AGENT_HOSTED_ANTHROPIC_BASE_URL", DEFAULT_ANTHROPIC_BASE),
-    }
+  if (!anthropicKey) return null
+  return {
+    provider: "anthropic",
+    apiKey: anthropicKey,
+    baseUrl: envOr("EDGE_AGENT_HOSTED_ANTHROPIC_BASE_URL", DEFAULT_ANTHROPIC_BASE),
+  }
+}
+
+/**
+ * Pick a configured provider, honouring a preference order.
+ *
+ * `prefer` lets the orchestrator route by mode:
+ *   - Deep / Exhaustive prefer Anthropic (stronger strong/judge tiers)
+ *     when ANTHROPIC_API_KEY is set, falling back to OpenAI.
+ *   - Lite / Balanced stay cheap-first and prefer OpenAI, falling back to
+ *     Anthropic.
+ *
+ * Returns null when neither key is set — the caller skips AI gracefully.
+ */
+export function resolveScanProvider(
+  prefer: ScanProvider = "openai",
+): ResolvedScanProvider | null {
+  const order: ScanProvider[] =
+    prefer === "anthropic" ? ["anthropic", "openai"] : ["openai", "anthropic"]
+  for (const p of order) {
+    const resolved = p === "anthropic" ? resolveAnthropic() : resolveOpenAi()
+    if (resolved) return resolved
   }
   return null
 }

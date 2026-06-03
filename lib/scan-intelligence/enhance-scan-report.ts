@@ -189,9 +189,13 @@ export async function enhanceScanReport(
   }
 
   // ---- Provider availability (graceful skip). ----
+  // Deep/Exhaustive prefer Anthropic's strong/judge tiers when an
+  // ANTHROPIC_API_KEY is configured; Lite/Balanced stay cheap-first
+  // (OpenAI preferred). Both fall back to whichever key exists.
+  const preferredProvider = mode === "deep" || mode === "exhaustive" ? "anthropic" : "openai"
   let provider: ResolvedScanProvider | null
   try {
-    provider = resolveScanProvider()
+    provider = resolveScanProvider(preferredProvider)
   } catch {
     provider = null
   }
@@ -234,6 +238,7 @@ export async function enhanceScanReport(
           projectPath,
           cluster,
           policy.contextTokenCap,
+          report,
         )
         if (!bundle) continue
 
@@ -325,6 +330,7 @@ export async function enhanceScanReport(
           projectPath,
           surface,
           policy.contextTokenCap,
+          report,
         )
         if (!bundle) continue
 

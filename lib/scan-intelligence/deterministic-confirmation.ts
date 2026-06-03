@@ -20,35 +20,20 @@
  */
 import fs from "node:fs"
 import path from "node:path"
+import { findContainingBlock } from "./code-structure"
+import {
+  GUARD_PATTERNS,
+  SINK_PATTERNS,
+  SOURCE_PATTERNS,
+  anyMatch,
+  matchingLines,
+} from "./patterns"
 import type {
   ConfirmationResult,
+  EvidencePathNode,
   GapAuditCandidate,
   ScanFinding,
 } from "./types"
-
-// Source-shaped patterns: user/request/config/env/model-output entry points.
-const SOURCE_PATTERNS = [
-  /request\.|req\.|\.args|\.form|\.json\(|query\[|params\[|input\(/i,
-  /os\.environ|getenv|process\.env|config\[|\.config\.|load_config/i,
-  /argv|stdin|read\(|recv\(|fetch\(|response\.|completion|message\.content/i,
-]
-
-// Sink-shaped patterns: dangerous execution / injection / IO / network sinks.
-const SINK_PATTERNS = [
-  /os\.system|subprocess\.(?:run|call|popen|check_output)|shell\s*=\s*True/i,
-  /\beval\(|\bexec\(|pickle\.loads|yaml\.load\b|__import__\(/i,
-  /execute\(|executemany\(|cursor\.execute|session\.run\(|\.query\(/i,
-  /open\(|\.write\(|\.read\(|Path\(|shutil\.|os\.remove|unlink\(/i,
-  /requests\.(?:get|post|put)|urllib|httpx\.|socket\.|fetch\(/i,
-  /hf_hub_download|from_pretrained|torch\.load|download_url|snapshot_download/i,
-]
-
-// Guard/sanitizer patterns that neutralise a flow when present nearby.
-const GUARD_PATTERNS = [
-  /shlex\.quote|shlex\.split|escape\(|sanitize|allowlist|whitelist|is_safe/i,
-  /validate|verify|assert\s|require_auth|check_permission|authorize|@login_required/i,
-  /parameteriz|bind_param|prepared|placeholder|\?\s*,|%s/i,
-]
 
 function isUnsafeRelPath(rel: string): boolean {
   if (!rel) return true
@@ -66,8 +51,28 @@ function safeResolve(projectPath: string, rel: string): string | null {
   return abs
 }
 
-function anyMatch(patterns: RegExp[], text: string): boolean {
-  return patterns.some((re) => re.test(text))
+/**
+ * Is there a deterministic source→sink *path* (graph evidence) from an
+ * existing finding that corroborates this candidate? We treat an existing
+ * finding's `evidence_path` as graph truth: if any node lands in the
+ * candidate's file within `[blockStart, blockEnd]`, the scanner's own IR
+ * already proved a flow through that region.
+ */
+function evidencePathCorroborates(
+  existingFindings: ScanFinding[],
+  file: string,
+  blockStart: number,
+  blockEnd: number,
+): boolean {
+  for (const f of existingFindings) {
+    const nodes: EvidencePathNode[] | undefined = f.evidence_path
+    if (!Array.isArray(nodes)) continue
+    for (const n of nodes) {
+      if (n.file !== file || typeof n.line !== "number") continue
+      if (n.line >= blockStart && n.line <= blockEnd) return true
+    }
+  }
+  return false
 }
 
 export interface ConfirmArgs {
@@ -112,6 +117,7 @@ export function confirmCandidate(args: ConfirmArgs): ConfirmationResult {
   }
 
   // 4. Inspect the window around the cited line for source/sink/guard.
+  //    (Nearby-regex presence check — the deterministic floor.)
   const start = Math.max(0, candidate.line - 1 - window)
   const end = Math.min(lines.length, candidate.line + window)
   const region = lines.slice(start, end).join("\n")
@@ -137,6 +143,52 @@ export function confirmCandidate(args: ConfirmArgs): ConfirmationResult {
     }
   }
 
-  // 5. Proven: source -> sink, no guard, in-repo, not a duplicate.
+  // 5. Upgrade the proof when stronger evidence is available. The
+  //    candidate already cleared the nearby-regex floor; now try to
+  //    explain *how* it was confirmed (best evidence first):
+  //
+  //      a. graph / evidence-path corroboration from a scanner finding,
+  //      b. intra-function ordered flow (source line <= sink line inside
+  //         the containing function/class),
+  //      c. nearby-regex fallback (original behaviour).
+  const block = findContainingBlock(lines, candidate.line)
+
+  if (block) {
+    // Guards anywhere inside the containing function neutralise the flow,
+    // even if they sit outside the +/- window.
+    const blockLines = lines.slice(block.startLine - 1, block.endLine)
+    if (anyMatch(GUARD_PATTERNS, blockLines.join("\n"))) {
+      return {
+        status: "rejected_guard_present",
+        reason: `guard/sanitizer present in ${block.kind} ${block.name}`,
+      }
+    }
+
+    if (
+      evidencePathCorroborates(
+        args.existingFindings,
+        candidate.file,
+        block.startLine,
+        block.endLine,
+      )
+    ) {
+      return {
+        status: "confirmed",
+        reason: `confirmed via scanner evidence-path through ${block.kind} ${block.name}`,
+      }
+    }
+
+    const sources = matchingLines(SOURCE_PATTERNS, blockLines, block.startLine)
+    const sinks = matchingLines(SINK_PATTERNS, blockLines, block.startLine)
+    const flow = sources.some((s) => sinks.some((k) => s.line <= k.line))
+    if (flow) {
+      return {
+        status: "confirmed",
+        reason: `confirmed via intra-function source->sink flow in ${block.kind} ${block.name}`,
+      }
+    }
+  }
+
+  // 5c. Proven by nearby regex: source + sink in window, no guard.
   return { status: "confirmed", reason: "source and sink proven near cited line, no guard" }
 }
