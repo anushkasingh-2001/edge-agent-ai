@@ -2,18 +2,22 @@ import { z } from "zod"
 
 /** rule_id values produced by edge_agent_scanner (aligns with Scan Center checks that have a backend).
  *
- *  This list reflects the IR-based scanner (`SCHEMA_VERSION = "2.0"`). The
- *  removed `vague-prompts` rule was replaced by `prompt-contract`; the new
- *  `auth-checks` and `accuracy-regression-risk` rules have backing analyzers
- *  (`analyzers/auth_checks.py`, `analyzers/accuracy_regression.py`). Old
- *  reports stored in localStorage with `rule_id` values not in this list
- *  still validate because `ScannerFindingSchema.rule_id` is `z.string()`.
+ *  This list reflects the IR-based scanner (`SCHEMA_VERSION = "2.0"`).
+ *  `prompt-contract` covers the broad "missing contract part" case, while
+ *  `vague-prompts` is a dedicated hybrid check (deterministic vague-phrase +
+ *  contract scoring, with optional scan-time LLM verification) backed by
+ *  `analyzers/vague_prompts.py`. `auth-checks` and `accuracy-regression-risk`
+ *  have backing analyzers too (`analyzers/auth_checks.py`,
+ *  `analyzers/accuracy_regression.py`). Old reports stored in localStorage
+ *  with `rule_id` values not in this list still validate because
+ *  `ScannerFindingSchema.rule_id` is `z.string()`.
  */
 export const SCANNER_RULE_IDS = [
   "dangerous-tools",
   "human-approval",
   "prompt-injection",
   "prompt-contract",
+  "vague-prompts",
   "secrets",
   "mcp-security",
   "openapi-schema",

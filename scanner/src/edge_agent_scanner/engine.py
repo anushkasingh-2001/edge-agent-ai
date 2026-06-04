@@ -12,6 +12,7 @@ from edge_agent_scanner.analyzers.mcp_security import analyze_mcp_security
 from edge_agent_scanner.analyzers.openapi_quality import analyze_openapi_quality
 from edge_agent_scanner.analyzers.prompt_contract import analyze_prompt_contract
 from edge_agent_scanner.analyzers.prompt_injection import analyze_prompt_injection
+from edge_agent_scanner.analyzers.vague_prompts import analyze_vague_prompts
 from edge_agent_scanner.analyzers.secrets import analyze_secrets
 from edge_agent_scanner.analyzers.taint_user_input import analyze_user_input_to_dangerous_code
 from edge_agent_scanner.analyzers.root_causes import analyze_root_causes
@@ -330,6 +331,7 @@ def run_scan(
     findings.extend(analyze_missing_approval(ir, files))
     findings.extend(analyze_prompt_injection(ir, files))
     findings.extend(analyze_prompt_contract(ir, files))
+    findings.extend(analyze_vague_prompts(ir, files))
     findings.extend(analyze_mcp_security(ir, files))
     findings.extend(analyze_openapi_quality(ir, files))
     findings.extend(analyze_auth_checks(ir, files))

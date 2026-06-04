@@ -79,12 +79,12 @@ export const SECURITY_CHECKS: ReadonlyArray<SecurityCheck> = [
   {
     id: "vague-prompts",
     label: "Vague prompts",
-    description: "Find prompts that lack specificity",
-    // The IR-based scanner no longer emits "Weak prompt"/"Vague prompt"
-    // categories (replaced by `prompt-contract` above). The entry stays in
-    // the UI taxonomy so old reports loaded from localStorage still group
-    // correctly under the same label they were filed under.
-    scannerCategories: ["Weak prompt", "Vague prompt"],
+    description:
+      "Vague/underspecified prompts missing key contract parts (role, task, output, tool policy, approval, fallback)",
+    // Backed by `analyzers/vague_prompts.py`, which emits category
+    // "Vague prompt". "Weak prompt" is kept so historical reports loaded
+    // from localStorage still group under this same label.
+    scannerCategories: ["Vague prompt", "Weak prompt"],
   },
   {
     id: "mcp-security",
