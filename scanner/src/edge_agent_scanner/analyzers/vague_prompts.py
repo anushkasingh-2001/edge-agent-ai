@@ -202,10 +202,19 @@ def _file_has_dangerous_sink(ir: AgentIR, file: str) -> bool:
 
 
 def _file_has_risky_tool(ir: AgentIR, file: str) -> bool:
-    """A tool with real side effects declared in the SAME file as the prompt
-    (nearby tool context). Repo-wide risky tools elsewhere do NOT count —
-    that over-escalated unrelated prompts."""
-    return any(t.location.file == file and t.side_effects for t in ir.tools)
+    """An AGENT-CALLABLE tool with real side effects declared in the SAME file
+    as the prompt (nearby tool context). All three must hold:
+      * the tool lives in the prompt's file,
+      * the agent can actually call it (``callable_from_agent``),
+      * it has non-empty ``side_effects``.
+
+    A same-file tool that the agent cannot call (e.g. an internal helper), or
+    a risky tool elsewhere in the repo, does NOT escalate — that over-flagged
+    unrelated prompts."""
+    return any(
+        t.location.file == file and t.callable_from_agent and t.side_effects
+        for t in ir.tools
+    )
 
 
 def _risky_context_for(ir: AgentIR | None, file: str, text: str) -> tuple[bool, str]:

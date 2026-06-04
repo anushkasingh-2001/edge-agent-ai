@@ -195,6 +195,25 @@ def test_critical_when_same_file_tool_has_side_effects() -> None:
     assert findings and findings[0].severity == "critical"
 
 
+def test_same_file_non_callable_tool_is_not_critical() -> None:
+    """A same-file tool with side effects that the agent CANNOT call (e.g. an
+    internal helper) is not a reachable risky surface => stays high."""
+    ir = AgentIR(
+        prompts=[_prompt("Handle this. Take action and do the needful.", file="agent.py")],
+        tools=[
+            ToolNode(
+                id="t1",
+                name="_internal_send",
+                location=CodeLocation(file="agent.py", start_line=5, end_line=5),
+                callable_from_agent=False,
+                side_effects=["network.send"],
+            )
+        ],
+    )
+    findings = analyze_vague_prompts(ir, [])
+    assert findings and findings[0].severity == "high", findings[0].severity
+
+
 def test_unrelated_risky_tool_in_other_file_is_not_critical() -> None:
     """A risky tool that merely exists in ANOTHER file must NOT escalate the
     prompt — it stays high (8 parts missing), not critical."""
