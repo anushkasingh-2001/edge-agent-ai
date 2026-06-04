@@ -558,3 +558,192 @@ test("policy budgets match the brief (0/8/30/80)", () => {
   assert.equal(policyFor("deep").maxAiCalls, 30)
   assert.equal(policyFor("exhaustive").maxAiCalls, 80)
 })
+
+// ===================================================================
+// Bounded parallelism (latency reduction) — budget, ordering, failure
+//
+//  C1. concurrency policy values per mode
+//  C2. Balanced enforces 8-call budget even under concurrency
+//  C3. Deep does not exceed its 30-call budget under concurrency
+//  C4. in-flight calls never exceed the configured concurrency limit
+//      (and parallelism actually happens: >1 in flight)
+//  C5. a failed parallel call does not fail the scan
+//  C6. deterministic finding order is stable after parallel verification
+
+/** N findings, each in its own file so they form N distinct clusters. */
+function manyFindings(n: number): ScanFinding[] {
+  return Array.from({ length: n }, (_, i) =>
+    finding({ id: `f${i}`, file: `f${i}.py`, line: 4, severity: "high" }),
+  )
+}
+function manyFileProject(n: number): string {
+  const files: Record<string, string> = {}
+  for (let i = 0; i < n; i++) files[`f${i}.py`] = VULN_FILE
+  return mkproject(files)
+}
+
+/** Like fakeLlm but tracks in-flight concurrency and adds a small delay so
+ *  overlapping calls are observable. */
+function concurrencyLlm(opts: { delayMs?: number; fail?: boolean } = {}) {
+  const models: string[] = []
+  let inFlight = 0
+  let maxInFlight = 0
+  let total = 0
+  const fetcher = (async (_url: unknown, init?: { body?: string }) => {
+    inFlight++
+    total++
+    if (inFlight > maxInFlight) maxInFlight = inFlight
+    try {
+      await new Promise((r) => setTimeout(r, opts.delayMs ?? 5))
+      const body = JSON.parse(init?.body ?? "{}") as { model: string; messages?: Array<{ role: string; content: string }>; system?: string }
+      models.push(body.model)
+      if (opts.fail) {
+        return new Response(JSON.stringify({ error: "boom" }), { status: 500 })
+      }
+      const system = body.system ?? body.messages?.find((m) => m.role === "system")?.content ?? ""
+      const payload = /GAP AUDITOR/.test(system)
+        ? { candidates: [] }
+        : {
+            verdict: "real",
+            confidence: 0.9,
+            reason: "ok",
+            evidence_used: ["e"],
+            guards_found: [],
+            missing_evidence: [],
+            suggested_status: "llm_verified",
+            suggested_severity_adjustment: "none",
+            scanner_truth_unchanged: true,
+          }
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    } finally {
+      inFlight--
+    }
+  }) as unknown as typeof fetch
+  return {
+    fetcher,
+    models,
+    get maxInFlight() {
+      return maxInFlight
+    },
+    get total() {
+      return total
+    },
+  }
+}
+
+test("C1. concurrency policy values per mode", () => {
+  assert.equal(policyFor("lite").verifierConcurrency, 1)
+  assert.equal(policyFor("balanced").verifierConcurrency, 2)
+  assert.equal(policyFor("balanced").gapAuditConcurrency, 2)
+  assert.equal(policyFor("deep").verifierConcurrency, 4)
+  assert.equal(policyFor("deep").gapAuditConcurrency, 4)
+  assert.equal(policyFor("exhaustive").verifierConcurrency, 6)
+  assert.equal(policyFor("exhaustive").gapAuditConcurrency, 6)
+})
+
+test("C2. Balanced enforces the 8-call budget under concurrency", async () => {
+  _clearScanCacheForTests()
+  const dir = manyFileProject(20)
+  const llm = concurrencyLlm({ delayMs: 2 })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: manyFindings(20) } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "balanced" })
+      const s = out.intelligence_summary as { ai_calls_used: number }
+      assert.equal(s.ai_calls_used, 8, "balanced must use exactly its 8-call budget")
+      assert.equal(llm.total, 8, "exactly 8 network calls were made")
+      // No deterministic finding deleted.
+      assert.equal((out.findings as ScanFinding[]).length, 20)
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("C3. Deep does not exceed its 30-call budget under concurrency", async () => {
+  _clearScanCacheForTests()
+  const dir = manyFileProject(40)
+  const llm = concurrencyLlm({ delayMs: 1 })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: manyFindings(40) } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+      const s = out.intelligence_summary as { ai_calls_used: number }
+      assert.ok(s.ai_calls_used <= 30, `ai_calls_used ${s.ai_calls_used} must be <= 30`)
+      assert.ok(llm.total <= 30, `network calls ${llm.total} must be <= 30`)
+      assert.equal(s.ai_calls_used, llm.total, "summary count matches actual calls")
+      assert.equal((out.findings as ScanFinding[]).length, 40)
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("C4. in-flight calls never exceed the concurrency limit (and parallelism happens)", async () => {
+  _clearScanCacheForTests()
+  const dir = manyFileProject(12)
+  const llm = concurrencyLlm({ delayMs: 15 })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: manyFindings(12) } as Record<string, unknown>
+      await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+      assert.ok(llm.maxInFlight <= 4, `maxInFlight ${llm.maxInFlight} must be <= deep concurrency 4`)
+      assert.ok(llm.maxInFlight >= 2, "expected real parallelism (>1 in flight)")
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("C5. a failed parallel call does not fail the scan", async () => {
+  _clearScanCacheForTests()
+  const dir = manyFileProject(6)
+  const llm = concurrencyLlm({ delayMs: 1, fail: true })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: manyFindings(6) } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+      const findings = out.findings as ScanFinding[]
+      // Scan still returns every deterministic finding (no metadata applied
+      // because every call failed), and nothing is deleted.
+      assert.equal(findings.length, 6)
+      for (const f of findings) assert.equal(f.status, "confirmed")
+      const s = out.intelligence_summary as { mode: string }
+      assert.equal(s.mode, "deep")
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("C6. deterministic finding order is stable after parallel verification", async () => {
+  _clearScanCacheForTests()
+  const dir = manyFileProject(10)
+  const llm = concurrencyLlm({ delayMs: 3 })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const original = manyFindings(10)
+      const report = { findings: original } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+      const ids = (out.findings as ScanFinding[]).map((f) => f.id)
+      // The first 10 entries must be the deterministic findings in their
+      // ORIGINAL order; any gap_audit_confirmed findings are appended after.
+      assert.deepEqual(ids.slice(0, 10), original.map((f) => f.id))
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

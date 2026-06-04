@@ -47,6 +47,7 @@ import type {
   GapAuditCandidate,
   IntelligenceMetadata,
   IntelligenceSummary,
+  RiskSurface,
   ScanFinding,
   ScanMode,
   VerifierResult,
@@ -55,6 +56,54 @@ import type {
 export interface EnhanceOptions {
   projectPath: string
   mode: ScanMode
+}
+
+/** Collected verifier output for one cluster (no shared state mutated). */
+interface VerifyOutcomeData {
+  result: VerifierResult
+  usedModel: string
+  contextHash: string
+  cachedHit: boolean
+  findingIds: string[]
+}
+type VerifyOutcome = VerifyOutcomeData | null
+
+/** Collected gap-audit output for one surface. */
+interface GapOutcomeData {
+  candidates: GapAuditCandidate[]
+  contextHash: string
+  cachedHit: boolean
+}
+type GapOutcome = GapOutcomeData | null
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight at once,
+ * returning results in INPUT order (index-aligned). A worker is expected
+ * to handle its own errors and return a sentinel (null) on failure; this
+ * pool never rejects on a single item so one bad LLM call can't fail the
+ * scan.
+ *
+ * Concurrency is bounded by spawning `limit` runners that pull from a
+ * shared cursor. `cursor++` is synchronous (no await between read and
+ * increment), so no two runners ever grab the same index.
+ */
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  const runnerCount = Math.max(1, Math.min(limit, items.length))
+  const runners = Array.from({ length: runnerCount }, async () => {
+    for (;;) {
+      const i = cursor++
+      if (i >= items.length) break
+      results[i] = await worker(items[i], i)
+    }
+  })
+  await Promise.all(runners)
+  return results
 }
 
 function statusFromVerifier(r: VerifierResult): IntelligenceMetadata["status"] {
@@ -227,96 +276,132 @@ export async function enhanceScanReport(
 
   const byId = new Map(enriched.map((f) => [f.id, f]))
 
+  // Race-free budget reservation. JS is single-threaded, so the check +
+  // increment below is atomic relative to other in-flight promises (there
+  // is no `await` between them). This is what lets us run calls in parallel
+  // while still enforcing `maxAiCalls` EXACTLY.
+  const reserveCall = (): boolean => {
+    if (aiCalls >= policy.maxAiCalls) return false
+    aiCalls++
+    return true
+  }
+
   try {
-    // ---- Verifier on selected clusters. ----
+    // ================= Verifier (bounded parallel) =================
     if (policy.verifierEnabled) {
       const clusters = clusterFindings(enriched)
       const selected = selectClustersForMode(clusters, mode)
-      for (const cluster of selected) {
-        if (aiCalls >= policy.maxAiCalls) break
-        const bundle = buildClusterContextBundle(
-          projectPath,
-          cluster,
-          policy.contextTokenCap,
-          report,
-        )
-        if (!bundle) continue
+      const baseModel = resolveScanModel(provider.provider, policy.verifierTier)
+      const escalateTier = policy.secondPassJudgeEnabled
+        ? policy.judgeTier
+        : policy.verifierEscalateTier
+      const escalateModel = resolveScanModel(provider.provider, escalateTier)
 
-        const baseModel = resolveScanModel(provider.provider, policy.verifierTier)
-        let usedModel = baseModel
-        let cachedHit = true
-        let result = getCached<VerifierResult>({
-          phase: "verify",
-          contextHash: bundle.contextHash,
-          model: baseModel,
-          mode,
-        })
-        if (!result) {
-          if (aiCalls >= policy.maxAiCalls) break
-          const out = await verifyCluster({
+      // Each worker reserves budget synchronously before awaiting a call,
+      // so concurrent workers never exceed maxAiCalls. NO shared finding is
+      // mutated here — we only collect outcomes and merge afterwards.
+      const verifyOne = async (cluster: Cluster): Promise<VerifyOutcome> => {
+        try {
+          const bundle = buildClusterContextBundle(
+            projectPath,
             cluster,
-            bundle,
-            provider: provider.provider,
-            apiKey: provider.apiKey,
-            baseUrl: provider.baseUrl,
+            policy.contextTokenCap,
+            report,
+          )
+          if (!bundle) return null
+
+          let usedModel = baseModel
+          let cachedHit = true
+          let result = getCached<VerifierResult>({
+            phase: "verify",
+            contextHash: bundle.contextHash,
             model: baseModel,
+            mode,
           })
-          aiCalls++
-          cachedHit = false
-          if (out.ok) {
-            result = out.result
-            setCached(
-              { phase: "verify", contextHash: bundle.contextHash, model: baseModel, mode },
-              result,
-            )
-          }
-        }
-        if (!result) continue
-        clustersReviewed++
-
-        // Escalate high/critical uncertain clusters to a stronger model
-        // (Balanced: cheap->mid; Deep/Exhaustive: ->judge).
-        const escalateTier = policy.secondPassJudgeEnabled
-          ? policy.judgeTier
-          : policy.verifierEscalateTier
-        const escalateModel = resolveScanModel(provider.provider, escalateTier)
-        const highRisk =
-          cluster.maxSeverity === "critical" || cluster.maxSeverity === "high"
-        if (
-          result.verdict === "uncertain" &&
-          highRisk &&
-          escalateModel !== baseModel &&
-          aiCalls < policy.maxAiCalls
-        ) {
-          const out2 = await verifyCluster({
-            cluster,
-            bundle,
-            provider: provider.provider,
-            apiKey: provider.apiKey,
-            baseUrl: provider.baseUrl,
-            model: escalateModel,
-          })
-          aiCalls++
-          if (out2.ok) {
-            result = out2.result
-            usedModel = escalateModel
+          if (!result) {
+            if (!reserveCall()) return null
             cachedHit = false
+            const out = await verifyCluster({
+              cluster,
+              bundle,
+              provider: provider!.provider,
+              apiKey: provider!.apiKey,
+              baseUrl: provider!.baseUrl,
+              model: baseModel,
+            })
+            if (out.ok) {
+              result = out.result
+              setCached(
+                { phase: "verify", contextHash: bundle.contextHash, model: baseModel, mode },
+                result,
+              )
+            }
           }
-        }
+          if (!result) return null
 
-        const meta = verifierMetadata(result, usedModel, bundle.contextHash, cachedHit)
-        for (const f of cluster.findings) {
-          const target = byId.get(f.id)
+          // Escalate high/critical uncertain clusters to a stronger model
+          // (Balanced: cheap->mid; Deep/Exhaustive: ->judge). Judge is used
+          // ONLY here — never blanket-applied to every finding.
+          const highRisk =
+            cluster.maxSeverity === "critical" || cluster.maxSeverity === "high"
+          if (
+            result.verdict === "uncertain" &&
+            highRisk &&
+            escalateModel !== baseModel &&
+            reserveCall()
+          ) {
+            const out2 = await verifyCluster({
+              cluster,
+              bundle,
+              provider: provider!.provider,
+              apiKey: provider!.apiKey,
+              baseUrl: provider!.baseUrl,
+              model: escalateModel,
+            })
+            if (out2.ok) {
+              result = out2.result
+              usedModel = escalateModel
+              cachedHit = false
+            }
+          }
+
+          return { result, usedModel, contextHash: bundle.contextHash, cachedHit, findingIds: cluster.findings.map((f) => f.id) }
+        } catch {
+          // A single cluster failure must not fail the scan.
+          return null
+        }
+      }
+
+      const outcomes = await runWithConcurrency(
+        selected,
+        policy.verifierConcurrency,
+        verifyOne,
+      )
+
+      // Merge metadata in DETERMINISTIC order (selected-cluster order). This
+      // is the only place findings are mutated, and it runs single-pass
+      // after all calls resolve — no cross-promise races.
+      for (const outcome of outcomes) {
+        if (!outcome) continue
+        clustersReviewed++
+        const meta = verifierMetadata(
+          outcome.result,
+          outcome.usedModel,
+          outcome.contextHash,
+          outcome.cachedHit,
+        )
+        for (const id of outcome.findingIds) {
+          const target = byId.get(id)
           if (target) Object.assign(target, meta)
         }
         if (meta.status === "likely_false_positive") {
-          downranked += cluster.findings.length
+          downranked += outcome.findingIds.length
         }
       }
     }
 
-    // ---- Gap audit on selected risky surfaces. ----
-    if (policy.gapAuditEnabled && aiCalls < policy.maxAiCalls) {
+    // ================= Gap audit (bounded parallel) =================
+    if (policy.gapAuditEnabled) {
       const surfaces = buildRiskSurfaceInventory(report)
       const selectedSurfaces = selectSurfacesForMode(
         surfaces,
@@ -324,46 +409,61 @@ export async function enhanceScanReport(
         policy.maxGapAuditSurfaces,
       )
       const gapModel = resolveScanModel(provider.provider, policy.gapAuditTier)
-      for (const surface of selectedSurfaces) {
-        if (aiCalls >= policy.maxAiCalls) break
-        const bundle = buildSurfaceContextBundle(
-          projectPath,
-          surface,
-          policy.contextTokenCap,
-          report,
-        )
-        if (!bundle) continue
 
-        let cachedHit = true
-        let candidates = getCached<GapAuditCandidate[]>({
-          phase: "gap_audit",
-          contextHash: bundle.contextHash,
-          model: gapModel,
-          mode,
-        })
-        if (!candidates) {
-          const out = await auditSurface({
+      const auditOne = async (surface: RiskSurface): Promise<GapOutcome> => {
+        try {
+          const bundle = buildSurfaceContextBundle(
+            projectPath,
             surface,
-            bundle,
-            provider: provider.provider,
-            apiKey: provider.apiKey,
-            baseUrl: provider.baseUrl,
-            model: gapModel,
-          })
-          aiCalls++
-          cachedHit = false
-          if (out.ok) {
-            candidates = out.candidates
-            setCached(
-              { phase: "gap_audit", contextHash: bundle.contextHash, model: gapModel, mode },
-              candidates,
-            )
-          }
-        }
-        if (!candidates) continue
+            policy.contextTokenCap,
+            report,
+          )
+          if (!bundle) return null
 
-        for (const cand of candidates) {
-          // DETERMINISTIC GATE: only proven candidates become findings.
+          let cachedHit = true
+          let candidates = getCached<GapAuditCandidate[]>({
+            phase: "gap_audit",
+            contextHash: bundle.contextHash,
+            model: gapModel,
+            mode,
+          })
+          if (!candidates) {
+            if (!reserveCall()) return null
+            cachedHit = false
+            const out = await auditSurface({
+              surface,
+              bundle,
+              provider: provider!.provider,
+              apiKey: provider!.apiKey,
+              baseUrl: provider!.baseUrl,
+              model: gapModel,
+            })
+            if (out.ok) {
+              candidates = out.candidates
+              setCached(
+                { phase: "gap_audit", contextHash: bundle.contextHash, model: gapModel, mode },
+                candidates,
+              )
+            }
+          }
+          if (!candidates) return null
+          return { candidates, contextHash: bundle.contextHash, cachedHit }
+        } catch {
+          return null
+        }
+      }
+
+      const gapOutcomes = await runWithConcurrency(
+        selectedSurfaces,
+        policy.gapAuditConcurrency,
+        auditOne,
+      )
+
+      // DETERMINISTIC GATE, run sequentially in surface/candidate order so
+      // dedup against already-confirmed gaps is stable and reproducible.
+      for (const outcome of gapOutcomes) {
+        if (!outcome) continue
+        for (const cand of outcome.candidates) {
           const conf = confirmCandidate({
             candidate: cand,
             projectPath,
@@ -374,8 +474,8 @@ export async function enhanceScanReport(
               cand,
               conf.reason,
               gapModel,
-              bundle.contextHash,
-              cachedHit,
+              outcome.contextHash,
+              outcome.cachedHit,
             )
             enriched.push(newFinding)
             byId.set(newFinding.id, newFinding)

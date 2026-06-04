@@ -38,6 +38,10 @@ export interface ScanModePolicy {
   maxGapAuditSurfaces: number
   /** Context bundle token cap (upper bound). */
   contextTokenCap: number
+  /** Max in-flight verifier LLM calls (bounded parallelism). */
+  verifierConcurrency: number
+  /** Max in-flight gap-audit LLM calls (bounded parallelism). */
+  gapAuditConcurrency: number
 }
 
 const ENV_MAX_EXHAUSTIVE = "EDGE_AGENT_SCAN_EXHAUSTIVE_MAX_CALLS"
@@ -63,6 +67,8 @@ export function policyFor(mode: ScanMode): ScanModePolicy {
         maxAiCalls: 0,
         maxGapAuditSurfaces: 0,
         contextTokenCap: 0,
+        verifierConcurrency: 1,
+        gapAuditConcurrency: 1,
       }
     case "balanced":
       return {
@@ -79,6 +85,8 @@ export function policyFor(mode: ScanMode): ScanModePolicy {
         maxAiCalls: 8,
         maxGapAuditSurfaces: 3,
         contextTokenCap: 8_000,
+        verifierConcurrency: 2,
+        gapAuditConcurrency: 2,
       }
     case "deep":
       return {
@@ -94,6 +102,8 @@ export function policyFor(mode: ScanMode): ScanModePolicy {
         maxAiCalls: 30,
         maxGapAuditSurfaces: 12,
         contextTokenCap: 24_000,
+        verifierConcurrency: 4,
+        gapAuditConcurrency: 4,
       }
     case "exhaustive":
       return {
@@ -110,6 +120,8 @@ export function policyFor(mode: ScanMode): ScanModePolicy {
         maxAiCalls: exhaustiveBudget(),
         maxGapAuditSurfaces: 32,
         contextTokenCap: 64_000,
+        verifierConcurrency: 6,
+        gapAuditConcurrency: 6,
       }
   }
 }
