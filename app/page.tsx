@@ -205,6 +205,19 @@ export default function Home() {
   // lib/server-ai-provider-resolver.ts for the contract.
   const aiProviderMode = "hosted" as const
   const [manualModelSelection, setManualModelSelection] = useState<Record<string, string>>({})
+  // `executeScan` is a useCallback that deliberately does NOT list
+  // `intelligenceMode` / `manualModelSelection` in its deps (to avoid
+  // recreating the callback — and the callbacks that depend on it — every
+  // time the user toggles a mode). Without these refs the callback would
+  // capture a STALE mode and send it to /api/scan, so clicking e.g.
+  // Exhaustive could still scan as Balanced. The refs always hold the
+  // value the user currently sees.
+  const intelligenceModeRef = useRef(intelligenceMode)
+  const manualModelSelectionRef = useRef(manualModelSelection)
+  useEffect(() => {
+    intelligenceModeRef.current = intelligenceMode
+    manualModelSelectionRef.current = manualModelSelection
+  }, [intelligenceMode, manualModelSelection])
   const [scanReport, setScanReport] = useState<ScanReport | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
@@ -512,6 +525,12 @@ export default function Home() {
 
       setScanning(true)
       setScanError(null)
+      // Snapshot the user's current selection once, up-front, from the
+      // refs — so the whole run (request body + history stamping) uses the
+      // mode the user actually clicked, not a value frozen into this
+      // callback's closure.
+      const selectedMode = intelligenceModeRef.current
+      const selectedManualModels = manualModelSelectionRef.current
       try {
         const checks = resolveChecksForApi(selectedCheckIds)
         const res = await fetch("/api/scan", {
@@ -534,7 +553,7 @@ export default function Home() {
             // (lite/balanced/deep/exhaustive); the route also accepts the
             // legacy save/auto/pro/max ids. Provider/manual-model metadata
             // is still stamped onto scan history client-side below.
-            intelligenceMode: normalizeScanMode(intelligenceMode),
+            intelligenceMode: normalizeScanMode(selectedMode),
           }),
           // Wiring the AbortSignal here is what makes the Stop button
           // actually do something: aborting the controller rejects the
@@ -589,11 +608,11 @@ export default function Home() {
         const branchAtScan =
           target.branch?.trim() || currentBranch || "main"
         const item = scanItemFromReport(report, target, branchAtScan, {
-          intelligenceMode,
-          modeLabel: MODE_LABELS[intelligenceMode],
+          intelligenceMode: selectedMode,
+          modeLabel: MODE_LABELS[selectedMode],
           aiProviderMode,
           manualModelSelection:
-            intelligenceMode === "manual" ? manualModelSelection : undefined,
+            selectedMode === "manual" ? selectedManualModels : undefined,
         })
         const next = appendScanToHistory(item)
         setScanHistory(next)
