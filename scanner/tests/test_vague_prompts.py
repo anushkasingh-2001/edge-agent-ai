@@ -176,11 +176,30 @@ def test_critical_when_vague_action_prompt_meets_dangerous_sink() -> None:
     assert findings[0].severity == "critical", findings[0].severity
 
 
-def test_critical_when_agent_callable_tool_has_side_effects() -> None:
-    """An agent-callable tool with side effects anywhere in the repo also
-    counts as a risky surface for escalation."""
+def test_critical_when_same_file_tool_has_side_effects() -> None:
+    """A side-effect tool declared in the SAME file as the prompt is a nearby
+    risky surface => critical."""
     ir = AgentIR(
-        prompts=[_prompt("Handle this. Take action and do the needful.")],
+        prompts=[_prompt("Handle this. Take action and do the needful.", file="agent.py")],
+        tools=[
+            ToolNode(
+                id="t1",
+                name="send_email",
+                location=CodeLocation(file="agent.py", start_line=5, end_line=5),
+                callable_from_agent=True,
+                side_effects=["network.send"],
+            )
+        ],
+    )
+    findings = analyze_vague_prompts(ir, [])
+    assert findings and findings[0].severity == "critical"
+
+
+def test_unrelated_risky_tool_in_other_file_is_not_critical() -> None:
+    """A risky tool that merely exists in ANOTHER file must NOT escalate the
+    prompt — it stays high (8 parts missing), not critical."""
+    ir = AgentIR(
+        prompts=[_prompt("Handle this. Take action and do the needful.", file="agent.py")],
         tools=[
             ToolNode(
                 id="t1",
@@ -192,12 +211,74 @@ def test_critical_when_agent_callable_tool_has_side_effects() -> None:
         ],
     )
     findings = analyze_vague_prompts(ir, [])
-    assert findings and findings[0].severity == "critical"
+    assert findings and findings[0].severity == "high", findings[0].severity
+
+
+def test_critical_when_prompt_text_names_risky_action() -> None:
+    """The prompt text itself naming a risky tool (send_email) is sufficient
+    close evidence when approval/tool/output policy are all absent."""
+    ir = AgentIR(
+        prompts=[_prompt("Handle this. send_email to the user and do the needful.")]
+    )
+    findings = analyze_vague_prompts(ir, [])
+    assert findings and findings[0].severity == "critical", findings[0].severity
 
 
 def test_no_escalation_without_risky_surface() -> None:
-    """Same vague action prompt but no risky tool/sink => stays high (8 parts
-    missing), NOT critical."""
-    ir = AgentIR(prompts=[_prompt("Handle this. Take action and do the needful.")])
+    """Vague action prompt with no nearby risky surface and no risky keyword
+    => stays high (8 parts missing), NOT critical."""
+    ir = AgentIR(prompts=[_prompt("Handle this and do the needful.")])
     findings = analyze_vague_prompts(ir, [])
     assert findings and findings[0].severity == "high"
+
+
+# ---------------------------------------------------------------------------
+# Grouping regression: distinct prompts in distinct files must not collapse
+# ---------------------------------------------------------------------------
+
+def test_two_vague_prompts_in_two_files_stay_separate(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text(
+        'SYSTEM_PROMPT = "Handle this and do the needful."\n', encoding="utf-8"
+    )
+    (tmp_path / "b.py").write_text(
+        'SYSTEM_PROMPT = "Process the request and use your judgment."\n',
+        encoding="utf-8",
+    )
+    report = run_scan(tmp_path)
+    vague = _vague(report)
+    files = {f.file for f in vague}
+    assert any(f.endswith("a.py") for f in files), "a.py vague prompt missing"
+    assert any(f.endswith("b.py") for f in files), "b.py vague prompt missing"
+    assert len(vague) >= 2, (
+        f"two distinct vague prompts must not collapse into one; got {len(vague)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Secondary trigger: very short, highly underspecified prompts
+# ---------------------------------------------------------------------------
+
+def test_short_underspecified_prompt_is_flagged(tmp_path: Path) -> None:
+    (tmp_path / "agent.py").write_text(
+        'SYSTEM_PROMPT = "Summarize."\n', encoding="utf-8"
+    )
+    report = run_scan(tmp_path)
+    vague = _vague(report)
+    assert vague, "a bare 'Summarize.' prompt should fire the short trigger"
+    f = vague[0]
+    # No vague phrase => secondary trigger => capped at medium, borderline conf.
+    assert f.severity == "medium", f"short trigger caps at medium, got {f.severity}"
+    assert f.confidence < 0.6
+    assert "trigger=short" in f.evidence
+
+
+def test_well_structured_short_prompt_is_not_flagged(tmp_path: Path) -> None:
+    """Short but specified (>= 4 contract parts present, no vague phrase) must
+    NOT fire — the short trigger needs 5+ missing parts."""
+    (tmp_path / "agent.py").write_text(
+        'SYSTEM_PROMPT = "You are a translator. Return JSON. Do not guess; ask the '
+        'user if unclear."\n',
+        encoding="utf-8",
+    )
+    report = run_scan(tmp_path)
+    assert _vague(report) == [], "a short but well-structured prompt must not fire"

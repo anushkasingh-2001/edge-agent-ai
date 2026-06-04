@@ -68,9 +68,32 @@ def _guard_signature(finding: Any) -> str:
 def compute_fingerprint(finding: Any) -> str:
     """sha1(rule_id | sink_kind | guard_sig | path_sig).
 
-    Deliberately excludes file/line so identical flows collapse. The
+    Deliberately excludes file/line so identical FLOWS collapse. The
     representative keeps its own file/line; siblings are counted.
+
+    Exception — ``vague-prompts``: these findings carry no taint
+    ``evidence_path`` and no sink, so the structural signature above is
+    identical for every vague prompt in the repo, which would collapse
+    unrelated prompts (even across files) into a single finding. For this
+    rule the fingerprint is per-prompt: file + line + the matched vague
+    phrases + the missing contract parts. Two genuinely identical
+    re-emissions still collapse; distinct prompts stay separate.
     """
+    if finding.rule_id == "vague-prompts":
+        feats = getattr(finding, "confidence_features", {}) or {}
+        phrases = ",".join(sorted(feats.get("vague_phrases", []) or []))
+        missing = ",".join(sorted(feats.get("prompt_missing", []) or []))
+        payload = "|".join(
+            [
+                finding.rule_id,
+                finding.file,
+                str(getattr(finding, "line", "")),
+                phrases,
+                missing,
+            ]
+        )
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
     payload = "|".join(
         [
             finding.rule_id,

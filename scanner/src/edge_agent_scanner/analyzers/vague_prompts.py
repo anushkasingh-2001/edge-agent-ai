@@ -120,6 +120,42 @@ _PROMPT_FILE_RX = re.compile(r"(prompt|system|instruction|persona|agent|template
 #: prompt/config text. Code prompts (.py/.ts/.js) come through ir.prompts.
 _CONFIG_PROMPT_EXTS: tuple[str, ...] = (".txt", ".md", ".json", ".yaml", ".yml")
 
+# Risky / action verbs and tool names whose presence IN THE PROMPT TEXT is
+# concrete evidence the prompt drives real-world side effects. Used to
+# escalate a vague prompt to critical even when the IR has no sink/tool node
+# attached to the prompt's file (e.g. the prompt names the tool it will call).
+_RISKY_ACTION_RX = re.compile(
+    r"\b("
+    r"send_?email|send_?sms|send_?message|email\s+the|"
+    r"delete|remove|drop\s+table|truncate|"
+    r"deploy|rollback|release|publish|"
+    r"refund|charge|transfer|payment|pay\b|wire\b|invoice|"
+    r"shell|exec|subprocess|os\.system|run\s+command|execute\s+command|"
+    r"insert\s+into|update\s+\w+\s+set|delete\s+from|database\s+write|db\s+write|write\s+to\s+(?:the\s+)?(?:db|database)|"
+    r"calendar|schedule_?meeting|create_?meeting|book\s+a|"
+    r"github|merge\s+pr|create_?pr|open\s+a\s+pr|push\s+to|commit\s+to|"
+    r"grant|revoke|provision|terminate\s+instance"
+    r")\b",
+    re.I,
+)
+
+# Secondary-trigger thresholds for very short underspecified prompts.
+_SHORT_MAX_WORDS = 20
+_SHORT_MAX_CHARS = 120
+_SHORT_MIN_MISSING = 5
+
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _cap_severity(sev: str, ceiling: str) -> str:
+    """Clamp ``sev`` so it is no more severe than ``ceiling``."""
+    return sev if _SEV_RANK.get(sev, 3) >= _SEV_RANK.get(ceiling, 3) else ceiling
+
+
+def _is_short(text: str) -> bool:
+    t = text.strip()
+    return len(t) <= _SHORT_MAX_CHARS or len(t.split()) <= _SHORT_MAX_WORDS
+
 
 def _vague_hits(text: str) -> list[str]:
     low = text.lower()
@@ -159,17 +195,39 @@ def _confidence_for(severity: str) -> float:
     }.get(severity, 0.68)
 
 
-def _repo_has_risky_agent_tool(ir: AgentIR) -> bool:
-    """True when the repo exposes an agent-callable tool with real side
-    effects — the precondition for escalating a vague action prompt to
-    critical."""
-    return any(t.callable_from_agent and t.side_effects for t in ir.tools)
-
-
 def _file_has_dangerous_sink(ir: AgentIR, file: str) -> bool:
     return any(
         s.location.file == file and s.impact in ("high", "critical") for s in ir.sinks
     )
+
+
+def _file_has_risky_tool(ir: AgentIR, file: str) -> bool:
+    """A tool with real side effects declared in the SAME file as the prompt
+    (nearby tool context). Repo-wide risky tools elsewhere do NOT count —
+    that over-escalated unrelated prompts."""
+    return any(t.location.file == file and t.side_effects for t in ir.tools)
+
+
+def _risky_context_for(ir: AgentIR | None, file: str, text: str) -> tuple[bool, str]:
+    """Return (is_risky, signal) using CLOSE evidence only:
+
+    * a high/critical sink in the same file, OR
+    * a side-effect tool declared in the same file (nearby tool context), OR
+    * the prompt text itself names a risky action/tool (send_email, delete,
+      deploy, refund, charge, shell, db write, calendar, github write, …).
+
+    A risky tool that merely exists elsewhere in the repo is intentionally
+    NOT sufficient — the prompt must be close to, or explicitly invoke, the
+    risky surface.
+    """
+    if ir is not None:
+        if _file_has_dangerous_sink(ir, file):
+            return True, "same_file_sink"
+        if _file_has_risky_tool(ir, file):
+            return True, "same_file_tool"
+    if _RISKY_ACTION_RX.search(text or ""):
+        return True, "prompt_names_action"
+    return False, ""
 
 
 def _build_finding(
@@ -179,37 +237,65 @@ def _build_finding(
     location: CodeLocation,
     vague: list[str],
     missing: list[str],
+    trigger: str,
     risky_context: bool,
+    risky_signal: str,
 ):
     sev = _severity_for(len(missing))
 
-    # Critical: vague phrasing + a risky/action surface + none of the three
-    # safety-critical contract parts (approval, tool policy, output schema).
-    critical_gap = {"approval", "tool_policy", "output_format"}.issubset(set(missing))
-    if vague and risky_context and critical_gap:
-        sev = "critical"
-
-    conf = _confidence_for(sev)
+    if trigger == "short":
+        # Secondary trigger (no explicit vague phrase) is a weaker signal:
+        # cap at medium and use borderline confidence so the scan-time LLM
+        # verifier reviews it rather than us asserting a confident high.
+        sev = _cap_severity(sev, "medium")
+        conf = 0.55
+    else:
+        # Critical requires CLOSE evidence (same-file sink/tool, or the
+        # prompt itself names a risky action) AND a vague phrase AND the
+        # three safety-critical contract parts all missing.
+        critical_gap = {"approval", "tool_policy", "output_format"}.issubset(set(missing))
+        if vague and risky_context and critical_gap:
+            sev = "critical"
+        conf = _confidence_for(sev)
 
     missing_labels = ", ".join(missing) if missing else "none"
     vague_labels = ", ".join(f'"{v}"' for v in vague) if vague else "none"
 
     if sev == "critical":
         title = f"Vague action prompt with no approval/tool/output policy: {name}"
+    elif trigger == "short":
+        title = f"Very short, underspecified prompt: {name}"
     else:
         title = f"Vague / underspecified prompt: {name}"
 
-    reason = (
-        "This prompt uses vague, underspecified instructions ("
-        + vague_labels
-        + ") and is missing "
-        + str(len(missing))
-        + " of 8 prompt-contract parts ("
-        + missing_labels
-        + "). Underspecified prompts let the model improvise: it may pick the "
-        "wrong action, invent output, or call tools without a human in the loop — "
-        "especially dangerous when the agent can take real-world actions."
-    )
+    if trigger == "short":
+        reason = (
+            "This prompt is extremely short and underspecified — it is missing "
+            + str(len(missing))
+            + " of 8 prompt-contract parts ("
+            + missing_labels
+            + "). A bare instruction like this gives the model no role, output "
+            "format, constraints, or fallback behaviour, so results are unreliable "
+            "and easy to derail."
+        )
+    else:
+        reason = (
+            "This prompt uses vague, underspecified instructions ("
+            + vague_labels
+            + ") and is missing "
+            + str(len(missing))
+            + " of 8 prompt-contract parts ("
+            + missing_labels
+            + "). Underspecified prompts let the model improvise: it may pick the "
+            "wrong action, invent output, or call tools without a human in the loop — "
+            "especially dangerous when the agent can take real-world actions."
+        )
+        if sev == "critical":
+            reason += (
+                f" Escalated to critical because a risky action surface is close by "
+                f"({risky_signal}) and the prompt specifies no approval, tool-use, or "
+                f"output policy."
+            )
     suggested_fix = (
         "Replace vague language with an explicit contract: (1) role/persona, "
         "(2) the exact task, (3) what inputs to expect, (4) the output format/schema, "
@@ -221,10 +307,11 @@ def _build_finding(
     # Deterministic evidence string — also what the LLM verifier bundle
     # surfaces as "static evidence + missing parts".
     evidence = (
+        f"trigger={trigger}; "
         f"vague_phrases={'|'.join(vague) if vague else 'none'}; "
         f"missing={','.join(missing) if missing else 'none'}; "
         f"missing_count={len(missing)}"
-        + ("; risky_context=1" if risky_context else "")
+        + (f"; risky_context={risky_signal}" if risky_context else "")
     )
 
     f = make_finding(
@@ -242,28 +329,46 @@ def _build_finding(
     try:
         f.confidence_features = {
             **(f.confidence_features or {}),
+            "trigger": trigger,
             "vague_phrases": vague,
             "prompt_missing": missing,
             "missing_count": len(missing),
             "risky_context": risky_context,
+            "risky_signal": risky_signal,
         }
     except Exception:
         pass
     return f
 
 
+def _classify_trigger(text: str, vague: list[str], missing: list[str]) -> str | None:
+    """Decide whether (and why) a prompt fires.
+
+    * ``"phrase"`` — at least one vague phrase is present (primary signal).
+    * ``"short"``  — no vague phrase, but the prompt is very short AND highly
+      underspecified (>= 5 of 8 contract parts missing). Catches bare
+      instructions like "Summarize." / "Classify this." without duplicating
+      prompt-contract for ordinary-length prompts.
+    * ``None``     — does not fire.
+    """
+    if vague:
+        return "phrase"
+    if _is_short(text) and len(missing) >= _SHORT_MIN_MISSING:
+        return "short"
+    return None
+
+
 def analyze_vague_prompts(ir: AgentIR, files: list[ScannedFile]):
     """Flag vague/underspecified prompts in code and prompt/config files.
 
-    Trigger is a vague phrase (the defining signal of this check, which keeps
-    it distinct from the broader ``prompt-contract`` analyzer); severity is
-    driven by how many of the eight contract parts are missing. The LLM
-    verifier — when the scan mode allows it — only ever upgrades/downgrades or
-    marks these as likely false positives; it cannot create a finding here
-    because every finding requires a real matched phrase.
+    Two deterministic triggers (see ``_classify_trigger``): an explicit vague
+    phrase, or a very short + highly underspecified prompt. Severity follows
+    the missing-contract-part count; criticality requires CLOSE evidence of a
+    risky action surface. The scan-time LLM verifier (lib/scan-intelligence)
+    only upgrades/downgrades or marks these likely false positives — it can
+    never create a finding here, so every issue keeps deterministic evidence.
     """
     findings = []
-    risky_repo = _repo_has_risky_agent_tool(ir)
 
     # 1) IR-modelled prompts (code-embedded, AST/call-site extracted).
     seen_prompt_files: set[str] = set()
@@ -271,10 +376,11 @@ def analyze_vague_prompts(ir: AgentIR, files: list[ScannedFile]):
         seen_prompt_files.add(p.location.file)
         text = p.text_preview or ""
         vague = _vague_hits(text)
-        if not vague:
-            continue
         missing = _missing_parts(text)
-        risky_context = risky_repo or _file_has_dangerous_sink(ir, p.location.file)
+        trigger = _classify_trigger(text, vague, missing)
+        if not trigger:
+            continue
+        risky_context, risky_signal = _risky_context_for(ir, p.location.file, text)
         findings.append(
             _build_finding(
                 name=p.name or "prompt",
@@ -282,7 +388,9 @@ def analyze_vague_prompts(ir: AgentIR, files: list[ScannedFile]):
                 location=p.location,
                 vague=vague,
                 missing=missing,
+                trigger=trigger,
                 risky_context=risky_context,
+                risky_signal=risky_signal,
             )
         )
 
@@ -305,20 +413,23 @@ def analyze_vague_prompts(ir: AgentIR, files: list[ScannedFile]):
         if not text.strip():
             continue
         vague = _vague_hits(text)
-        if not vague:
+        missing = _missing_parts(text)
+        trigger = _classify_trigger(text, vague, missing)
+        if not trigger:
             continue
         # Only treat the file as a prompt when it looks like one. This keeps
-        # ordinary prose that happens to contain "handle this" from firing.
+        # ordinary prose/docs that happen to contain "handle this" (or that are
+        # merely short) from firing.
         looks_like_prompt = bool(_PROMPT_FILE_RX.search(rel)) or bool(_PROMPT_CUE_RX.search(text))
         if not looks_like_prompt:
             continue
 
-        missing = _missing_parts(text)
         # Line of the first vague phrase (1-based) for a useful anchor.
         line = _first_vague_line(sf.lines)
         location = CodeLocation(file=rel, start_line=line, end_line=line, symbol=None)
-        # No IR for plain config files → can't prove a risky action surface,
-        # so these never escalate to critical on their own.
+        # No IR for plain config files, but the prompt text itself can still
+        # name a risky action (handled inside _risky_context_for).
+        risky_context, risky_signal = _risky_context_for(None, rel, text)
         findings.append(
             _build_finding(
                 name=base,
@@ -326,7 +437,9 @@ def analyze_vague_prompts(ir: AgentIR, files: list[ScannedFile]):
                 location=location,
                 vague=vague,
                 missing=missing,
-                risky_context=False,
+                trigger=trigger,
+                risky_context=risky_context,
+                risky_signal=risky_signal,
             )
         )
 
