@@ -277,6 +277,17 @@ const IntelligenceSummarySchema = z.object({
   clusters_reviewed: z.number().default(0),
   downranked_false_positives: z.number().default(0),
   confirmed_gaps: z.number().default(0),
+  // Phase 5 per-mode metrics. All optional/defaulted so partial or older
+  // payloads still validate.
+  candidate_clusters: z.number().default(0),
+  selected_clusters: z.number().default(0),
+  verified_real: z.number().default(0),
+  likely_false_positive: z.number().default(0),
+  needs_human_review: z.number().default(0),
+  gap_candidates: z.number().default(0),
+  gap_confirmed: z.number().default(0),
+  gap_rejected: z.number().default(0),
+  budget_exhausted: z.boolean().default(false),
   headline: z.string().default(""),
 })
 

@@ -176,6 +176,21 @@ export interface IntelligenceSummary {
   clusters_reviewed: number
   downranked_false_positives: number
   confirmed_gaps: number
+  // ---- Phase 5 per-mode metrics ----
+  /** Total clusters discovered from deterministic findings. */
+  candidate_clusters: number
+  /** Clusters routed to the verifier for this mode. */
+  selected_clusters: number
+  /** Verifier verdict counts (cluster-level). */
+  verified_real: number
+  likely_false_positive: number
+  needs_human_review: number
+  /** Gap-audit candidate accounting. */
+  gap_candidates: number
+  gap_confirmed: number
+  gap_rejected: number
+  /** True if the AI-call budget was hit and some work was skipped. */
+  budget_exhausted: boolean
   /** Human-readable one-liner for the UI scan-summary banner. */
   headline: string
 }

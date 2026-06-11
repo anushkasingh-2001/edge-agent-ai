@@ -58,6 +58,20 @@ export interface EnhanceOptions {
   mode: ScanMode
 }
 
+/** Phase 5 metric fields, all zeroed — spread into summaries for the
+ *  zero-AI return paths (lite, no-provider). */
+const ZERO_METRICS = {
+  candidate_clusters: 0,
+  selected_clusters: 0,
+  verified_real: 0,
+  likely_false_positive: 0,
+  needs_human_review: 0,
+  gap_candidates: 0,
+  gap_confirmed: 0,
+  gap_rejected: 0,
+  budget_exhausted: false,
+} as const
+
 /** Collected verifier output for one cluster (no shared state mutated). */
 interface VerifyOutcomeData {
   result: VerifierResult
@@ -233,6 +247,7 @@ export async function enhanceScanReport(
       clusters_reviewed: 0,
       downranked_false_positives: 0,
       confirmed_gaps: 0,
+      ...ZERO_METRICS,
       headline: buildHeadline({ mode, clusters: 0, downranked: 0, confirmedGaps: 0 }),
     })
   }
@@ -258,6 +273,7 @@ export async function enhanceScanReport(
       clusters_reviewed: 0,
       downranked_false_positives: 0,
       confirmed_gaps: 0,
+      ...ZERO_METRICS,
       headline: buildHeadline({
         mode,
         clusters: 0,
@@ -274,6 +290,16 @@ export async function enhanceScanReport(
   let confirmedGaps = 0
   let skippedReason: string | undefined
 
+  // ---- Phase 5 metrics ----
+  let candidateClusters = 0
+  let selectedClusters = 0
+  let verifiedReal = 0
+  let likelyFalsePositive = 0
+  let needsHumanReview = 0
+  let gapCandidates = 0
+  let gapRejected = 0
+  let budgetExhausted = false
+
   const byId = new Map(enriched.map((f) => [f.id, f]))
 
   // Race-free budget reservation. JS is single-threaded, so the check +
@@ -281,7 +307,10 @@ export async function enhanceScanReport(
   // is no `await` between them). This is what lets us run calls in parallel
   // while still enforcing `maxAiCalls` EXACTLY.
   const reserveCall = (): boolean => {
-    if (aiCalls >= policy.maxAiCalls) return false
+    if (aiCalls >= policy.maxAiCalls) {
+      budgetExhausted = true
+      return false
+    }
     aiCalls++
     return true
   }
@@ -291,6 +320,8 @@ export async function enhanceScanReport(
     if (policy.verifierEnabled) {
       const clusters = clusterFindings(enriched)
       const selected = selectClustersForMode(clusters, mode)
+      candidateClusters = clusters.length
+      selectedClusters = selected.length
       const baseModel = resolveScanModel(provider.provider, policy.verifierTier)
       const escalateTier = policy.secondPassJudgeEnabled
         ? policy.judgeTier
@@ -395,7 +426,12 @@ export async function enhanceScanReport(
           if (target) Object.assign(target, meta)
         }
         if (meta.status === "likely_false_positive") {
+          likelyFalsePositive++
           downranked += outcome.findingIds.length
+        } else if (meta.status === "llm_verified") {
+          verifiedReal++
+        } else if (meta.status === "needs_human_review") {
+          needsHumanReview++
         }
       }
     }
@@ -464,6 +500,7 @@ export async function enhanceScanReport(
       for (const outcome of gapOutcomes) {
         if (!outcome) continue
         for (const cand of outcome.candidates) {
+          gapCandidates++
           const conf = confirmCandidate({
             candidate: cand,
             projectPath,
@@ -480,9 +517,11 @@ export async function enhanceScanReport(
             enriched.push(newFinding)
             byId.set(newFinding.id, newFinding)
             confirmedGaps++
+          } else {
+            // Unconfirmed candidates are intentionally NOT added as findings
+            // — they remain LLM suggestions with no deterministic proof.
+            gapRejected++
           }
-          // Unconfirmed candidates are intentionally NOT added as findings
-          // — they remain LLM suggestions with no deterministic proof.
         }
       }
     }
@@ -501,6 +540,15 @@ export async function enhanceScanReport(
     clusters_reviewed: clustersReviewed,
     downranked_false_positives: downranked,
     confirmed_gaps: confirmedGaps,
+    candidate_clusters: candidateClusters,
+    selected_clusters: selectedClusters,
+    verified_real: verifiedReal,
+    likely_false_positive: likelyFalsePositive,
+    needs_human_review: needsHumanReview,
+    gap_candidates: gapCandidates,
+    gap_confirmed: confirmedGaps,
+    gap_rejected: gapRejected,
+    budget_exhausted: budgetExhausted,
     headline: buildHeadline({
       mode,
       clusters: clustersReviewed,

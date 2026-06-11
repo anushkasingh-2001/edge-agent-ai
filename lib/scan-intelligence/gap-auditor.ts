@@ -11,8 +11,44 @@
 import { parseJsonReply } from "../server-llm-client"
 import { callScanLlm } from "../server-llm-providers"
 import type { ScanContextBundle } from "./build-scan-context-bundle"
-import type { GapAuditCandidate, RiskSurface } from "./types"
+import type { GapAuditCandidate, RiskSurface, RiskSurfaceKind } from "./types"
 import type { ScanProvider } from "../server-llm-providers"
+
+/**
+ * Surface-specific focused audit questions (spec section 6). Each surface
+ * kind gets ONE narrow question instead of a generic "find all bugs" prompt,
+ * which keeps the audit precise and cheap.
+ */
+const SURFACE_INSTRUCTIONS: Record<RiskSurfaceKind, string> = {
+  subprocess_wrapper:
+    "Can user/config/model output reach command execution here without an allowlist, validation, or human approval?",
+  db_query:
+    "Can untrusted input reach SQL/Cypher query construction or execution here without parameterization/binding?",
+  prompt_template:
+    "Can untrusted content enter instruction-bearing prompt text here without delimiting, quoting, or policy separation?",
+  llm_call:
+    "Can model output or untrusted input influence tool arguments, code execution, or privileged decisions here?",
+  tool_definition:
+    "Is this agent-callable tool able to mutate external state without approval/auth/guardrails?",
+  mcp_handler:
+    "Can MCP tool/resource descriptions or handlers here cause unsafe tool execution, data exposure, or auth bypass?",
+  auth_route:
+    "Is this mutating or sensitive route missing authentication/authorization checks?",
+  api_route:
+    "Can unauthenticated users trigger writes, secrets exposure, filesystem access, or tool execution through this route?",
+  model_download:
+    "Can untrusted model/source paths here lead to unsafe download/load/deserialization?",
+  config_env_file:
+    "Do config/env defaults here expose credentials, disable TLS, or enable unsafe debug/admin behavior?",
+}
+
+/** The focused audit question for a surface kind (exported for tests). */
+export function gapAuditInstructionFor(kind: RiskSurfaceKind): string {
+  return (
+    SURFACE_INSTRUCTIONS[kind] ??
+    "Can untrusted input reach a dangerous sink on this surface without a guard?"
+  )
+}
 
 const SYSTEM = `You are a security GAP AUDITOR for a static analysis tool.
 The deterministic scanner already ran. Your job is to SUGGEST issues the
@@ -22,6 +58,8 @@ verify everything you propose.
 
 Rules:
 - Use ONLY the provided context. Never invent files or line numbers.
+- Answer ONLY the focused question for this surface kind. Do not look for
+  unrelated issue classes.
 - If you are unsure, return no candidate or a low confidence.
 - Prefer real source -> dangerous sink flows (user/config/request/model
   output reaching exec/command/SQL/file/network/model-download sinks).
@@ -98,6 +136,9 @@ export async function auditSurface(args: AuditArgs): Promise<AuditOutcome> {
     `- kind: ${args.surface.kind}`,
     `- label: ${args.surface.label}`,
     `- file: ${args.surface.file}:${args.surface.line}`,
+    ``,
+    `FOCUSED QUESTION (answer ONLY this):`,
+    gapAuditInstructionFor(args.surface.kind),
     ``,
     `CODE CONTEXT (redacted):`,
     args.bundle.text,

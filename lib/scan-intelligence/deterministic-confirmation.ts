@@ -20,12 +20,22 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import { findContainingBlock } from "./code-structure"
+import { findContainingBlock, type CodeBlock } from "./code-structure"
 import {
+  AUTH_GUARD_PATTERNS,
+  AUTH_MUTATION_PATTERNS,
+  COMMAND_SINK_PATTERNS,
   GUARD_PATTERNS,
+  PARAM_GUARD_PATTERNS,
+  PROMPT_SINK_PATTERNS,
+  PROMPT_TEXT_PATTERNS,
   SINK_PATTERNS,
   SOURCE_PATTERNS,
+  SQL_EXEC_PATTERNS,
+  SUPPLY_DOWNLOAD_PATTERNS,
+  SUPPLY_RISKY_PATTERNS,
   anyMatch,
+  looksLikeBuiltQuery,
   matchingLines,
 } from "./patterns"
 import type {
@@ -34,6 +44,31 @@ import type {
   GapAuditCandidate,
   ScanFinding,
 } from "./types"
+
+/** Rule families that get a targeted deterministic confirmation path. */
+type ConfirmFamily =
+  | "command_injection"
+  | "sql_injection"
+  | "prompt_injection"
+  | "auth"
+  | "vague_prompt"
+  | "supply_chain"
+  | "generic"
+
+/** Map a candidate's rule_family/sink_kind to a confirmation family. */
+export function confirmationFamily(c: GapAuditCandidate): ConfirmFamily {
+  const t = `${c.rule_family} ${c.sink_kind} ${c.source_kind}`.toLowerCase()
+  // SQL/Cypher first: "execute" contains "exec", so check DB-ish signals
+  // before the command family to avoid misrouting query execution.
+  if (/\bsql\b|cypher|\bdb\b|database|\bquery\b|execute|cursor/.test(t)) return "sql_injection"
+  if (/command|os\.system|subprocess|\bshell\b|\bexec\b|\beval\b|dangerous[-_ ]?code/.test(t))
+    return "command_injection"
+  if (/prompt[-_ ]?inject/.test(t)) return "prompt_injection"
+  if (/vague|prompt[-_ ]?contract|underspecified/.test(t)) return "vague_prompt"
+  if (/auth|approval|permission|access[-_ ]?control/.test(t)) return "auth"
+  if (/dependency|supply|model[-_ ]?download|deserial|pickle/.test(t)) return "supply_chain"
+  return "generic"
+}
 
 function isUnsafeRelPath(rel: string): boolean {
   if (!rel) return true
@@ -116,68 +151,220 @@ export function confirmCandidate(args: ConfirmArgs): ConfirmationResult {
     return { status: "needs_rule_support", reason: "duplicate of an existing finding" }
   }
 
-  // 4. Inspect the window around the cited line for source/sink/guard.
-  //    (Nearby-regex presence check — the deterministic floor.)
+  // 4. Build the inspection scope: a +/- window AND the containing block.
+  //    Family-specific confirmation prefers the block (same function) when
+  //    available; otherwise it uses the nearby window.
   const start = Math.max(0, candidate.line - 1 - window)
   const end = Math.min(lines.length, candidate.line + window)
   const region = lines.slice(start, end).join("\n")
+  const block = findContainingBlock(lines, candidate.line)
+  const blockLines = block ? lines.slice(block.startLine - 1, block.endLine) : []
+  const blockText = block ? blockLines.join("\n") : ""
+  const scope = block ? blockText : region
 
-  const hasSink = anyMatch(SINK_PATTERNS, region)
-  if (!hasSink) {
+  const ctx: FamilyCtx = {
+    candidate,
+    existingFindings: args.existingFindings,
+    file: candidate.file,
+    region,
+    lines,
+    block,
+    blockLines,
+    blockText,
+    scope,
+  }
+
+  // 5. Rule-family-specific confirmation. Each family proves its OWN shape;
+  //    if proof is incomplete it returns needs_rule_support / human_review
+  //    (never `confirmed`). Unknown families fall back to generic
+  //    source->sink confirmation (the original behaviour).
+  switch (confirmationFamily(candidate)) {
+    case "command_injection":
+      return confirmCommandInjection(ctx)
+    case "sql_injection":
+      return confirmSqlInjection(ctx)
+    case "prompt_injection":
+      return confirmPromptInjection(ctx)
+    case "auth":
+      return confirmAuth(ctx)
+    case "vague_prompt":
+      return confirmVaguePrompt(ctx)
+    case "supply_chain":
+      return confirmSupplyChain(ctx)
+    default:
+      return confirmGeneric(ctx)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Family-specific confirmation. All operate on the prepared FamilyCtx; none
+// call an LLM or touch the network.
+// ---------------------------------------------------------------------------
+
+interface FamilyCtx {
+  candidate: GapAuditCandidate
+  existingFindings: ScanFinding[]
+  file: string
+  region: string
+  lines: string[]
+  block: CodeBlock | null
+  blockLines: string[]
+  blockText: string
+  /** block body when available, else the nearby window. */
+  scope: string
+}
+
+const REJECT_NO_SINK = (what: string): ConfirmationResult => ({
+  status: "rejected_no_sink",
+  reason: `no ${what} near cited line`,
+})
+const GUARD_PRESENT = (what: string): ConfirmationResult => ({
+  status: "rejected_guard_present",
+  reason: what,
+})
+const NEEDS_RULE = (reason: string): ConfirmationResult => ({
+  status: "needs_rule_support",
+  reason,
+})
+
+/** Command injection: untrusted source -> command sink in the same
+ *  function/block (or via evidence path), with no guard/allowlist. */
+function confirmCommandInjection(ctx: FamilyCtx): ConfirmationResult {
+  const { scope, block, blockLines, candidate, existingFindings } = ctx
+  if (!anyMatch(COMMAND_SINK_PATTERNS, scope)) return REJECT_NO_SINK("command/exec sink")
+  if (anyMatch(GUARD_PATTERNS, scope)) {
+    return GUARD_PRESENT("a guard/allowlist/validation is present on the command path")
+  }
+  if (!anyMatch(SOURCE_PATTERNS, scope)) {
+    return NEEDS_RULE("command sink present but no untrusted source proven")
+  }
+  if (block) {
+    if (
+      evidencePathCorroborates(existingFindings, candidate.file, block.startLine, block.endLine)
+    ) {
+      return { status: "confirmed", reason: `confirmed command injection via scanner evidence-path in ${block.kind} ${block.name}` }
+    }
+    const sources = matchingLines(SOURCE_PATTERNS, blockLines, block.startLine)
+    const sinks = matchingLines(COMMAND_SINK_PATTERNS, blockLines, block.startLine)
+    const flow = sources.some((s) => sinks.some((k) => s.line <= k.line))
+    if (flow) {
+      return { status: "confirmed", reason: `confirmed command injection: source->command sink in ${block.kind} ${block.name}` }
+    }
+    return NEEDS_RULE("source and command sink in function but no ordered flow proven")
+  }
+  // No block boundary — fall back to nearby-window co-occurrence.
+  return { status: "confirmed", reason: "confirmed command injection: source and command sink near cited line, no guard" }
+}
+
+/** SQL/Cypher injection: query CONSTRUCTION from an untrusted source that is
+ *  then EXECUTED, with no parameterization/binding. */
+function confirmSqlInjection(ctx: FamilyCtx): ConfirmationResult {
+  const { scope } = ctx
+  if (!anyMatch(SQL_EXEC_PATTERNS, scope)) return REJECT_NO_SINK("query execution sink")
+  if (anyMatch(PARAM_GUARD_PATTERNS, scope)) {
+    return GUARD_PRESENT("query is parameterized / uses bound placeholders")
+  }
+  if (!looksLikeBuiltQuery(scope)) {
+    return NEEDS_RULE("query executed but no interpolated query construction proven")
+  }
+  if (!anyMatch(SOURCE_PATTERNS, scope)) {
+    return NEEDS_RULE("interpolated query but no untrusted source proven")
+  }
+  return { status: "confirmed", reason: "confirmed SQL/Cypher injection: untrusted input built into an executed query, no parameterization" }
+}
+
+/** Prompt injection: untrusted content reaching an instruction-bearing
+ *  prompt or tool argument, with no delimiting/quoting/policy guard. */
+function confirmPromptInjection(ctx: FamilyCtx): ConfirmationResult {
+  const { scope } = ctx
+  if (!anyMatch(PROMPT_SINK_PATTERNS, scope)) return REJECT_NO_SINK("instruction-bearing prompt sink")
+  if (!anyMatch(SOURCE_PATTERNS, scope)) {
+    return NEEDS_RULE("prompt sink present but no untrusted source proven")
+  }
+  if (anyMatch(GUARD_PATTERNS, scope)) {
+    return GUARD_PRESENT("a delimiting/sanitizing guard is present on the prompt path")
+  }
+  return { status: "confirmed", reason: "confirmed prompt injection: untrusted content reaches an instruction-bearing prompt, no delimiting" }
+}
+
+/** Auth: a mutating/sensitive route or tool with NO auth/authorization
+ *  guard on its path. Uses the nearby WINDOW (not just the function body) so
+ *  decorators such as `@login_required` that sit above the `def` are seen. */
+function confirmAuth(ctx: FamilyCtx): ConfirmationResult {
+  const text = `${ctx.region}\n${ctx.blockText}`
+  if (!anyMatch(AUTH_MUTATION_PATTERNS, text)) {
+    return NEEDS_RULE("no mutating/sensitive route or tool proven near cited line")
+  }
+  if (anyMatch(AUTH_GUARD_PATTERNS, text)) {
+    return GUARD_PRESENT("an authentication/authorization guard is present")
+  }
+  return { status: "confirmed", reason: "confirmed auth gap: mutating/sensitive surface with no auth guard" }
+}
+
+/** Vague prompt: a real prompt must be extracted AND the candidate must cite
+ *  deterministic missing-contract evidence. */
+function confirmVaguePrompt(ctx: FamilyCtx): ConfirmationResult {
+  const { scope, candidate } = ctx
+  if (!anyMatch(PROMPT_TEXT_PATTERNS, scope)) {
+    return NEEDS_RULE("no prompt text extracted near cited line")
+  }
+  const ev = `${candidate.evidence} ${candidate.why_missed}`.toLowerCase()
+  const hasMissingContract =
+    /missing|underspecified|vague|no\s+(role|task|output|tool|approval|fallback|constraint|persona)/.test(
+      ev,
+    )
+  if (!hasMissingContract) {
+    return { status: "needs_human_review", reason: "prompt found but missing-contract evidence not deterministic" }
+  }
+  return { status: "confirmed", reason: "confirmed vague prompt: prompt extracted with deterministic missing-contract evidence" }
+}
+
+/** Dependency / model supply-chain: manifest/model-download evidence PLUS a
+ *  known-risky pattern or unsafe source. */
+function confirmSupplyChain(ctx: FamilyCtx): ConfirmationResult {
+  const { scope } = ctx
+  if (!anyMatch(SUPPLY_DOWNLOAD_PATTERNS, scope)) {
+    return NEEDS_RULE("no manifest/model-download evidence near cited line")
+  }
+  if (!anyMatch(SUPPLY_RISKY_PATTERNS, scope)) {
+    return NEEDS_RULE("download present but no risky/unsafe source pattern proven")
+  }
+  return { status: "confirmed", reason: "confirmed supply-chain risk: model/dependency download from an unsafe/risky source" }
+}
+
+/** Generic fallback (original behaviour): any source -> any dangerous sink,
+ *  no guard, upgraded by evidence-path / intra-function flow when possible. */
+function confirmGeneric(ctx: FamilyCtx): ConfirmationResult {
+  const { region, block, blockLines, candidate, existingFindings } = ctx
+
+  if (!anyMatch(SINK_PATTERNS, region)) {
     return { status: "rejected_no_sink", reason: "no dangerous sink pattern near cited line" }
   }
-  const hasSource = anyMatch(SOURCE_PATTERNS, region)
-  if (!hasSource) {
-    // A sink with no discernible source is plausible but unproven — keep
-    // as a metadata candidate, never a confirmed finding.
+  if (!anyMatch(SOURCE_PATTERNS, region)) {
     return {
       status: "needs_rule_support",
       reason: "sink present but no source pattern proven near cited line",
     }
   }
-  const hasGuard = anyMatch(GUARD_PATTERNS, region)
-  if (hasGuard) {
-    return {
-      status: "rejected_guard_present",
-      reason: "a guard/sanitizer is present on the path",
-    }
+  if (anyMatch(GUARD_PATTERNS, region)) {
+    return { status: "rejected_guard_present", reason: "a guard/sanitizer is present on the path" }
   }
 
-  // 5. Upgrade the proof when stronger evidence is available. The
-  //    candidate already cleared the nearby-regex floor; now try to
-  //    explain *how* it was confirmed (best evidence first):
-  //
-  //      a. graph / evidence-path corroboration from a scanner finding,
-  //      b. intra-function ordered flow (source line <= sink line inside
-  //         the containing function/class),
-  //      c. nearby-regex fallback (original behaviour).
-  const block = findContainingBlock(lines, candidate.line)
-
   if (block) {
-    // Guards anywhere inside the containing function neutralise the flow,
-    // even if they sit outside the +/- window.
-    const blockLines = lines.slice(block.startLine - 1, block.endLine)
-    if (anyMatch(GUARD_PATTERNS, blockLines.join("\n"))) {
+    if (anyMatch(GUARD_PATTERNS, ctx.blockText)) {
       return {
         status: "rejected_guard_present",
         reason: `guard/sanitizer present in ${block.kind} ${block.name}`,
       }
     }
-
     if (
-      evidencePathCorroborates(
-        args.existingFindings,
-        candidate.file,
-        block.startLine,
-        block.endLine,
-      )
+      evidencePathCorroborates(existingFindings, candidate.file, block.startLine, block.endLine)
     ) {
       return {
         status: "confirmed",
         reason: `confirmed via scanner evidence-path through ${block.kind} ${block.name}`,
       }
     }
-
     const sources = matchingLines(SOURCE_PATTERNS, blockLines, block.startLine)
     const sinks = matchingLines(SINK_PATTERNS, blockLines, block.startLine)
     const flow = sources.some((s) => sinks.some((k) => s.line <= k.line))
@@ -189,6 +376,5 @@ export function confirmCandidate(args: ConfirmArgs): ConfirmationResult {
     }
   }
 
-  // 5c. Proven by nearby regex: source + sink in window, no guard.
   return { status: "confirmed", reason: "source and sink proven near cited line, no guard" }
 }

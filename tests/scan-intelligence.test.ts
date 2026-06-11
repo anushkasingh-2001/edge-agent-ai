@@ -35,9 +35,19 @@ import path from "node:path"
 import { normalizeScanMode, scanModeLabel } from "../lib/scan-intelligence/normalize-mode"
 import { policyFor } from "../lib/scan-intelligence/mode-policy"
 import { clusterFindings } from "../lib/scan-intelligence/cluster-findings"
-import { selectClustersForMode } from "../lib/scan-intelligence/select-clusters"
+import {
+  selectClustersForMode,
+  priorityScore,
+  harmScore,
+} from "../lib/scan-intelligence/select-clusters"
 import { buildClusterContextBundle } from "../lib/scan-intelligence/build-scan-context-bundle"
 import { confirmCandidate } from "../lib/scan-intelligence/deterministic-confirmation"
+import {
+  coerceVerifierReply,
+  verifierRuleFamily,
+} from "../lib/scan-intelligence/llm-verifier"
+import { gapAuditInstructionFor } from "../lib/scan-intelligence/gap-auditor"
+import type { RiskSurfaceKind } from "../lib/scan-intelligence/types"
 import { enhanceScanReport } from "../lib/scan-intelligence/enhance-scan-report"
 import { _clearScanCacheForTests } from "../lib/scan-intelligence/cache"
 import { _setScanFetcherForTests } from "../lib/server-llm-providers"
@@ -745,5 +755,573 @@ test("C6. deterministic finding order is stable after parallel verification", as
   } finally {
     _setScanFetcherForTests(restore)
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ===================================================================
+// PHASE 1. Verification priority scoring + per-mode selection
+// (cursor_instructions.pdf §5, Phase 1 / required-tests §10.1)
+
+/** Single-finding cluster helper. */
+function cluster1(over: Partial<ScanFinding>) {
+  return clusterFindings([finding(over)])[0]
+}
+
+test("P1. priorityScore is harm-aware: critical command > high command > medium api > low benign", () => {
+  const crit = cluster1({ id: "crit", severity: "critical", file: "a.py" })
+  const high = cluster1({ id: "high", severity: "high", file: "b.py" })
+  const med = cluster1({
+    id: "med",
+    severity: "medium",
+    rule_id: "openapi-schema",
+    category: "api",
+    confidence: 0.9,
+    file: "c.py",
+  })
+  const low = cluster1({
+    id: "low",
+    severity: "low",
+    rule_id: "accuracy-regression-risk",
+    category: "accuracy",
+    confidence: 0.95,
+    file: "d.py",
+  })
+  assert.ok(priorityScore(crit) > priorityScore(high), "critical > high")
+  assert.ok(priorityScore(high) > priorityScore(med), "high command > medium api")
+  assert.ok(priorityScore(med) > priorityScore(low), "medium > low benign")
+  // Harm score rewards command execution over a benign api surface.
+  assert.ok(harmScore(crit) > harmScore(med))
+})
+
+test("P1. agent-reachable + cross-file + changed-code bonuses raise priority", () => {
+  const plain = cluster1({ id: "p", severity: "high", file: "x.py" })
+  const reachable = cluster1({ id: "r", severity: "high", file: "x.py", agent: "agent-1" })
+  assert.ok(priorityScore(reachable) > priorityScore(plain), "agent-reachable scores higher")
+  // changed-code signal, when supplied, bumps the score further.
+  const withChanged = priorityScore(plain, { changedFiles: new Set(["x.py"]) })
+  assert.ok(withChanged > priorityScore(plain), "changed-code bonus applies")
+})
+
+test("P1. per-mode candidate counts increase lite<balanced<deep<exhaustive", () => {
+  const clusters = [
+    cluster1({ id: "c1", severity: "critical", file: "a.py" }),
+    cluster1({ id: "c2", severity: "high", file: "b.py" }),
+    cluster1({
+      id: "c3",
+      severity: "medium",
+      rule_id: "openapi-schema",
+      category: "api",
+      confidence: 0.9,
+      file: "c.py",
+    }),
+    cluster1({
+      id: "c4",
+      severity: "low",
+      rule_id: "accuracy-regression-risk",
+      category: "accuracy",
+      confidence: 0.95,
+      file: "d.py",
+    }),
+  ]
+  assert.equal(selectClustersForMode(clusters, "lite").length, 0)
+  assert.equal(selectClustersForMode(clusters, "balanced").length, 2) // crit + high
+  assert.equal(selectClustersForMode(clusters, "deep").length, 3) // + medium
+  assert.equal(selectClustersForMode(clusters, "exhaustive").length, 4) // all
+})
+
+test("P1. selection is ordered by descending priority (highest harm first)", () => {
+  const clusters = [
+    cluster1({
+      id: "low",
+      severity: "low",
+      rule_id: "accuracy-regression-risk",
+      category: "accuracy",
+      confidence: 0.95,
+      file: "d.py",
+    }),
+    cluster1({ id: "crit", severity: "critical", file: "a.py" }),
+    cluster1({
+      id: "med",
+      severity: "medium",
+      rule_id: "openapi-schema",
+      category: "api",
+      confidence: 0.9,
+      file: "c.py",
+    }),
+  ]
+  const ordered = selectClustersForMode(clusters, "exhaustive")
+  assert.equal(ordered[0].representative.id, "crit", "critical command reviewed first")
+  assert.equal(ordered[ordered.length - 1].representative.id, "low", "low benign reviewed last")
+})
+
+// ===================================================================
+// PHASE 2. Verifier parser: malformed / missing / empty / invented evidence
+// (cursor_instructions.pdf §8, Phase 2 / required-tests §10.3)
+
+test("P2. malformed / non-object verifier reply coerces to uncertain", () => {
+  for (const bad of [null, undefined, 42, "not json", []]) {
+    const r = coerceVerifierReply(bad as unknown)
+    assert.equal(r.verdict, "uncertain")
+    assert.equal(r.suggested_status, "needs_human_review")
+    assert.equal(r.scanner_truth_unchanged, true)
+  }
+})
+
+test("P2. real/false-positive verdict with empty evidence coerces to uncertain", () => {
+  const r1 = coerceVerifierReply({ verdict: "real", evidence_used: [] })
+  assert.equal(r1.verdict, "uncertain")
+  const r2 = coerceVerifierReply({ verdict: "likely_false_positive", evidence_used: [] })
+  assert.equal(r2.verdict, "uncertain")
+})
+
+test("P2. unsupported verdict value normalises to uncertain", () => {
+  const r = coerceVerifierReply({ verdict: "definitely", evidence_used: ["x"] })
+  assert.equal(r.verdict, "uncertain")
+})
+
+test("P2. invented evidence not present in the bundle coerces to uncertain", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    { verdict: "real", evidence_used: ["fabricated_remote_shell_backdoor_token"] },
+    ctx,
+  )
+  assert.equal(r.verdict, "uncertain", "fabricated evidence must be rejected")
+})
+
+test("P2. a real verdict with evidence found in the bundle is accepted", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    {
+      verdict: "real",
+      confidence: 0.9,
+      evidence_used: ["os.system"],
+      suggested_status: "llm_verified",
+    },
+    ctx,
+  )
+  assert.equal(r.verdict, "real")
+  assert.equal(r.suggested_status, "llm_verified")
+  assert.equal(r.scanner_truth_unchanged, true)
+})
+
+test("P2. verifierRuleFamily maps rule_id/category to the right family", () => {
+  assert.equal(verifierRuleFamily("user-input-dangerous-code", "command-execution"), "command_injection")
+  assert.equal(verifierRuleFamily("sql-injection", "db query"), "sql_injection")
+  assert.equal(verifierRuleFamily("prompt-injection", "prompt"), "prompt_injection")
+  assert.equal(verifierRuleFamily("vague-prompts", "Vague prompt"), "vague_prompt")
+  assert.equal(verifierRuleFamily("missing-auth", "auth"), "auth")
+})
+
+// ===================================================================
+// PHASE 3. Surface-specific gap-audit instructions
+// (cursor_instructions.pdf §6, Phase 3 / required-tests §10.4)
+
+test("P3. each surface kind yields a distinct, focused audit question", () => {
+  const kinds: RiskSurfaceKind[] = [
+    "subprocess_wrapper",
+    "db_query",
+    "prompt_template",
+    "llm_call",
+    "tool_definition",
+    "mcp_handler",
+    "auth_route",
+    "api_route",
+    "model_download",
+    "config_env_file",
+  ]
+  const seen = new Set<string>()
+  for (const k of kinds) {
+    const q = gapAuditInstructionFor(k)
+    assert.ok(q.length > 10, `${k} should have a real question`)
+    seen.add(q)
+  }
+  assert.equal(seen.size, kinds.length, "every surface kind must have a unique instruction")
+  // Spot-check the narrow framing per spec §6.
+  assert.match(gapAuditInstructionFor("subprocess_wrapper"), /command execution/i)
+  assert.match(gapAuditInstructionFor("db_query"), /parameteriz/i)
+  assert.match(gapAuditInstructionFor("prompt_template"), /delimit/i)
+  assert.match(gapAuditInstructionFor("auth_route"), /auth/i)
+})
+
+// ===================================================================
+// PHASE 4. Rule-family deterministic confirmation
+// (cursor_instructions.pdf §7, Phase 4 / required-tests §10.5)
+
+function gapCand(over: Partial<GapAuditCandidate>): GapAuditCandidate {
+  return {
+    candidate_title: over.candidate_title ?? "candidate",
+    rule_family: over.rule_family ?? "unknown",
+    source_kind: over.source_kind ?? "request",
+    sink_kind: over.sink_kind ?? "unknown",
+    file: over.file ?? "f.py",
+    line: over.line ?? 1,
+    evidence: over.evidence ?? "",
+    why_missed: over.why_missed ?? "",
+    confidence: over.confidence ?? 0.8,
+    needs_deterministic_confirmation: true,
+  }
+}
+
+test("P4. command injection: source->command sink with no guard is confirmed", () => {
+  const dir = mkproject({ "app.py": VULN_FILE })
+  try {
+    const res = confirmCandidate({
+      candidate: gapCand({ rule_family: "command-execution", sink_kind: "os.system", file: "app.py", line: 4 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(res.status, "confirmed")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. command injection: a shlex.quote guard rejects the candidate", () => {
+  const guarded = [
+    "import os, shlex",
+    "def handler(req):",
+    "    cmd = req.args.get('cmd')",
+    "    os.system('echo ' + shlex.quote(cmd))",
+    "    return 'ok'",
+  ].join("\n")
+  const dir = mkproject({ "g.py": guarded })
+  try {
+    const res = confirmCandidate({
+      candidate: gapCand({ rule_family: "command-execution", sink_kind: "os.system", file: "g.py", line: 4 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(res.status, "rejected_guard_present")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. SQL injection: interpolated query reaching execute is confirmed", () => {
+  const sqlVuln = [
+    "def get_user(req):",
+    "    q = f\"SELECT * FROM users WHERE id = {req.args.get('id')}\"",
+    "    cursor.execute(q)",
+    "    return q",
+  ].join("\n")
+  const dir = mkproject({ "db.py": sqlVuln })
+  try {
+    const res = confirmCandidate({
+      candidate: gapCand({ rule_family: "sql-injection", sink_kind: "execute", file: "db.py", line: 3 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(res.status, "confirmed")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. SQL injection: a parameterized query is not confirmed", () => {
+  const sqlSafe = [
+    "def get_user(req):",
+    "    cursor.execute('SELECT * FROM users WHERE id = %s', (req.args.get('id'),))",
+    "    return 'ok'",
+  ].join("\n")
+  const dir = mkproject({ "db.py": sqlSafe })
+  try {
+    const res = confirmCandidate({
+      candidate: gapCand({ rule_family: "sql-injection", sink_kind: "execute", file: "db.py", line: 2 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(res.status, "rejected_guard_present")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. prompt injection: untrusted content into instruction prompt is confirmed", () => {
+  const promptVuln = [
+    "def build(req):",
+    "    prompt = f\"Answer the question: {req.args.get('q')}\"",
+    "    return prompt",
+  ].join("\n")
+  const dir = mkproject({ "p.py": promptVuln })
+  try {
+    const res = confirmCandidate({
+      candidate: gapCand({ rule_family: "prompt-injection", sink_kind: "prompt", file: "p.py", line: 2 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(res.status, "confirmed")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. auth: mutating route without a guard is confirmed; with @login_required it is rejected", () => {
+  const noAuth = [
+    "@app.post('/users/delete')",
+    "def delete_user(req):",
+    "    db.delete(req.args.get('id'))",
+    "    return 'ok'",
+  ].join("\n")
+  const guarded = [
+    "@app.post('/users/delete')",
+    "@login_required",
+    "def delete_user(req):",
+    "    db.delete(req.args.get('id'))",
+    "    return 'ok'",
+  ].join("\n")
+  const dir = mkproject({ "open.py": noAuth, "safe.py": guarded })
+  try {
+    const open = confirmCandidate({
+      candidate: gapCand({ rule_family: "missing-auth", sink_kind: "auth", file: "open.py", line: 3 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(open.status, "confirmed")
+    const safe = confirmCandidate({
+      candidate: gapCand({ rule_family: "missing-auth", sink_kind: "auth", file: "safe.py", line: 4 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(safe.status, "rejected_guard_present")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. vague prompt: prompt + deterministic missing-contract evidence is confirmed", () => {
+  const dir = mkproject({ "vp.py": 'system_prompt = "Help the user."\n' })
+  try {
+    const ok = confirmCandidate({
+      candidate: gapCand({
+        rule_family: "vague-prompts",
+        sink_kind: "prompt",
+        file: "vp.py",
+        line: 1,
+        evidence: "missing role, task, output format, and approval policy",
+      }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(ok.status, "confirmed")
+    const weak = confirmCandidate({
+      candidate: gapCand({
+        rule_family: "vague-prompts",
+        sink_kind: "prompt",
+        file: "vp.py",
+        line: 1,
+        evidence: "the prompt seems a little short",
+      }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(weak.status, "needs_human_review")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P4. supply-chain: torch.load from http source confirmed; from_pretrained name is not", () => {
+  const risky = 'import torch\nmodel = torch.load("http://evil.example/model.pkl")\n'
+  const safe = 'from transformers import AutoModel\nmodel = AutoModel.from_pretrained("bert-base-uncased")\n'
+  const dir = mkproject({ "risky.py": risky, "safe.py": safe })
+  try {
+    const r = confirmCandidate({
+      candidate: gapCand({ rule_family: "model-download", sink_kind: "model_download", file: "risky.py", line: 2 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.equal(r.status, "confirmed")
+    const s = confirmCandidate({
+      candidate: gapCand({ rule_family: "model-download", sink_kind: "model_download", file: "safe.py", line: 2 }),
+      projectPath: dir,
+      existingFindings: [],
+    })
+    assert.notEqual(s.status, "confirmed")
+    assert.equal(s.status, "needs_rule_support")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ===================================================================
+// PHASE 5. Mode metrics + labeled fixtures
+// (cursor_instructions.pdf §10.7 / Phase 5)
+
+/** A mixed report: 2 risky high, 2 benign medium, 2 benign low, all in
+ *  distinct files so they form 6 distinct clusters. */
+function mixedReport(): { report: Record<string, unknown>; dir: string } {
+  const files: Record<string, string> = {}
+  const findings: ScanFinding[] = []
+  for (let i = 0; i < 2; i++) {
+    files[`hi${i}.py`] = VULN_FILE
+    findings.push(finding({ id: `hi${i}`, severity: "high", file: `hi${i}.py`, line: 4 }))
+  }
+  for (let i = 0; i < 2; i++) {
+    files[`med${i}.py`] = "x = 1\n"
+    findings.push(
+      finding({
+        id: `med${i}`,
+        severity: "medium",
+        rule_id: "openapi-schema",
+        category: "api",
+        confidence: 0.9,
+        file: `med${i}.py`,
+        line: 1,
+      }),
+    )
+  }
+  for (let i = 0; i < 2; i++) {
+    files[`lo${i}.py`] = "y = 2\n"
+    findings.push(
+      finding({
+        id: `lo${i}`,
+        severity: "low",
+        rule_id: "accuracy-regression-risk",
+        category: "accuracy",
+        confidence: 0.95,
+        file: `lo${i}.py`,
+        line: 1,
+      }),
+    )
+  }
+  const dir = mkproject(files)
+  return { report: { findings }, dir }
+}
+
+test("P5. intelligence_summary exposes per-mode metrics", async () => {
+  _clearScanCacheForTests()
+  const { report, dir } = mixedReport()
+  const llm = fakeLlm({ verdict: "real" })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+      const s = out.intelligence_summary as Record<string, unknown>
+      for (const key of [
+        "candidate_clusters",
+        "selected_clusters",
+        "verified_real",
+        "likely_false_positive",
+        "needs_human_review",
+        "gap_candidates",
+        "gap_confirmed",
+        "gap_rejected",
+        "budget_exhausted",
+      ]) {
+        assert.ok(key in s, `summary should expose ${key}`)
+      }
+      assert.equal(s.candidate_clusters, 6)
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("P5. Balanced verifies least, Deep more, Exhaustive most, Lite zero", async () => {
+  const selectedFor = async (mode: "lite" | "balanced" | "deep" | "exhaustive") => {
+    _clearScanCacheForTests()
+    const { report, dir } = mixedReport()
+    const llm = fakeLlm({ verdict: "real" })
+    const restore = _setScanFetcherForTests(llm.fetcher)
+    try {
+      return await withOpenAiKey(async () => {
+        const out = await enhanceScanReport(report, { projectPath: dir, mode })
+        const s = out.intelligence_summary as { selected_clusters: number; ai_calls_used: number }
+        return s
+      })
+    } finally {
+      _setScanFetcherForTests(restore)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const lite = await selectedFor("lite")
+  const balanced = await selectedFor("balanced")
+  const deep = await selectedFor("deep")
+  const exhaustive = await selectedFor("exhaustive")
+  assert.equal(lite.ai_calls_used, 0)
+  assert.equal(balanced.selected_clusters, 2)
+  assert.equal(deep.selected_clusters, 4)
+  assert.equal(exhaustive.selected_clusters, 6)
+  assert.ok(
+    balanced.selected_clusters < deep.selected_clusters &&
+      deep.selected_clusters < exhaustive.selected_clusters,
+    "selection widens with mode",
+  )
+})
+
+test("P5. labeled fixtures: true positive verified, false positive downranked, missed issue confirmed", async () => {
+  // (a) TRUE POSITIVE — real source->sink, verifier agrees.
+  {
+    _clearScanCacheForTests()
+    const dir = mkproject({ "app.py": VULN_FILE })
+    const llm = fakeLlm({ verdict: "real" })
+    const restore = _setScanFetcherForTests(llm.fetcher)
+    try {
+      await withOpenAiKey(async () => {
+        const report = { findings: [finding({ id: "tp" })] } as Record<string, unknown>
+        const out = await enhanceScanReport(report, { projectPath: dir, mode: "balanced" })
+        const f = (out.findings as ScanFinding[]).find((x) => x.id === "tp")
+        assert.equal(f?.status, "llm_verified")
+        const s = out.intelligence_summary as { verified_real: number }
+        assert.ok(s.verified_real >= 1)
+      })
+    } finally {
+      _setScanFetcherForTests(restore)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  // (b) FALSE POSITIVE — verifier downranks but never deletes.
+  {
+    _clearScanCacheForTests()
+    const dir = mkproject({ "log.py": "def h(req):\n    print(req.args.get('x'))\n" })
+    const llm = fakeLlm({ verdict: "likely_false_positive" })
+    const restore = _setScanFetcherForTests(llm.fetcher)
+    try {
+      await withOpenAiKey(async () => {
+        const report = { findings: [finding({ id: "fp", file: "log.py", line: 2 })] } as Record<string, unknown>
+        const out = await enhanceScanReport(report, { projectPath: dir, mode: "balanced" })
+        const findings = out.findings as ScanFinding[]
+        const f = findings.find((x) => x.id === "fp")
+        assert.ok(f, "false positive finding must NOT be deleted")
+        assert.equal(f?.status, "likely_false_positive")
+        const s = out.intelligence_summary as { likely_false_positive: number }
+        assert.ok(s.likely_false_positive >= 1)
+      })
+    } finally {
+      _setScanFetcherForTests(restore)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  // (c) MISSED ISSUE — gap candidate confirmed deterministically.
+  {
+    _clearScanCacheForTests()
+    const dir = mkproject({ "app.py": VULN_FILE })
+    const candidate = gapCand({
+      rule_family: "command-execution",
+      sink_kind: "os.system",
+      file: "app.py",
+      line: 4,
+      evidence: "os.system(cmd)",
+    })
+    const llm = fakeLlm({ verdict: "real", candidates: [candidate] })
+    const restore = _setScanFetcherForTests(llm.fetcher)
+    try {
+      await withOpenAiKey(async () => {
+        const report = {
+          findings: [],
+          tools_detected: [{ name: "handler", file: "app.py", line: 2 }],
+        } as Record<string, unknown>
+        const out = await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+        const gap = (out.findings as ScanFinding[]).find((f) => f.status === "gap_audit_confirmed")
+        assert.ok(gap, "missed issue should be confirmed as gap_audit_confirmed")
+        const s = out.intelligence_summary as { gap_confirmed: number; gap_candidates: number }
+        assert.equal(s.gap_confirmed, 1)
+        assert.ok(s.gap_candidates >= 1)
+      })
+    } finally {
+      _setScanFetcherForTests(restore)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   }
 })
