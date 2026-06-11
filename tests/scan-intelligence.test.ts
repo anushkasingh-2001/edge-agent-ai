@@ -39,6 +39,7 @@ import {
   selectClustersForMode,
   priorityScore,
   harmScore,
+  normalizeRelPath,
 } from "../lib/scan-intelligence/select-clusters"
 import { buildClusterContextBundle } from "../lib/scan-intelligence/build-scan-context-bundle"
 import {
@@ -1459,4 +1460,159 @@ test("CL3. 'session.run Cypher query' routes to sql_injection", () => {
 test("CL3. bare 'execute' (no DB signal) is NOT classified as SQL", () => {
   const c = gapCand({ rule_family: "mystery", sink_kind: "execute", source_kind: "input" })
   assert.notEqual(confirmationFamily(c), "sql_injection")
+})
+
+// ===================================================================
+// POLISH 1. Verifier evidence guard: decisive verdicts need EXACT evidence
+
+test("F1. exact copied code evidence is accepted for a decisive verdict", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    { verdict: "real", confidence: 0.9, evidence_used: ["os.system(req.args.get('cmd'))"] },
+    ctx,
+  )
+  assert.equal(r.verdict, "real")
+  assert.equal(r.suggested_status, "llm_verified")
+})
+
+test("F1. an exact file:line code-fact (path + line both present) is accepted", () => {
+  // The fact is NOT a contiguous substring; it is a file:line code-fact whose
+  // path and line both appear in the context (as bundle headers do).
+  const ctx = "file: app.py (line 4)\n    os.system(cmd)"
+  const r = coerceVerifierReply({ verdict: "real", evidence_used: ["app.py:4"] }, ctx)
+  assert.equal(r.verdict, "real")
+})
+
+test("F1. fully fabricated evidence becomes uncertain/needs_human_review", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    { verdict: "real", evidence_used: ["an undocumented telnet backdoor on port 23"] },
+    ctx,
+  )
+  assert.equal(r.verdict, "uncertain")
+  assert.equal(r.suggested_status, "needs_human_review")
+})
+
+test("F1. stitched sentence fails even when ALL its tokens appear in context", () => {
+  // Every significant token (request, value, system, reaches) occurs in the
+  // context, but the contiguous phrase does not. The old fuzzy fallback would
+  // have ACCEPTED this; the exact-only guard must reject it.
+  const ctx = "the user request reaches os.system and the value is logged"
+  const r = coerceVerifierReply(
+    { verdict: "real", evidence_used: ["request value system reaches"] },
+    ctx,
+  )
+  assert.equal(r.verdict, "uncertain")
+  assert.equal(r.suggested_status, "needs_human_review")
+})
+
+test("F1. decisive verdict with non-traceable evidence is coerced to uncertain", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    { verdict: "likely_false_positive", evidence_used: ["the call is wrapped in a sandbox"] },
+    ctx,
+  )
+  assert.equal(r.verdict, "uncertain")
+  assert.equal(r.suggested_status, "needs_human_review")
+})
+
+// ===================================================================
+// POLISH 2. changedFiles path normalization
+
+test("F2. normalizeRelPath canonicalizes separators, ./ and duplicate slashes", () => {
+  assert.equal(normalizeRelPath("src\\agent.py"), "src/agent.py")
+  assert.equal(normalizeRelPath("./src/agent.py"), "src/agent.py")
+  assert.equal(normalizeRelPath("src//agent.py"), "src/agent.py")
+  assert.equal(normalizeRelPath("././src/agent.py"), "src/agent.py")
+  assert.equal(normalizeRelPath("src/agent.py"), "src/agent.py")
+  // Absolute without a root => null (never guess).
+  assert.equal(normalizeRelPath("/abs/src/agent.py"), null)
+  // Absolute inside the root => relativized.
+  assert.equal(normalizeRelPath("/repo/src/agent.py", "/repo"), "src/agent.py")
+  assert.equal(normalizeRelPath("/repo/src/agent.py", "/repo/"), "src/agent.py")
+  // Absolute outside the root => null.
+  assert.equal(normalizeRelPath("/other/src/agent.py", "/repo"), null)
+  // Empty / non-string => null.
+  assert.equal(normalizeRelPath(""), null)
+  assert.equal(normalizeRelPath(42), null)
+})
+
+test("F2. changed-file matching is normalization-insensitive", () => {
+  const changed = changedFilesFromReport({
+    working_tree: { clean: false, modified_files: ["src\\agent.py", "./lib//util.py"] },
+  })
+  assert.ok(changed)
+  assert.deepEqual([...changed!].sort(), ["lib/util.py", "src/agent.py"])
+
+  const ctx = { changedFiles: changed! }
+  const unchanged = cluster1({ id: "u", severity: "high", file: "other/thing.py" })
+  // Cluster spelled with forward slashes matches the windows-style entry.
+  const changedFwd = cluster1({ id: "c1", severity: "high", file: "src/agent.py" })
+  // Cluster spelled with a leading ./ also matches after normalization.
+  const changedDot = cluster1({ id: "c2", severity: "high", file: "./src/agent.py" })
+  assert.ok(priorityScore(changedFwd, ctx) > priorityScore(unchanged, ctx))
+  assert.ok(priorityScore(changedDot, ctx) > priorityScore(unchanged, ctx))
+  // Unrelated paths get no changed-file bonus (equal to no-context score).
+  assert.equal(priorityScore(unchanged, ctx), priorityScore(unchanged, {}))
+})
+
+// ===================================================================
+// POLISH 3. Escalated verifier results are cached and reused
+
+test("F3. escalated verifier result is cached and reused (no extra AI calls)", async () => {
+  _clearScanCacheForTests()
+  const dir = mkproject({ "app.py": VULN_FILE })
+  // Balanced: cheap base -> mid escalation (distinct OpenAI models). An
+  // uncertain verdict on a high finding forces escalation.
+  const llm1 = fakeLlm({ verdict: "uncertain" })
+  let restore = _setScanFetcherForTests(llm1.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: [finding({ id: "esc", severity: "high" })] } as Record<string, unknown>
+      const out1 = await enhanceScanReport(report, { projectPath: dir, mode: "balanced" })
+      const s1 = out1.intelligence_summary as { ai_calls_used: number }
+      assert.ok(llm1.verifierCalls >= 2, "expected base + escalation verifier calls")
+      const distinct = new Set(llm1.models)
+      assert.ok(distinct.size >= 2, "base and escalate models must differ")
+      assert.ok(s1.ai_calls_used >= 2)
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+  }
+
+  // Second scan: SAME context/model/mode, cache intentionally NOT cleared.
+  const llm2 = fakeLlm({ verdict: "uncertain" })
+  restore = _setScanFetcherForTests(llm2.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: [finding({ id: "esc", severity: "high" })] } as Record<string, unknown>
+      const out2 = await enhanceScanReport(report, { projectPath: dir, mode: "balanced" })
+      const s2 = out2.intelligence_summary as { ai_calls_used: number }
+      // Base verifier, escalation, AND gap audit are all served from cache.
+      assert.equal(llm2.verifierCalls, 0, "verifier fully served from cache")
+      assert.equal(llm2.gapCalls, 0, "gap audit fully served from cache")
+      assert.equal(s2.ai_calls_used, 0, "cached escalation must not spend AI calls")
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("F3. cached escalation still respects the AI-call budget", async () => {
+  _clearScanCacheForTests()
+  const dir = mkproject({ "app.py": VULN_FILE })
+  const llm = fakeLlm({ verdict: "uncertain" })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = { findings: [finding({ id: "esc", severity: "high" })] } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "balanced" })
+      const s = out.intelligence_summary as { ai_calls_used: number }
+      assert.ok(s.ai_calls_used <= 8, "balanced budget (8) is never exceeded")
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

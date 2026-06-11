@@ -21,8 +21,37 @@ import type { Cluster, RiskSurface, ScanMode, ScanFinding } from "./types"
 /** Optional signals the caller may supply to refine ordering. */
 export interface SelectionContext {
   /** Project-relative paths that were added/modified (branch diff / working
-   *  tree). When provided, clusters in changed files are prioritised. */
+   *  tree). When provided, clusters in changed files are prioritised. Entries
+   *  should be normalised via `normalizeRelPath`; lookups normalise too. */
   changedFiles?: ReadonlySet<string>
+}
+
+/**
+ * Normalise a path to a canonical project-relative form for comparison:
+ *   - backslashes -> "/"
+ *   - duplicate slashes collapsed
+ *   - leading "./" segments stripped
+ *   - absolute paths returned as null UNLESS they sit inside `root`, in
+ *     which case they are made relative to it.
+ *
+ * Returns `null` when the path cannot be safely normalised to a relative
+ * path (empty, or absolute-and-outside-root) — callers must NOT guess.
+ */
+export function normalizeRelPath(p: unknown, root?: string): string | null {
+  if (typeof p !== "string") return null
+  let s = p.trim()
+  if (s === "") return null
+  s = s.replace(/\\/g, "/").replace(/\/{2,}/g, "/")
+  s = s.replace(/^(?:\.\/)+/, "")
+  const isAbs = s.startsWith("/") || /^[a-zA-Z]:\//.test(s)
+  if (isAbs) {
+    if (!root) return null
+    const r = root.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/\/+$/, "")
+    if (s === r) return null
+    if (!s.startsWith(r + "/")) return null
+    s = s.slice(r.length + 1).replace(/^(?:\.\/)+/, "")
+  }
+  return s === "" ? null : s
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +154,10 @@ export function priorityScore(c: Cluster, ctx: SelectionContext = {}): number {
   if (harm > 0) score += 10
   if (c.crossFile) score += 15
   if (isPromptToolRouteProximal(c)) score += 10
-  if (ctx.changedFiles && ctx.changedFiles.has(c.file)) score += 20
+  if (ctx.changedFiles) {
+    const norm = normalizeRelPath(c.file)
+    if (norm && ctx.changedFiles.has(norm)) score += 20
+  }
   // Duplicate-cluster penalty: a cluster that merely repeats the same root
   // cause many times has low marginal review value. The representative
   // already stands for the group; lightly deprioritise very large groups.

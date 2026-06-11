@@ -27,7 +27,11 @@
 import { policyFor } from "./mode-policy"
 import { clusterFindings } from "./cluster-findings"
 import { buildRiskSurfaceInventory } from "./risk-surface-inventory"
-import { selectClustersForMode, selectSurfacesForMode } from "./select-clusters"
+import {
+  selectClustersForMode,
+  selectSurfacesForMode,
+  normalizeRelPath,
+} from "./select-clusters"
 import {
   buildClusterContextBundle,
   buildSurfaceContextBundle,
@@ -77,14 +81,20 @@ export interface EnhanceOptions {
  */
 export function changedFilesFromReport(
   report: Record<string, unknown>,
+  root?: string,
 ): Set<string> | undefined {
   const wt = report.working_tree
   if (!wt || typeof wt !== "object") return undefined
   const w = wt as Record<string, unknown>
   const out = new Set<string>()
+  // Prefer the explicit root, fall back to the report's scan_root.
+  const base = root ?? (typeof report.scan_root === "string" ? report.scan_root : undefined)
 
   const addStr = (v: unknown) => {
-    if (typeof v === "string" && v.trim() !== "") out.add(v)
+    // Normalise to a canonical relative path; skip anything that can't be
+    // safely relativised (never guess).
+    const norm = normalizeRelPath(v, base)
+    if (norm) out.add(norm)
   }
   // String-array path fields (current + plausible future names).
   for (const key of ["stash_files", "modified_files", "untracked_files", "changed_files", "files"]) {
@@ -347,8 +357,9 @@ export async function enhanceScanReport(
   const byId = new Map(enriched.map((f) => [f.id, f]))
 
   // Branch-diff / working-tree signal for priority scoring (undefined when
-  // the report carries no exact changed paths).
-  const changedFiles = changedFilesFromReport(report)
+  // the report carries no exact changed paths). Paths are normalised against
+  // the project root so absolute/././backslash forms compare correctly.
+  const changedFiles = changedFilesFromReport(report, projectPath)
 
   // Race-free budget reservation. JS is single-threaded, so the check +
   // increment below is atomic relative to other in-flight promises (there
@@ -426,21 +437,38 @@ export async function enhanceScanReport(
           if (
             result.verdict === "uncertain" &&
             highRisk &&
-            escalateModel !== baseModel &&
-            reserveCall()
+            escalateModel !== baseModel
           ) {
-            const out2 = await verifyCluster({
-              cluster,
-              bundle,
-              provider: provider!.provider,
-              apiKey: provider!.apiKey,
-              baseUrl: provider!.baseUrl,
+            const escKey = {
+              phase: "verify" as const,
+              contextHash: bundle.contextHash,
               model: escalateModel,
-            })
-            if (out2.ok) {
-              result = out2.result
+              mode,
+            }
+            // Reuse a cached escalated result if one exists — no new AI call,
+            // no budget spent.
+            const cachedEsc = getCached<VerifierResult>(escKey)
+            if (cachedEsc) {
+              result = cachedEsc
               usedModel = escalateModel
-              cachedHit = false
+              cachedHit = true
+            } else if (reserveCall()) {
+              const out2 = await verifyCluster({
+                cluster,
+                bundle,
+                provider: provider!.provider,
+                apiKey: provider!.apiKey,
+                baseUrl: provider!.baseUrl,
+                model: escalateModel,
+              })
+              if (out2.ok) {
+                result = out2.result
+                usedModel = escalateModel
+                cachedHit = false
+                // Cache the escalated result so a later scan with the same
+                // context/model/mode reuses it without spending a call.
+                setCached(escKey, result)
+              }
             }
           }
 

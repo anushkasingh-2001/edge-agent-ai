@@ -99,11 +99,6 @@ function arr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []
 }
 
-/** Tokenise to lowercase words of length >= 4 for the fuzzy fallback. */
-function tokens(s: string): string[] {
-  return (s.toLowerCase().match(/[a-z0-9_]{4,}/g) ?? [])
-}
-
 /** Lowercase + collapse whitespace so substring matching is robust to
  *  formatting differences between the model's quote and the bundle. */
 function normalizeText(s: string): string {
@@ -111,33 +106,39 @@ function normalizeText(s: string): string {
 }
 
 /**
- * A cited fact must be TRACEABLE to the provided context. In priority order:
+ * A cited fact is TRACEABLE to the provided context ONLY by exact evidence —
+ * there is deliberately NO fuzzy/token fallback here, because a decisive
+ * verdict ("real" / "likely_false_positive") must rest on an exact quote the
+ * model actually read, not on stitched-together tokens.
  *
- *   1. EXACT match — the fact is a substring of the finding evidence or the
- *      bundle text (whitespace/case-normalised). This is the required path:
- *      verifiers are told to copy exact code facts / file:line strings.
- *   2. STRICT fuzzy FALLBACK — only when there is no exact substring, every
- *      significant token (len >= 4) of the fact must appear in the context.
- *      This tolerates pure punctuation differences but REJECTS fabricated or
- *      partially-overlapping sentences, which always introduce tokens the
- *      context never contained.
+ * Accepted forms:
+ *   1. normalized exact substring of the finding evidence or bundle text, OR
+ *   2. a file:line (or file:line:col) fact whose path AND line number both
+ *      appear exactly in the context (the bundle headers carry file:line).
  *
- * A fact with no significant tokens that is not an exact substring is not
- * traceable and fails.
+ * Everything else (fabricated sentences, partially-overlapping stitched
+ * sentences whose words merely co-occur) is NOT traceable.
  */
-function factSupported(
-  fact: string,
-  normalizedCtx: string,
-  ctxTokenSet: Set<string>,
-): boolean {
+function factTraceable(fact: string, normalizedCtx: string): boolean {
   const f = normalizeText(fact)
-  if (f === "") return true
-  // 1. Exact substring (primary, required path).
+  if (f === "") return false
+  // 1. Exact normalized substring (the required path).
   if (normalizedCtx.includes(f)) return true
-  // 2. Strict fallback: ALL significant tokens must be present.
-  const ft = tokens(fact)
-  if (ft.length === 0) return false
-  return ft.every((t) => ctxTokenSet.has(t))
+  // 2. file:line / file:line:col code-fact: require BOTH the path and the
+  //    exact line number to appear in the context.
+  const m = f.match(/^(.+?):(\d+)(?::\d+)?$/)
+  if (m) {
+    const filePart = m[1].trim()
+    const linePart = m[2]
+    if (
+      filePart.length > 0 &&
+      normalizedCtx.includes(filePart) &&
+      new RegExp(`(^|[^0-9])${linePart}([^0-9]|$)`).test(normalizedCtx)
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 const UNCERTAIN = (reason: string): VerifierResult => ({
@@ -178,16 +179,14 @@ export function coerceVerifierReply(raw: unknown, contextText?: string): Verifie
     return UNCERTAIN("verdict asserted without any cited evidence")
   }
 
-  // Invented-evidence guard: every cited fact must be traceable to the bundle
-  // (exact substring first, strict token fallback otherwise).
+  // Invented-evidence guard: a DECISIVE verdict requires EXACT traceable
+  // evidence (substring or file:line code-fact). No fuzzy/token fallback —
+  // non-traceable evidence coerces the verdict to uncertain.
   if (verdict !== "uncertain" && contextText) {
     const normalizedCtx = normalizeText(contextText)
-    const ctxSet = new Set(tokens(contextText))
-    const allSupported = evidence_used.every((f) =>
-      factSupported(f, normalizedCtx, ctxSet),
-    )
-    if (!allSupported) {
-      return UNCERTAIN("cited evidence not found in provided context (possible fabrication)")
+    const allTraceable = evidence_used.every((f) => factTraceable(f, normalizedCtx))
+    if (!allTraceable) {
+      return UNCERTAIN("cited evidence not exactly traceable to provided context (possible fabrication)")
     }
   }
 
