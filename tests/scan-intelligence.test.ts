@@ -41,14 +41,20 @@ import {
   harmScore,
 } from "../lib/scan-intelligence/select-clusters"
 import { buildClusterContextBundle } from "../lib/scan-intelligence/build-scan-context-bundle"
-import { confirmCandidate } from "../lib/scan-intelligence/deterministic-confirmation"
+import {
+  confirmCandidate,
+  confirmationFamily,
+} from "../lib/scan-intelligence/deterministic-confirmation"
 import {
   coerceVerifierReply,
   verifierRuleFamily,
 } from "../lib/scan-intelligence/llm-verifier"
 import { gapAuditInstructionFor } from "../lib/scan-intelligence/gap-auditor"
 import type { RiskSurfaceKind } from "../lib/scan-intelligence/types"
-import { enhanceScanReport } from "../lib/scan-intelligence/enhance-scan-report"
+import {
+  enhanceScanReport,
+  changedFilesFromReport,
+} from "../lib/scan-intelligence/enhance-scan-report"
 import { _clearScanCacheForTests } from "../lib/scan-intelligence/cache"
 import { _setScanFetcherForTests } from "../lib/server-llm-providers"
 import { parseScanReport, mapReportToUiFindings } from "../lib/scan-report"
@@ -1324,4 +1330,133 @@ test("P5. labeled fixtures: true positive verified, false positive downranked, m
       fs.rmSync(dir, { recursive: true, force: true })
     }
   }
+})
+
+// ===================================================================
+// CLEANUP 1. changedFiles (branch diff / working tree) priority wiring
+
+test("CL1. changedFilesFromReport harvests path-bearing working_tree fields", () => {
+  // No working_tree => undefined.
+  assert.equal(changedFilesFromReport({}), undefined)
+  // working_tree with only COUNTS (no paths) => undefined.
+  assert.equal(
+    changedFilesFromReport({ working_tree: { clean: false, modified: 3, untracked: 2, total: 5 } }),
+    undefined,
+  )
+  // Path-bearing fields are collected (stash_files + attributed paths +
+  // opportunistic modified/untracked arrays).
+  const set = changedFilesFromReport({
+    working_tree: {
+      clean: false,
+      stash_files: ["a.py", "b.py"],
+      modified_files: ["c.py"],
+      untracked_attributed_other_branches: [{ path: "d.py", branch: "x" }],
+    },
+  })
+  assert.ok(set)
+  assert.deepEqual([...set!].sort(), ["a.py", "b.py", "c.py", "d.py"])
+})
+
+test("CL1. a changed file outranks an equal-risk unchanged file", () => {
+  const unchanged = cluster1({ id: "u", severity: "high", file: "unchanged.py" })
+  const changed = cluster1({ id: "c", severity: "high", file: "changed.py" })
+  const ctx = { changedFiles: new Set(["changed.py"]) }
+  // Equal risk otherwise => the changed file scores strictly higher.
+  assert.ok(priorityScore(changed, ctx) > priorityScore(unchanged, ctx))
+  // And selection orders it first.
+  const ordered = selectClustersForMode([unchanged, changed], "exhaustive", ctx)
+  assert.equal(ordered[0].representative.id, "c")
+})
+
+test("CL1. enhanceScanReport threads working_tree changed files into selection", async () => {
+  _clearScanCacheForTests()
+  // Two equal high-severity findings; only one file is "changed".
+  const dir = mkproject({ "changed.py": VULN_FILE, "unchanged.py": VULN_FILE })
+  const llm = fakeLlm({ verdict: "real" })
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      const report = {
+        findings: [
+          finding({ id: "unchanged", file: "unchanged.py", line: 4 }),
+          finding({ id: "changed", file: "changed.py", line: 4 }),
+        ],
+        working_tree: { clean: false, modified_files: ["changed.py"] },
+      } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "deep" })
+      // Both reviewed, scan succeeds, and the changed-file finding is verified
+      // (selection ran with the changed-files context, no crash).
+      const findings = out.findings as ScanFinding[]
+      const changed = findings.find((f) => f.id === "changed")
+      assert.equal(changed?.status, "llm_verified")
+      const s = out.intelligence_summary as { selected_clusters: number }
+      assert.equal(s.selected_clusters, 2)
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ===================================================================
+// CLEANUP 2. Stricter verifier invented-evidence guard
+
+test("CL2. exact-substring evidence is accepted", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    {
+      verdict: "real",
+      confidence: 0.9,
+      evidence_used: ["os.system(req.args.get('cmd'))"],
+      suggested_status: "llm_verified",
+    },
+    ctx,
+  )
+  assert.equal(r.verdict, "real")
+})
+
+test("CL2. fully fabricated evidence is rejected (coerced to uncertain)", () => {
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    { verdict: "real", evidence_used: ["a hardcoded sshd backdoor on port 31337"] },
+    ctx,
+  )
+  assert.equal(r.verdict, "uncertain")
+})
+
+test("CL2. a partially-overlapping fabricated sentence is rejected", () => {
+  // Shares some tokens with the context (system, value) but introduces
+  // tokens that never appear (sanitized, allowlist) and is not a substring.
+  const ctx = "def handler(req):\n    os.system(req.args.get('cmd'))"
+  const r = coerceVerifierReply(
+    {
+      verdict: "likely_false_positive",
+      evidence_used: ["the os.system value is sanitized via an allowlist"],
+    },
+    ctx,
+  )
+  assert.equal(r.verdict, "uncertain")
+})
+
+// ===================================================================
+// CLEANUP 3. confirmationFamily SQL/command routing
+
+test("CL3. 'execute command' routes to command_injection, not SQL", () => {
+  const c = gapCand({ rule_family: "execute command", sink_kind: "command" })
+  assert.equal(confirmationFamily(c), "command_injection")
+})
+
+test("CL3. 'cursor.execute SQL query' routes to sql_injection", () => {
+  const c = gapCand({ rule_family: "sql query", sink_kind: "cursor.execute", source_kind: "request" })
+  assert.equal(confirmationFamily(c), "sql_injection")
+})
+
+test("CL3. 'session.run Cypher query' routes to sql_injection", () => {
+  const c = gapCand({ rule_family: "cypher query", sink_kind: "session.run", source_kind: "request" })
+  assert.equal(confirmationFamily(c), "sql_injection")
+})
+
+test("CL3. bare 'execute' (no DB signal) is NOT classified as SQL", () => {
+  const c = gapCand({ rule_family: "mystery", sink_kind: "execute", source_kind: "input" })
+  assert.notEqual(confirmationFamily(c), "sql_injection")
 })

@@ -58,6 +58,50 @@ export interface EnhanceOptions {
   mode: ScanMode
 }
 
+/**
+ * Best-effort set of project-relative paths the scan considers "changed"
+ * (branch diff / working tree), used by priority scoring to push new or
+ * modified code to the front of the verification queue.
+ *
+ * The report's `working_tree` carries COUNTS in most fields, but a few
+ * fields carry actual PATHS. We harvest only path-bearing fields and stay
+ * defensive about shape:
+ *   - `stash_files: string[]`                     (paths a stash touched)
+ *   - `untracked_attributed_other_branches[].path`
+ *   - any future `modified_files` / `untracked_files` / `changed_files`
+ *     string arrays (read opportunistically if present)
+ *
+ * When no exact paths are available we return `undefined` so the caller
+ * passes no changedFiles context (rather than an empty set that would look
+ * like "nothing changed").
+ */
+export function changedFilesFromReport(
+  report: Record<string, unknown>,
+): Set<string> | undefined {
+  const wt = report.working_tree
+  if (!wt || typeof wt !== "object") return undefined
+  const w = wt as Record<string, unknown>
+  const out = new Set<string>()
+
+  const addStr = (v: unknown) => {
+    if (typeof v === "string" && v.trim() !== "") out.add(v)
+  }
+  // String-array path fields (current + plausible future names).
+  for (const key of ["stash_files", "modified_files", "untracked_files", "changed_files", "files"]) {
+    const arr = w[key]
+    if (Array.isArray(arr)) for (const v of arr) addStr(v)
+  }
+  // Object-array fields where each entry has a `.path`.
+  const attributed = w.untracked_attributed_other_branches
+  if (Array.isArray(attributed)) {
+    for (const e of attributed) {
+      if (e && typeof e === "object") addStr((e as Record<string, unknown>).path)
+    }
+  }
+
+  return out.size > 0 ? out : undefined
+}
+
 /** Phase 5 metric fields, all zeroed — spread into summaries for the
  *  zero-AI return paths (lite, no-provider). */
 const ZERO_METRICS = {
@@ -302,6 +346,10 @@ export async function enhanceScanReport(
 
   const byId = new Map(enriched.map((f) => [f.id, f]))
 
+  // Branch-diff / working-tree signal for priority scoring (undefined when
+  // the report carries no exact changed paths).
+  const changedFiles = changedFilesFromReport(report)
+
   // Race-free budget reservation. JS is single-threaded, so the check +
   // increment below is atomic relative to other in-flight promises (there
   // is no `await` between them). This is what lets us run calls in parallel
@@ -319,7 +367,7 @@ export async function enhanceScanReport(
     // ================= Verifier (bounded parallel) =================
     if (policy.verifierEnabled) {
       const clusters = clusterFindings(enriched)
-      const selected = selectClustersForMode(clusters, mode)
+      const selected = selectClustersForMode(clusters, mode, { changedFiles })
       candidateClusters = clusters.length
       selectedClusters = selected.length
       const baseModel = resolveScanModel(provider.provider, policy.verifierTier)

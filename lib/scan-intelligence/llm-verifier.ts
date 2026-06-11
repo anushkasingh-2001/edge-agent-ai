@@ -99,23 +99,45 @@ function arr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []
 }
 
-/** Tokenise to lowercase words of length >= 4 for fuzzy "is this fact in the
- *  bundle?" matching. */
+/** Tokenise to lowercase words of length >= 4 for the fuzzy fallback. */
 function tokens(s: string): string[] {
   return (s.toLowerCase().match(/[a-z0-9_]{4,}/g) ?? [])
 }
 
+/** Lowercase + collapse whitespace so substring matching is robust to
+ *  formatting differences between the model's quote and the bundle. */
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, " ").trim()
+}
+
 /**
- * A cited fact is "supported" by the context when a meaningful share of its
- * significant tokens appear in the context. Facts with no significant tokens
- * (very short) can't be judged and are treated as supported.
+ * A cited fact must be TRACEABLE to the provided context. In priority order:
+ *
+ *   1. EXACT match — the fact is a substring of the finding evidence or the
+ *      bundle text (whitespace/case-normalised). This is the required path:
+ *      verifiers are told to copy exact code facts / file:line strings.
+ *   2. STRICT fuzzy FALLBACK — only when there is no exact substring, every
+ *      significant token (len >= 4) of the fact must appear in the context.
+ *      This tolerates pure punctuation differences but REJECTS fabricated or
+ *      partially-overlapping sentences, which always introduce tokens the
+ *      context never contained.
+ *
+ * A fact with no significant tokens that is not an exact substring is not
+ * traceable and fails.
  */
-function factSupported(fact: string, ctxTokenSet: Set<string>): boolean {
+function factSupported(
+  fact: string,
+  normalizedCtx: string,
+  ctxTokenSet: Set<string>,
+): boolean {
+  const f = normalizeText(fact)
+  if (f === "") return true
+  // 1. Exact substring (primary, required path).
+  if (normalizedCtx.includes(f)) return true
+  // 2. Strict fallback: ALL significant tokens must be present.
   const ft = tokens(fact)
-  if (ft.length === 0) return true
-  let hit = 0
-  for (const t of ft) if (ctxTokenSet.has(t)) hit++
-  return hit / ft.length >= 0.5
+  if (ft.length === 0) return false
+  return ft.every((t) => ctxTokenSet.has(t))
 }
 
 const UNCERTAIN = (reason: string): VerifierResult => ({
@@ -156,10 +178,14 @@ export function coerceVerifierReply(raw: unknown, contextText?: string): Verifie
     return UNCERTAIN("verdict asserted without any cited evidence")
   }
 
-  // Invented-evidence guard: every cited fact must be traceable to the bundle.
+  // Invented-evidence guard: every cited fact must be traceable to the bundle
+  // (exact substring first, strict token fallback otherwise).
   if (verdict !== "uncertain" && contextText) {
+    const normalizedCtx = normalizeText(contextText)
     const ctxSet = new Set(tokens(contextText))
-    const allSupported = evidence_used.every((f) => factSupported(f, ctxSet))
+    const allSupported = evidence_used.every((f) =>
+      factSupported(f, normalizedCtx, ctxSet),
+    )
     if (!allSupported) {
       return UNCERTAIN("cited evidence not found in provided context (possible fabrication)")
     }

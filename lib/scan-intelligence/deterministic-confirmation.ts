@@ -58,11 +58,16 @@ type ConfirmFamily =
 /** Map a candidate's rule_family/sink_kind to a confirmation family. */
 export function confirmationFamily(c: GapAuditCandidate): ConfirmFamily {
   const t = `${c.rule_family} ${c.sink_kind} ${c.source_kind}`.toLowerCase()
-  // SQL/Cypher first: "execute" contains "exec", so check DB-ish signals
-  // before the command family to avoid misrouting query execution.
-  if (/\bsql\b|cypher|\bdb\b|database|\bquery\b|execute|cursor/.test(t)) return "sql_injection"
+  // Command/exec FIRST. `\bexec\b` deliberately does NOT match "execute"
+  // (no word boundary inside the word), so "cursor.execute" stays out of
+  // this branch while "execute command" / os.system / subprocess route here.
   if (/command|os\.system|subprocess|\bshell\b|\bexec\b|\beval\b|dangerous[-_ ]?code/.test(t))
     return "command_injection"
+  // SQL/Cypher requires a REAL database signal — never bare "execute". A
+  // genuine query candidate carries sql/cypher/db/query/cursor/session.run/
+  // .query or an `execute(` call (with the paren, i.e. an execution site).
+  if (/\bsql\b|cypher|\bdb\b|database|\bquery\b|\bcursor\b|session\.run|\.query|execute\s*\(/.test(t))
+    return "sql_injection"
   if (/prompt[-_ ]?inject/.test(t)) return "prompt_injection"
   if (/vague|prompt[-_ ]?contract|underspecified/.test(t)) return "vague_prompt"
   if (/auth|approval|permission|access[-_ ]?control/.test(t)) return "auth"
