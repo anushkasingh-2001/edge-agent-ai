@@ -629,8 +629,11 @@ function CodeAnalysisPanel({
   }
 
   // Scan-time intelligence status badge (lib/scan-intelligence). Only
-  // rendered when a status is present; deterministic-only scans (Lite or
-  // AI-skipped) show "Confirmed".
+  // rendered for statuses that carry real LLM signal. The default
+  // "confirmed" (every deterministic finding, and the only status Lite /
+  // AI-skipped scans ever produce) is intentionally NOT badged — a green
+  // "Confirmed" tag would falsely imply LLM verification on findings the
+  // model never looked at.
   const STATUS_META: Record<
     FindingStatus,
     { label: string; className: string }
@@ -911,7 +914,7 @@ function CodeAnalysisPanel({
                 <TableCell className="font-medium truncate" title={finding.title}>
                   <span className="flex items-center gap-2 min-w-0">
                     <span className="truncate">{finding.title}</span>
-                    {finding.status ? (
+                    {finding.status && finding.status !== "confirmed" ? (
                       <Badge
                         variant="outline"
                         className={`shrink-0 text-[10px] ${STATUS_META[finding.status].className}`}
