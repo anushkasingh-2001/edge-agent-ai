@@ -70,6 +70,10 @@ import type {
   IntelligenceSummary,
   FindingStatus,
 } from "@/lib/scan-report"
+import {
+  activeFindingCount,
+  isLikelyFalsePositive,
+} from "@/lib/scan-report"
 import type { TestSuite } from "@/lib/test-cases"
 import { normalizeScanMode, scanModeLabel } from "@/lib/scan-intelligence/normalize-mode"
 import {
@@ -256,10 +260,13 @@ export function Findings({
   // on the user's plan + the intelligence mode. The browser never
   // sends or stores an apiKey/baseUrl/provider.
 
-  const criticalCount = findings.filter((f) => f.severity === "critical").length
-  const highCount = findings.filter((f) => f.severity === "high").length
-  const mediumCount = findings.filter((f) => f.severity === "medium").length
-  const lowCount = findings.filter((f) => f.severity === "low").length
+  // Summary cards count ACTIVE findings only — LLM-downranked
+  // likely-false-positives stay visible in the table but are excluded here.
+  const activeForCards = findings.filter((f) => !isLikelyFalsePositive(f))
+  const criticalCount = activeForCards.filter((f) => f.severity === "critical").length
+  const highCount = activeForCards.filter((f) => f.severity === "high").length
+  const mediumCount = activeForCards.filter((f) => f.severity === "medium").length
+  const lowCount = activeForCards.filter((f) => f.severity === "low").length
 
   const riskColor =
     riskScore >= 86
@@ -376,7 +383,7 @@ export function Findings({
               variant="outline"
               className="ml-1 h-5 px-1.5 text-[10px] font-normal"
             >
-              {findings.length}
+              {activeFindingCount(findings)}
             </Badge>
           </TabsTrigger>
           <TabsTrigger value="behavioral" className="gap-2">
@@ -522,9 +529,12 @@ function CodeAnalysisPanel({
     [findings, appliedRefIds]
   )
 
+  // Category tallies count ACTIVE findings only (likely-false-positives are
+  // excluded so the per-category numbers sum to the active total).
   const findingCountByLabel = useMemo(() => {
     const m = new Map<string, number>()
     for (const f of findingsAfterFixes) {
+      if (isLikelyFalsePositive(f)) continue
       const label = displayCategory(f.category)
       m.set(label, (m.get(label) ?? 0) + 1)
     }
@@ -594,6 +604,14 @@ function CodeAnalysisPanel({
     filteredFindings.length === findingsAfterFixes.length
       ? `Fix all (${fixableTargets.length})`
       : `Fix filtered (${fixableTargets.length})`
+
+  // Visible-count split: active findings vs. LLM-downranked likely false
+  // positives (still rendered, muted, at the bottom of the table).
+  const visibleActiveCount = filteredFindings.reduce(
+    (n, f) => n + (isLikelyFalsePositive(f) ? 0 : 1),
+    0,
+  )
+  const visibleLfpCount = filteredFindings.length - visibleActiveCount
 
   const severityBadgeClass = (severity: string) => {
     switch (severity) {
@@ -677,6 +695,11 @@ function CodeAnalysisPanel({
               {intelligenceSummary.ai_calls_used === 1 ? "" : "s"} used
             </span>
           )}
+          {intelligenceSummary.mode !== "lite" ? (
+            <span className="w-full opacity-70">
+              Counts exclude likely false positives in AI-reviewed modes.
+            </span>
+          ) : null}
         </div>
       ) : null}
       <Card className="bg-card border-border">
@@ -772,7 +795,7 @@ function CodeAnalysisPanel({
               </SelectTrigger>
               <SelectContent className="max-h-[420px]">
                 <SelectItem value="all">
-                  All Categories ({findings.length})
+                  All Categories ({activeFindingCount(findingsAfterFixes)})
                 </SelectItem>
                 {categories.map((cat) => {
                   const count = findingCountByLabel.get(cat) ?? 0
@@ -796,7 +819,14 @@ function CodeAnalysisPanel({
               </SelectContent>
             </Select>
             <div className="text-sm text-muted-foreground">
-              {filteredFindings.length} findings
+              {visibleActiveCount} active finding{visibleActiveCount === 1 ? "" : "s"}
+              {visibleLfpCount > 0 ? (
+                <span className="opacity-70">
+                  {" · "}
+                  {visibleLfpCount} likely false positive
+                  {visibleLfpCount === 1 ? "" : "s"}
+                </span>
+              ) : null}
             </div>
             <FindingFixButton
               targets={fixableTargets}

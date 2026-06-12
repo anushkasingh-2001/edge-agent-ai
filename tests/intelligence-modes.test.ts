@@ -38,6 +38,18 @@ import {
   checkBudget,
 } from "../lib/server-cost-controller"
 import { isRealFixDiff, guardAddedInDiff } from "../lib/patch-confidence-realfix"
+import {
+  activeFindingCount,
+  activeFindings,
+  likelyFalsePositiveFindings,
+  isLikelyFalsePositive,
+  activeReportCounts,
+  computeRiskScore,
+  type FindingStatus,
+  type ScannerFinding,
+  type ScanReport,
+} from "../lib/scan-report"
+import { scanItemFromReport } from "../lib/scan-history"
 
 test("Save mode: explanation allowed, patch generation refused", () => {
   assert.equal(MODE_POLICIES.save.allowExplain, true)
@@ -148,4 +160,125 @@ test("bulk fix cost scales with clusters, not findings (one call per cluster)", 
     estimateCall({ model: "gpt-4.1", tier: "mid", inputTokens: 4000, outputTokens: 1500 }),
   )
   assert.equal(summarizeBatch(calls).totalCalls, 5)
+})
+
+// ---------------------------------------------------------------------------
+// Effective finding counts per mode (active vs. likely-false-positive).
+// ---------------------------------------------------------------------------
+
+const f = (
+  status: FindingStatus | undefined,
+  severity: "critical" | "high" | "medium" | "low" = "high",
+  extra: Partial<ScannerFinding> = {},
+): ScannerFinding => ({
+  id: `id-${Math.random().toString(36).slice(2)}`,
+  rule_id: "dangerous-tools",
+  severity,
+  category: "Dangerous Tools",
+  title: "t",
+  file: "x.py",
+  line: 1,
+  agent: "a",
+  reason: "r",
+  suggestedFix: "s",
+  evidence: "e",
+  code: "c",
+  confidence: 0.9,
+  status,
+  ...extra,
+})
+
+const buildReport = (findings: ScannerFinding[]): ScanReport => ({
+  schema_version: "2.0",
+  scan_root: "/tmp",
+  generated_at: new Date().toISOString(),
+  frameworks_detected: [],
+  agents_detected: [],
+  tools_detected: [],
+  models_detected: [],
+  prompts_detected: [],
+  summary: {
+    critical: findings.filter((x) => x.severity === "critical").length,
+    high: findings.filter((x) => x.severity === "high").length,
+    medium: findings.filter((x) => x.severity === "medium").length,
+    low: findings.filter((x) => x.severity === "low").length,
+    total: findings.length,
+  },
+  risk_score: 100,
+  findings,
+})
+
+test("Lite count includes ALL deterministic findings (none downranked)", () => {
+  // Lite scans never carry a likely_false_positive status.
+  const findings = [f("confirmed"), f("confirmed"), f(undefined)]
+  assert.equal(activeFindingCount(findings), 3)
+  assert.equal(activeFindings(findings).length, 3)
+  assert.equal(likelyFalsePositiveFindings(findings).length, 0)
+})
+
+test("Deep/Exhaustive count excludes likely_false_positive findings", () => {
+  const findings = [
+    f("confirmed"),
+    f("likely_false_positive"),
+    f("likely_false_positive"),
+    f("llm_verified"),
+  ]
+  assert.equal(activeFindingCount(findings), 2)
+  assert.equal(likelyFalsePositiveFindings(findings).length, 2)
+})
+
+test("needs_human_review, llm_verified, gap_audit_confirmed count as active", () => {
+  for (const status of [
+    "needs_human_review",
+    "llm_verified",
+    "gap_audit_confirmed",
+    "confirmed",
+    "needs_rule_support",
+  ] as const) {
+    assert.equal(isLikelyFalsePositive(f(status)), false, `${status} must be active`)
+  }
+  assert.equal(isLikelyFalsePositive(f("likely_false_positive")), true)
+})
+
+test("activeReportCounts: no downranks returns backend summary/risk unchanged", () => {
+  const report = buildReport([f("confirmed", "high"), f(undefined, "low")])
+  const counts = activeReportCounts(report)
+  assert.equal(counts.activeCount, 2)
+  assert.equal(counts.likelyFalsePositiveCount, 0)
+  assert.equal(counts.summary, report.summary) // same object, untouched
+  assert.equal(counts.riskScore, report.risk_score)
+})
+
+test("activeReportCounts: recomputes summary + risk from active findings", () => {
+  // One real high + two downranked criticals. Active set = a single high.
+  const report = buildReport([
+    f("llm_verified", "high"),
+    f("likely_false_positive", "critical"),
+    f("likely_false_positive", "critical"),
+  ])
+  const counts = activeReportCounts(report)
+  assert.equal(counts.activeCount, 1)
+  assert.equal(counts.likelyFalsePositiveCount, 2)
+  assert.equal(counts.summary.total, 1)
+  assert.equal(counts.summary.critical, 0)
+  assert.equal(counts.summary.high, 1)
+  // Risk recomputed from one high finding only (18 pts), not the criticals.
+  assert.equal(counts.riskScore, computeRiskScore([f("llm_verified", "high")]))
+  assert.ok(counts.riskScore < report.risk_score)
+})
+
+test("scan history count excludes likely_false_positive for AI-reviewed modes", () => {
+  const report = buildReport([
+    f("confirmed", "high"),
+    f("likely_false_positive", "high"),
+  ])
+  const item = scanItemFromReport(
+    report,
+    { id: "p1", name: "p", path: "/tmp" } as Parameters<typeof scanItemFromReport>[1],
+    "main",
+  )
+  assert.equal(item.findingCount, 1)
+  assert.equal(item.summary.total, 1)
+  // The full report (with the downranked finding) is still stored verbatim.
+  assert.equal(item.report.findings.length, 2)
 })

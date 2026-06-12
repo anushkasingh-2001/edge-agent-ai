@@ -419,6 +419,152 @@ export function mapReportToUiFindings(report: ScanReport): UiFinding[] {
   }))
 }
 
+// ---------------------------------------------------------------------------
+// Active vs. likely-false-positive finding counting.
+//
+// Scan-time intelligence (Balanced/Deep/Exhaustive) may downrank a finding to
+// `likely_false_positive`. Such findings are NEVER deleted — they stay in the
+// report and render muted at the bottom of the table — but they must be
+// EXCLUDED from the headline counts (sidebar badge, summary cards, category
+// totals, risk score, scan-history count) so the numbers reflect findings the
+// user should act on. Every other status (confirmed, llm_verified,
+// needs_human_review, gap_audit_confirmed, needs_rule_support) counts as
+// active. Lite/deterministic scans never carry a `likely_false_positive`
+// status, so active === all for them.
+// ---------------------------------------------------------------------------
+
+type StatusBearingFinding = { status?: FindingStatus }
+
+/** True only for the one status excluded from active counts. */
+export function isLikelyFalsePositive(finding: StatusBearingFinding): boolean {
+  return finding?.status === "likely_false_positive"
+}
+
+/** Findings that count toward the active total (everything except
+ *  likely_false_positive). Preserves input order. */
+export function activeFindings<T extends StatusBearingFinding>(
+  findings: readonly T[],
+): T[] {
+  return findings.filter((f) => !isLikelyFalsePositive(f))
+}
+
+/** The downranked findings (kept visible/muted, never deleted). */
+export function likelyFalsePositiveFindings<T extends StatusBearingFinding>(
+  findings: readonly T[],
+): T[] {
+  return findings.filter((f) => isLikelyFalsePositive(f))
+}
+
+/** Count of active findings (all minus likely_false_positive). */
+export function activeFindingCount(
+  findings: readonly StatusBearingFinding[],
+): number {
+  let n = 0
+  for (const f of findings) if (!isLikelyFalsePositive(f)) n++
+  return n
+}
+
+/** Severity tallies (+total) for a finding list. */
+export function summarizeFindings(
+  findings: readonly { severity: "critical" | "high" | "medium" | "low" }[],
+): { critical: number; high: number; medium: number; low: number; total: number } {
+  const s = { critical: 0, high: 0, medium: 0, low: 0, total: 0 }
+  for (const f of findings) {
+    s[f.severity]++
+    s.total++
+  }
+  return s
+}
+
+/** Mirror of the scanner's "soft finding" classifier (presence warnings +
+ *  accuracy/quality signals contribute at reduced weight). Kept in lockstep
+ *  with `_compute_risk_score` in scanner/src/edge_agent_scanner/engine.py. */
+function isSoftFinding(f: { category?: string; rule_id?: string }): boolean {
+  const cat = (f.category ?? "").toLowerCase()
+  return (
+    cat.includes("presence warning") ||
+    cat === "dangerous code present" ||
+    cat === "accuracy / quality risk" ||
+    cat === "accuracy risk" ||
+    f.rule_id === "accuracy-regression-risk"
+  )
+}
+
+/** Project risk score in [0, 100], recomputed client-side from a finding
+ *  list. Mirrors the Python scanner's `_compute_risk_score` exactly so the
+ *  UI can derive an adjusted score from ACTIVE findings (LLM-downranked
+ *  likely-false-positives removed) without diverging from scanner truth. */
+export function computeRiskScore(
+  findings: readonly {
+    severity: "critical" | "high" | "medium" | "low"
+    category?: string
+    rule_id?: string
+  }[],
+): number {
+  let critN = 0
+  let highN = 0
+  let softMed = 0
+  let hardMed = 0
+  let softLow = 0
+  let hardLow = 0
+  for (const f of findings) {
+    const soft = isSoftFinding(f)
+    switch (f.severity) {
+      case "critical":
+        critN++
+        break
+      case "high":
+        highN++
+        break
+      case "medium":
+        soft ? softMed++ : hardMed++
+        break
+      case "low":
+        soft ? softLow++ : hardLow++
+        break
+    }
+  }
+  const critPts = Math.min(100, critN * 35)
+  const highPts = Math.min(60, highN * 18)
+  const medPts = Math.min(20, hardMed * 4 + softMed * 2)
+  const lowPts = Math.min(10, hardLow * 1 + softLow * 0)
+  let score = critPts + highPts + medPts + lowPts
+  if (critN === 0 && highN === 0) score = Math.min(score, 39)
+  return Math.max(0, Math.min(100, score))
+}
+
+export interface ActiveReportCounts {
+  activeCount: number
+  likelyFalsePositiveCount: number
+  summary: { critical: number; high: number; medium: number; low: number; total: number }
+  riskScore: number
+}
+
+/**
+ * Display counts for a report with likely-false-positives excluded from the
+ * active totals. When the report has NO downranked findings (Lite, AI-skipped,
+ * or a clean AI review) the backend `summary`/`risk_score` are returned
+ * unchanged — so deterministic/Lite behavior is identical to before.
+ */
+export function activeReportCounts(report: ScanReport): ActiveReportCounts {
+  const active = activeFindings(report.findings)
+  const lfp = report.findings.length - active.length
+  if (lfp === 0) {
+    return {
+      activeCount: active.length,
+      likelyFalsePositiveCount: 0,
+      summary: report.summary,
+      riskScore: report.risk_score,
+    }
+  }
+  return {
+    activeCount: active.length,
+    likelyFalsePositiveCount: lfp,
+    summary: summarizeFindings(active),
+    riskScore: computeRiskScore(active),
+  }
+}
+
 export function filterChecksForScanner(selectedCheckIds: string[]): string[] {
   const set = new Set<string>(SCANNER_RULE_IDS)
   return selectedCheckIds.filter((id) => set.has(id as ScannerRuleId))

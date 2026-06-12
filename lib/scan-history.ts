@@ -1,5 +1,5 @@
 import type { Project } from "./projects"
-import type { ScanReport } from "./scan-report"
+import { activeReportCounts, type ScanReport } from "./scan-report"
 
 export type ScanIntelligenceMode = "save" | "auto" | "pro" | "max" | "manual"
 export type ScanAiProviderMode = "hosted" | "byok"
@@ -144,13 +144,17 @@ export function scanHistoryForProject(
   return history.filter((s) => s.projectId === projectId)
 }
 
-/** Build a history item for a freshly-completed scan. */
+/** Build a history item for a freshly-completed scan. Counts exclude
+ *  LLM-downranked likely-false-positives (AI-reviewed modes); for Lite /
+ *  AI-skipped reports these equal the backend summary/risk_score. The full
+ *  `report` (including the downranked findings) is still stored verbatim. */
 export function scanItemFromReport(
   report: ScanReport,
   project: Project,
   branch: string,
   meta?: ScanModeMetadata
 ): ScanHistoryItem {
+  const counts = activeReportCounts(report)
   return {
     id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     projectId: project.id,
@@ -158,9 +162,9 @@ export function scanItemFromReport(
     projectPath: project.path,
     branch,
     timestamp: report.generated_at || new Date().toISOString(),
-    riskScore: report.risk_score,
-    summary: report.summary,
-    findingCount: report.summary.total,
+    riskScore: counts.riskScore,
+    summary: counts.summary,
+    findingCount: counts.activeCount,
     report,
     meta,
   }

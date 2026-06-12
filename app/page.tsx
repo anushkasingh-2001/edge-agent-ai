@@ -27,6 +27,7 @@ import {
   buildToolsInventoryFromReport,
   totalToolCountFromReport,
   topFindingsFromReport,
+  activeReportCounts,
   type ScanReport,
 } from "@/lib/scan-report"
 import { normalizeScanMode } from "@/lib/scan-intelligence/normalize-mode"
@@ -420,7 +421,14 @@ export default function Home() {
     void refreshBranches(selectedProject)
   }, [selectedProject, refreshBranches])
 
-  const riskScore = scanReport?.risk_score ?? 0
+  // Counts exclude LLM-downranked likely-false-positives (Balanced/Deep/
+  // Exhaustive). For Lite / AI-skipped reports there are none, so these equal
+  // the backend summary/risk_score.
+  const reportCounts = useMemo(
+    () => (scanReport ? activeReportCounts(scanReport) : null),
+    [scanReport]
+  )
+  const riskScore = reportCounts?.riskScore ?? 0
   const uiFindings = useMemo(
     () => (scanReport ? mapReportToUiFindings(scanReport) : []),
     [scanReport]
@@ -460,7 +468,7 @@ export default function Home() {
   const projectLabel = selectedProject?.name ?? "No project opened"
   const hasProject = selectedProject !== null
   const hasScan = scanReport !== null
-  const findingsCount = scanReport?.summary.total ?? 0
+  const findingsCount = reportCounts?.activeCount ?? 0
 
   const persistProject = useCallback((project: Project) => {
     const next: Project = { ...project, lastOpenedAt: new Date().toISOString() }
@@ -894,7 +902,7 @@ export default function Home() {
             isScanning={scanning}
             onStopScan={abortScan}
             scanError={scanError}
-            lastIssueCount={scanReport?.summary.total ?? null}
+            lastIssueCount={reportCounts?.activeCount ?? null}
             lastScanTime={
               scanReport ? new Date(scanReport.generated_at).toLocaleString() : null
             }
