@@ -181,19 +181,23 @@ export function ScanCenter({
   setManualModelSelection,
   onNavigateToPlan,
 }: ScanCenterProps) {
-  // Plan access drives the credits chip and the anonymous mode-lock. Modes
-  // are NOT plan-gated for signed-in users, so `allowedModes` is all modes
-  // when authenticated and only "save" when anonymous.
+  // Plan access drives the credits chip and the mode-lock. `allowedModes`
+  // reflects login + subscription tier: only "save" when anonymous, and the
+  // tier's `plan.allowedModes` once signed in (free/starter → save+auto,
+  // pro → +pro, team/enterprise → all). The server enforces the same rules.
   const { authenticated, plan, allowedModes, loading: planLoading } = usePlanAccess()
 
-  // Soft downgrade: only relevant for anonymous users who picked an AI mode
-  // (which needs an account). Bounce them to deterministic "save" so the
-  // toggle never shows a selection the server would refuse for lack of a
-  // session. Signed-in users keep whatever mode they chose.
+  // Soft downgrade: if the currently selected mode is not in the user's
+  // allowed set (anonymous picked an AI mode, or a plan change locked the
+  // mode), bounce to the best still-available mode so the toggle never shows
+  // a selection the server would refuse. Anonymous → save; signed-in → auto
+  // when allowed, else save.
   useEffect(() => {
     if (planLoading) return
     if (!allowedModes.includes(intelligenceMode)) {
-      setIntelligenceMode(authenticated ? "auto" : "save")
+      const fallback: IntelligenceMode =
+        authenticated && allowedModes.includes("auto") ? "auto" : "save"
+      setIntelligenceMode(fallback)
     }
   }, [authenticated, allowedModes, planLoading, intelligenceMode, setIntelligenceMode])
 
@@ -574,6 +578,11 @@ export function ScanCenter({
                   onChange={setIntelligenceMode}
                   allowedModes={allowedModes}
                   onLockedModeClick={() => onNavigateToPlan?.()}
+                  lockedMessage={
+                    authenticated
+                      ? "Subscription required for this mode."
+                      : "Sign in to use AI modes."
+                  }
                 />
               </div>
 
@@ -601,7 +610,7 @@ export function ScanCenter({
                 </div>
               ) : null}
 
-              {intelligenceMode === "manual" ? (
+              {intelligenceMode === "manual" && allowedModes.includes("manual") ? (
                 <div className="rounded-lg border border-border/70 bg-secondary/30 p-3">
                   <ModelSelector
                     availableSlots={availableManualSlots}

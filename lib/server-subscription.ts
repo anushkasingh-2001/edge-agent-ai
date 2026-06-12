@@ -44,25 +44,29 @@ export interface PlanSummary {
   billingPeriodEnd: string
 }
 
-/** Every analysis mode. Modes are NOT a plan entitlement — any signed-in
- *  user may pick any mode. The plan only governs the credit ALLOWANCE; a
- *  heavier mode just spends more credits per fix/explain. (The naming the
- *  user sees is Lite/Balanced/Deep/Exhaustive/Custom; the wire IDs below
- *  stay stable.) */
+/** Every analysis mode (wire IDs). The user sees
+ *  Lite/Balanced/Deep/Exhaustive/Custom; the IDs below stay stable. */
 const ALL_MODES: IntelligenceMode[] = ["save", "auto", "pro", "max", "manual"]
 
 /** Per-tier entitlements. Stripe webhook → planTier → these flags.
  *
- *  Mode ACCESS is intentionally uniform across tiers — what differs between
- *  plans is the credit allowance (see creditsLimit), not which modes you can
- *  run. So every tier unlocks all modes + manual model selection. */
+ *  Mode ACCESS is tier-gated (login + subscription decide which AI modes a
+ *  user can run):
+ *    - free / starter : Lite + Balanced
+ *    - pro            : Lite + Balanced + Deep
+ *    - team / max     : all modes + Custom (manual model selection)
+ *    - enterprise     : all modes + Custom
+ *
+ *  `team` is the wire name for the highest "Max" tier; `team` and
+ *  `enterprise` both grant Max-tier access. Manual model selection is
+ *  reserved for Max-tier (team/enterprise). */
 export const PLAN_ENTITLEMENTS: Record<
   PlanTier,
   { allowedModes: IntelligenceMode[]; allowManualModelSelection: boolean }
 > = {
-  free: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
-  starter: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
-  pro: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
+  free: { allowedModes: ["save", "auto"], allowManualModelSelection: false },
+  starter: { allowedModes: ["save", "auto"], allowManualModelSelection: false },
+  pro: { allowedModes: ["save", "auto", "pro"], allowManualModelSelection: false },
   team: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
   enterprise: { allowedModes: [...ALL_MODES], allowManualModelSelection: true },
 }

@@ -67,7 +67,8 @@ export function AccountAuthDialog({ open, onOpenChange, onAuthChanged }: Props) 
   const [mode, setMode] = useState<Mode>("login")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [name, setName] = useState("")
+  const [firstName, setFirstName] = useState("")
+  const [lastName, setLastName] = useState("")
   const [resetToken, setResetToken] = useState("")
   const [verifyCodeInput, setVerifyCodeInput] = useState("")
   const [pendingVerify, setPendingVerify] = useState<PendingVerify | null>(null)
@@ -219,7 +220,11 @@ export function AccountAuthDialog({ open, onOpenChange, onAuthChanged }: Props) 
     setError(null)
     try {
       if (mode === "register") {
-        const result = await registerAccount({ email: e, password, name: name.trim() || undefined })
+        const fullName = [firstName, lastName]
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .join(" ")
+        const result = await registerAccount({ email: e, password, name: fullName || undefined })
         if (result.ok && "requiresVerification" in result && result.requiresVerification) {
           enterVerifyStep(result.email, result.verificationCode)
           return
@@ -512,18 +517,33 @@ export function AccountAuthDialog({ open, onOpenChange, onAuthChanged }: Props) 
           /* ---------------------- Auth form ---------------------- */
           <div className="space-y-4">
             {mode === "register" && (
-              <div className="space-y-1.5">
-                <Label htmlFor="acct-name" className="text-sm">
-                  Name (optional)
-                </Label>
-                <Input
-                  id="acct-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Ada Lovelace"
-                  disabled={submitting}
-                  autoComplete="name"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="acct-first-name" className="text-sm">
+                    First name
+                  </Label>
+                  <Input
+                    id="acct-first-name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="Ada"
+                    disabled={submitting}
+                    autoComplete="given-name"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="acct-last-name" className="text-sm">
+                    Last name
+                  </Label>
+                  <Input
+                    id="acct-last-name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder="Lovelace"
+                    disabled={submitting}
+                    autoComplete="family-name"
+                  />
+                </div>
               </div>
             )}
 

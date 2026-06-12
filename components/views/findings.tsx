@@ -60,7 +60,7 @@ import {
 } from "@/components/intelligence-mode-toggle"
 import type { AiProviderMode } from "@/lib/context-bundle"
 import { ModelSelector, type ManualModelMap } from "@/components/model-selector"
-import { usePlanSummary, modeAllowedByPlan } from "@/lib/plan-client"
+import { usePlanSummary, usePlanAccess } from "@/lib/plan-client"
 import type { LlmSlot } from "@/lib/model-keys"
 import { WorkspaceView } from "@/components/workspace/workspace-view"
 import { DefineUserInputsDialog } from "@/components/test-cases/define-user-inputs-dialog"
@@ -170,6 +170,10 @@ interface FindingsProps {
   aiProviderMode: AiProviderMode
   manualModelSelection: ManualModelMap
   setManualModelSelection: (selection: ManualModelMap) => void
+  /** Navigate to the Plan & Billing page. Wired so clicking a locked AI
+   *  mode (anonymous / plan doesn't include it) sends the user to
+   *  subscribe / sign in. */
+  onNavigateToPlan?: () => void
 }
 
 /**
@@ -209,6 +213,7 @@ export function Findings({
   aiProviderMode: _aiProviderMode,
   manualModelSelection,
   setManualModelSelection,
+  onNavigateToPlan,
 }: FindingsProps) {
   const [tab, setTab] = useState<"code" | "behavioral">(initialTab)
 
@@ -228,16 +233,22 @@ export function Findings({
   //     picked here (closes the dead-state-write hole that left
   //     scan requests permanently on Auto+Hosted).
   // -------------------------------------------------------------------
-  const { plan } = usePlanSummary()
-  // Plan can downgrade the mode silently (e.g. "max" → "auto" on Free).
-  // Mirror it here so the toggle never gets out of sync with what the
-  // server will actually run. Lifted from CodeAnalysisPanel so the
-  // downgrade also takes effect when the user is on the Behavioral tab.
+  // Login + subscription tier decide which AI modes are selectable. The
+  // server enforces the same `allowedModes`; the UI mirrors it.
+  const { authenticated, allowedModes, loading: planLoading } = usePlanAccess()
+  // Plan/login can downgrade the mode silently (e.g. "max" → "auto" on Free,
+  // or any AI mode → "save" when signed out). Mirror it here so the toggle
+  // never gets out of sync with what the server will actually run. Lifted
+  // from CodeAnalysisPanel so the downgrade also takes effect on the
+  // Behavioral tab.
   useEffect(() => {
-    if (!modeAllowedByPlan(plan, intelligenceMode)) {
-      setIntelligenceMode("auto")
+    if (planLoading) return
+    if (!allowedModes.includes(intelligenceMode)) {
+      const fallback: IntelligenceMode =
+        authenticated && allowedModes.includes("auto") ? "auto" : "save"
+      setIntelligenceMode(fallback)
     }
-  }, [plan, intelligenceMode])
+  }, [authenticated, allowedModes, planLoading, intelligenceMode, setIntelligenceMode])
 
   // Hosted-only: no client-side provider config / byokConfig. The
   // server reads provider keys from env and resolves the model based
@@ -383,6 +394,9 @@ export function Findings({
             manualModelSelection={manualModelSelection}
             setManualModelSelection={setManualModelSelection}
             intelligenceSummary={scanReport?.intelligence_summary ?? null}
+            allowedModes={allowedModes}
+            authenticated={authenticated}
+            onNavigateToPlan={onNavigateToPlan}
           />
         </TabsContent>
 
@@ -418,6 +432,9 @@ function CodeAnalysisPanel({
   manualModelSelection,
   setManualModelSelection,
   intelligenceSummary,
+  allowedModes,
+  authenticated,
+  onNavigateToPlan,
 }: {
   findings: Finding[]
   projectPath: string | null
@@ -427,6 +444,9 @@ function CodeAnalysisPanel({
   manualModelSelection: ManualModelMap
   setManualModelSelection: (selection: ManualModelMap) => void
   intelligenceSummary?: IntelligenceSummary | null
+  allowedModes: IntelligenceMode[]
+  authenticated: boolean
+  onNavigateToPlan?: () => void
 }) {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -676,6 +696,13 @@ function CodeAnalysisPanel({
             <IntelligenceModeToggle
               value={intelligenceMode}
               onChange={setIntelligenceMode}
+              allowedModes={allowedModes}
+              onLockedModeClick={() => onNavigateToPlan?.()}
+              lockedMessage={
+                authenticated
+                  ? "Subscription required for this mode."
+                  : "Sign in to use AI modes."
+              }
             />
           </div>
 
@@ -684,7 +711,7 @@ function CodeAnalysisPanel({
               from the page as the hosted constant so every API call
               still routes through the resolver's hosted path. */}
 
-          {intelligenceMode === "manual" ? (
+          {intelligenceMode === "manual" && allowedModes.includes("manual") ? (
             <div className="rounded-lg border border-border/70 bg-secondary/30 p-3">
               <ModelSelector
                 availableSlots={availableManualSlots}

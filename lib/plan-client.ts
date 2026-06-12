@@ -44,20 +44,23 @@ export type AnalysisMode = "save" | "auto" | "pro" | "max" | "manual"
  * plan state. This is the single source of truth the Scan Center toggle
  * consults; the server enforces the same rules independently.
  *
- * Modes are NOT plan-gated. The plan only governs the credit allowance —
- * a heavier mode just spends more credits per fix/explain.
+ * Mode access depends on login + subscription tier:
  *
  *   - Not signed in (anonymous): ONLY "save" (deterministic scan, no
- *     hosted AI). AI modes need an account to bill credits against, so
- *     they're locked → clicking prompts sign-in.
- *   - Signed in: every mode is available regardless of tier.
+ *     hosted AI). AI modes need an account → clicking prompts sign-in.
+ *   - Signed in with a loaded plan: exactly `plan.allowedModes` (tier-gated:
+ *     free/starter → save+auto, pro → +pro, team/enterprise → all).
+ *   - Signed in but plan not yet loaded: conservative ["save"] so we never
+ *     optimistically unlock a mode the server would reject. The server is
+ *     always the source of truth.
  */
 export function effectiveAllowedModes(
   authenticated: boolean,
-  _plan: PlanSummary | null,
+  plan: PlanSummary | null,
 ): AnalysisMode[] {
   if (!authenticated) return ["save"]
-  return ["save", "auto", "pro", "max", "manual"]
+  if (plan) return [...plan.allowedModes]
+  return ["save"]
 }
 
 export async function fetchPlanSummary(signal?: AbortSignal): Promise<PlanSummary | null> {
@@ -129,12 +132,15 @@ export function usePlanAccess(): PlanAccess {
   return { ...state, loading }
 }
 
-/** True when the plan permits this intelligence mode. */
+/** True when the plan permits this intelligence mode. Once the plan is
+ *  loaded we trust `allowedModes` exactly (no optimistic unlocks). Before
+ *  the plan loads only the deterministic "save" mode is assumed available;
+ *  the server enforces the same rules regardless. */
 export function modeAllowedByPlan(
   plan: PlanSummary | null,
   mode: "save" | "auto" | "pro" | "max" | "manual",
 ): boolean {
-  if (!plan) return true // optimistic until loaded; server still enforces
+  if (!plan) return mode === "save"
   return plan.allowedModes.includes(mode)
 }
 

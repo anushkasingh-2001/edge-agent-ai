@@ -343,16 +343,16 @@ test("9. Quota exceeded returns quota_exceeded before any model call", () => {
 })
 
 // ===================================================================
-// 10. Modes are NOT plan-gated: a free plan may run every mode (it just
-//     spends credits; heavier modes spend more). Access requires only a
-//     session + available credits, not a paid tier.
+// 10. Modes ARE plan-gated: a free plan runs Save + Auto only. Deep (pro),
+//     Exhaustive (max), and Custom (manual) are blocked with
+//     mode_not_in_plan until the user upgrades.
 // ===================================================================
 
-test("10. Free plan allows every mode (modes are credit-priced, not plan-gated)", () => {
+test("10. Free plan allows Save + Auto only; Pro/Max/Manual are plan-gated", () => {
   free()
   setHostedKeys()
   _resetLedgerForTests()
-  for (const mode of ["save", "auto", "pro", "max", "manual"] as const) {
+  for (const mode of ["save", "auto"] as const) {
     const r = resolveAiProviderForRequest({
       userId: "u",
       workspaceId: "w",
@@ -360,6 +360,21 @@ test("10. Free plan allows every mode (modes are credit-priced, not plan-gated)"
       task: "explain",
     })
     assert.equal(r.ok, true, `Free plan must allow ${mode}`)
+  }
+  for (const mode of ["pro", "max", "manual"] as const) {
+    const r = resolveAiProviderForRequest({
+      userId: "u",
+      workspaceId: "w",
+      intelligenceMode: mode,
+      task: "explain",
+    })
+    assert.equal(r.ok, false, `Free plan must block ${mode}`)
+    if (!r.ok) {
+      assert.ok(
+        r.code === "mode_not_in_plan" || r.code === "manual_not_in_plan",
+        `${mode} must be rejected with a plan code, got ${r.code}`,
+      )
+    }
   }
 })
 

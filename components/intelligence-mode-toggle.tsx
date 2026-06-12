@@ -85,7 +85,7 @@ export function IntelligenceModeToggle({
   className,
   allowedModes,
   onLockedModeClick,
-  lockedMessage = "Sign in to use AI modes (each mode spends credits; heavier modes spend more).",
+  lockedMessage = "Sign in to use AI modes.",
 }: IntelligenceModeToggleProps) {
   const isLocked = (id: IntelligenceMode): boolean =>
     Array.isArray(allowedModes) && !allowedModes.includes(id)

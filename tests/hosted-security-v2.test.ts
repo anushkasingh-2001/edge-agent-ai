@@ -5,7 +5,7 @@
  *   22. Hosted routes reject apiKey/baseUrl/providerKey/* fields.
  *   23. API responses never include apiKey/baseUrl.
  *   24. Audit logs never include provider keys.
- *   25. Pro/Max are NOT plan-gated — a free user can run them (credit-priced).
+ *   25. Pro/Max ARE plan-gated — a free user is blocked (mode_not_in_plan).
  *
  * Run: node --import tsx --test tests/hosted-security-v2.test.ts
  */
@@ -176,9 +176,10 @@ describe("hosted security v2", () => {
     }
   })
 
-  // Modes are NOT plan-gated: a FREE user may run Pro/Max — they just spend
-  // more credits. The provider IS reached (no plan block before the call).
-  it("(25) PRO mode is allowed for a free user (not plan-gated)", async () => {
+  // Modes ARE plan-gated: a FREE user is limited to Lite + Balanced. Deep
+  // (pro) and Exhaustive (max) are blocked BEFORE any provider call with
+  // mode_not_in_plan (HTTP 402, upgrade prompt).
+  it("(25) PRO mode is blocked for a free user (mode_not_in_plan, no upstream call)", async () => {
     let upstreamCalls = 0
     global.fetch = (async () => {
       upstreamCalls += 1
@@ -197,11 +198,14 @@ describe("hosted security v2", () => {
         }),
       }),
     )
-    assert.equal(res.status, 200, "free user may use Pro mode")
-    assert.equal(upstreamCalls, 1, "provider IS reached — Pro is not plan-blocked")
+    assert.equal(res.status, 402, "free user may NOT use Pro mode")
+    const body = (await res.json()) as { code?: string; upgrade?: boolean }
+    assert.equal(body.code, "mode_not_in_plan")
+    assert.equal(body.upgrade, true)
+    assert.equal(upstreamCalls, 0, "provider must NOT be reached — Pro is plan-blocked")
   })
 
-  it("(25b) MAX mode is allowed for a free user (not plan-gated)", async () => {
+  it("(25b) MAX mode is blocked for a free user (mode_not_in_plan, no upstream call)", async () => {
     let upstreamCalls = 0
     global.fetch = (async () => {
       upstreamCalls += 1
@@ -220,8 +224,10 @@ describe("hosted security v2", () => {
         }),
       }),
     )
-    assert.equal(res.status, 200, "free user may use Max mode")
-    assert.equal(upstreamCalls, 1, "provider IS reached — Max is not plan-blocked")
+    assert.equal(res.status, 402, "free user may NOT use Max mode")
+    const body = (await res.json()) as { code?: string }
+    assert.equal(body.code, "mode_not_in_plan")
+    assert.equal(upstreamCalls, 0, "provider must NOT be reached — Max is plan-blocked")
   })
 
   it("/api/finding/explain also rejects BYOK fields", async () => {

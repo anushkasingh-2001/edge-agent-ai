@@ -974,6 +974,7 @@ export default function Home() {
             aiProviderMode={aiProviderMode}
             manualModelSelection={manualModelSelection}
             setManualModelSelection={setManualModelSelection}
+            onNavigateToPlan={() => setCurrentView("plan-billing")}
           />
         )
       case "run-traces":

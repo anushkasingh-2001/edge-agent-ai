@@ -355,15 +355,16 @@ test("9. recordConsumption debits credits after a successful hosted call", () =>
 })
 
 // ===================================================================
-// 10. Modes are credit-priced, not plan-gated: a free plan can run every
-//     mode (heavier modes simply cost more credits per call).
+// 10. Modes are tier-gated: a free plan can run Save + Auto only; Deep
+//     (pro), Exhaustive (max), and Custom (manual) are blocked with
+//     mode_not_in_plan until the user upgrades.
 // ===================================================================
 
-test("10. Free plan allows every mode (modes are credit-priced, not plan-gated)", () => {
+test("10. Free plan allows Save + Auto, blocks Pro/Max/Manual (mode_not_in_plan)", () => {
   free()
   setHostedKeys()
   _resetLedgerForTests()
-  for (const mode of ["save", "auto", "pro", "max", "manual"] as const) {
+  for (const mode of ["save", "auto"] as const) {
     const r = resolveAiProviderForRequest({
       userId: "u-free",
       workspaceId: "w",
@@ -371,6 +372,39 @@ test("10. Free plan allows every mode (modes are credit-priced, not plan-gated)"
       task: "explain",
     })
     assert.equal(r.ok, true, `Free plan must allow ${mode}`)
+  }
+  for (const mode of ["pro", "max", "manual"] as const) {
+    const r = resolveAiProviderForRequest({
+      userId: "u-free",
+      workspaceId: "w",
+      intelligenceMode: mode,
+      task: "explain",
+    })
+    assert.equal(r.ok, false, `Free plan must block ${mode}`)
+    if (!r.ok) {
+      assert.ok(
+        r.code === "mode_not_in_plan" || r.code === "manual_not_in_plan",
+        `${mode} must be rejected with a plan code, got ${r.code}`,
+      )
+    }
+  }
+})
+
+// 10b. Max-tier (team/enterprise) unlocks every mode.
+test("10b. Max-tier (enterprise) allows every mode", () => {
+  enterprise()
+  setHostedKeys()
+  _resetLedgerForTests()
+  for (const mode of ["save", "auto", "pro", "max", "manual"] as const) {
+    const r = resolveAiProviderForRequest({
+      userId: "u-ent",
+      workspaceId: "w",
+      intelligenceMode: mode,
+      task: "explain",
+      manualModelSelection:
+        mode === "manual" ? { explain: "openai:gpt-4.1-mini" } : undefined,
+    })
+    assert.equal(r.ok, true, `Max-tier must allow ${mode}`)
   }
 })
 

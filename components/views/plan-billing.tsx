@@ -49,7 +49,7 @@ const PLANS: PlanInfo[] = [
     name: "Starter",
     price: "$9/mo",
     credits: "500 AI credits / month",
-    features: ["All analysis modes included", "AI explanations & fixes", "Single workspace"],
+    features: ["Lite + Balanced modes", "AI explanations & fixes", "Single workspace"],
   },
   {
     tier: "pro",
@@ -57,14 +57,16 @@ const PLANS: PlanInfo[] = [
     price: "$29/mo",
     credits: "2,000 AI credits / month",
     highlight: true,
-    features: ["Everything in Starter", "4× more AI credits", "Priority model routing"],
+    features: ["Everything in Starter", "Deep (Pro) mode", "4× more AI credits", "Priority model routing"],
   },
   {
+    // Backend tier name stays `team` (the highest "Max" tier); the card is
+    // labelled "Max" so the plan matches the Exhaustive/Custom mode names.
     tier: "team",
-    name: "Team",
+    name: "Max",
     price: "$99/mo",
     credits: "10,000 AI credits / month",
-    features: ["Everything in Pro", "10,000 credits / month", "Shared team workspace"],
+    features: ["Everything in Pro", "Exhaustive (Max) mode", "Custom (manual model selection)", "Shared workspace"],
   },
 ]
 
@@ -80,6 +82,8 @@ interface PlanState {
 
 export function PlanBilling() {
   const [email, setEmail] = useState("")
+  const [firstName, setFirstName] = useState("")
+  const [lastName, setLastName] = useState("")
   const [state, setState] = useState<PlanState | null>(null)
   const [busy, setBusy] = useState<Tier | "signout" | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -126,8 +130,13 @@ export function PlanBilling() {
       return
     }
     setBusy(tier)
-    // 1. Establish a session for this email (sets the signed cookie).
-    const login = await devLogin(e)
+    // 1. Establish a session for this email (sets the signed cookie). When
+    //    not signed in we sign in / create the account first, capturing the
+    //    optional first/last name so the cloud billing row is attributed.
+    const login = await devLogin(e, {
+      firstName: firstName.trim() || undefined,
+      lastName: lastName.trim() || undefined,
+    })
     if (!login.ok) {
       setError(login.error)
       setBusy(null)
@@ -199,6 +208,36 @@ export function PlanBilling() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {!(state?.authenticated && state.email) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="billing-first-name" className="text-xs">
+                  First name
+                </Label>
+                <Input
+                  id="billing-first-name"
+                  type="text"
+                  placeholder="Ada"
+                  value={firstName}
+                  onChange={(ev) => setFirstName(ev.target.value)}
+                  disabled={busy !== null}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="billing-last-name" className="text-xs">
+                  Last name
+                </Label>
+                <Input
+                  id="billing-last-name"
+                  type="text"
+                  placeholder="Lovelace"
+                  value={lastName}
+                  onChange={(ev) => setLastName(ev.target.value)}
+                  disabled={busy !== null}
+                />
+              </div>
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="billing-email" className="text-xs">
               Email
