@@ -278,12 +278,29 @@ export async function enhanceScanReport(
   const rawFindings = Array.isArray(report.findings)
     ? (report.findings as unknown as ScanFinding[])
     : []
-  // Clone each finding; every deterministic finding is "confirmed" by
-  // default (the scanner proved it). LLM metadata is layered on top.
-  const enriched: ScanFinding[] = rawFindings.map((f) => ({
-    ...f,
-    status: (f.status as IntelligenceMetadata["status"]) ?? "confirmed",
-  }))
+  // Clone each finding and START CLEAN: every scan begins from scanner-owned
+  // truth only. Any scan-time intelligence metadata that may have ridden in
+  // on the raw finding (e.g. a report re-fed from a previous enriched scan)
+  // is explicitly stripped so stale LLM labels never leak into a fresh scan
+  // (notably Lite, which makes zero AI calls). The deterministic scanner
+  // proved each finding, so status resets to "confirmed"; the verifier phase
+  // layers any LLM statuses back on for Balanced/Deep/Exhaustive.
+  const enriched: ScanFinding[] = rawFindings.map((f) => {
+    const {
+      status: _status,
+      verifier_verdict: _vv,
+      verifier_confidence: _vc,
+      verifier_reason: _vr,
+      false_positive_reason: _fpr,
+      suggested_severity_adjustment: _ssa,
+      gap_audit_reason: _gar,
+      model_used: _mu,
+      context_hash: _ch,
+      cached: _cached,
+      ...scannerOwned
+    } = f as ScanFinding & IntelligenceMetadata
+    return { ...scannerOwned, status: "confirmed" as const }
+  })
 
   const finalize = (summary: IntelligenceSummary): Record<string, unknown> => {
     report.findings = enriched

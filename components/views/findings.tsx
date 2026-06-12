@@ -71,6 +71,7 @@ import type {
   FindingStatus,
 } from "@/lib/scan-report"
 import type { TestSuite } from "@/lib/test-cases"
+import { normalizeScanMode, scanModeLabel } from "@/lib/scan-intelligence/normalize-mode"
 import {
   ENABLED_SECURITY_CHECKS,
   displayCategoryLabel,
@@ -692,6 +693,21 @@ function CodeAnalysisPanel({
               <span className="opacity-70">
                 Scanner findings are deterministic in every mode.
               </span>
+              {/* Make it explicit which mode produced the CURRENT report, and
+                  flag when the toggle has been changed but not yet re-run so
+                  the visible labels still reflect the previous mode. */}
+              {intelligenceSummary ? (
+                normalizeScanMode(intelligenceMode) === intelligenceSummary.mode ? (
+                  <span className="opacity-70">
+                    · This report: {scanModeLabel(intelligenceSummary.mode)}
+                  </span>
+                ) : (
+                  <span className="text-amber-500">
+                    · This report used {scanModeLabel(intelligenceSummary.mode)} — new mode
+                    applies to next scan
+                  </span>
+                )
+              ) : null}
             </div>
             <IntelligenceModeToggle
               value={intelligenceMode}

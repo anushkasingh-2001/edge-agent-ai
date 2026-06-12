@@ -572,6 +572,7 @@ export function ScanCenter({
                   <span className="opacity-70 hidden sm:inline">
                     Lite = no LLM patches · Exhaustive = plan→patch→validate · heavier modes spend more credits
                   </span>
+                  <span className="text-foreground/60">· Applies to the next scan</span>
                 </div>
                 <IntelligenceModeToggle
                   value={intelligenceMode}

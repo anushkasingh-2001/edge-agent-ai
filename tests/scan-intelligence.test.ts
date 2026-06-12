@@ -213,6 +213,64 @@ test("2. Lite mode makes zero AI calls and never touches the network", async () 
   }
 })
 
+test("2b. Lite strips stale LLM metadata from raw findings (clean each scan)", async () => {
+  _clearScanCacheForTests()
+  const dir = mkproject({ "app.py": VULN_FILE })
+  const llm = fakeLlm({})
+  const restore = _setScanFetcherForTests(llm.fetcher)
+  try {
+    await withOpenAiKey(async () => {
+      // Simulate a report re-fed from a PREVIOUS enriched scan: the finding
+      // carries leftover scan-time intelligence labels.
+      const stale = finding({
+        status: "likely_false_positive",
+        verifier_verdict: "likely_false_positive",
+        verifier_confidence: 0.9,
+        verifier_reason: "stale reason from a prior scan",
+        false_positive_reason: "stale fp reason",
+        suggested_severity_adjustment: "lower",
+        gap_audit_reason: "stale gap reason",
+        model_used: "gpt-old",
+        context_hash: "deadbeef",
+        cached: true,
+      } as Partial<ScanFinding>)
+      const report = { findings: [stale] } as Record<string, unknown>
+      const out = await enhanceScanReport(report, { projectPath: dir, mode: "lite" })
+
+      const findings = out.findings as Array<Record<string, unknown>>
+      const f = findings[0]
+      // Status resets to the deterministic default; every intelligence field
+      // is gone so no LLM labels render in Lite.
+      assert.equal(f.status, "confirmed")
+      for (const key of [
+        "verifier_verdict",
+        "verifier_confidence",
+        "verifier_reason",
+        "false_positive_reason",
+        "suggested_severity_adjustment",
+        "gap_audit_reason",
+        "model_used",
+        "context_hash",
+        "cached",
+      ]) {
+        assert.equal(f[key], undefined, `${key} must be stripped in Lite`)
+      }
+
+      const summary = out.intelligence_summary as {
+        ai_calls_used: number
+        verifier_enabled: boolean
+        gap_audit_enabled: boolean
+      }
+      assert.equal(summary.ai_calls_used, 0)
+      assert.equal(summary.verifier_enabled, false)
+      assert.equal(summary.gap_audit_enabled, false)
+    })
+  } finally {
+    _setScanFetcherForTests(restore)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ===================================================================
 // 3 & 4. Cluster selection per mode
 
